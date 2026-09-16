@@ -1,0 +1,19 @@
+# Xcode 生成物（由 xcodegen generate 产出，不入版本控制）
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+build/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# Swift Package Manager（Packages/ 是本地包源码，必须入库；只忽略构建产物）
+.swiftpm/
+.build/
+Packages/**/.build/
+Package.resolved
+
+# CocoaPods（本项目不使用，预留）
+Pods/
