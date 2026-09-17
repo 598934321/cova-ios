@@ -95,6 +95,11 @@ public struct OneStepStreamMachine: Sendable {
             return degrade(.malformedEvents(count: malformedEventCount), at: now)
         }
         receivedFirstEvent = true
+        // SSE 已投递的计划卡也登记去重，避免降级后首轮轮询重复投递同一张卡（m2）。
+        if frame.event == .planCard,
+           let card = try? JSONDecoder().decode(OneStepPlanCardDto.self, from: frame.payload) {
+            emittedCardSignatures.insert(Self.signature(of: card))
+        }
         switch frame.event {
         case .done, .error:
             phase = .finished
@@ -106,8 +111,20 @@ public struct OneStepStreamMachine: Sendable {
 
     /// SSE 流正常或异常结束（EOF）。仅在仍处于 `streaming` 时触发降级——
     /// done 之后的 EOF 是正常收尾，不降级。
-    public mutating func streamEnded(at now: TimeInterval) -> [OneStepStreamAction] {
+    ///
+    /// `residualMalformedEvents` 为解析器在 EOF 处丢弃的残帧数（m1）：计入坏事件口径，
+    /// 达到阈值时降级原因同样报 `.malformedEvents`，而非恒报 `.eofBeforeDone`。
+    public mutating func streamEnded(
+        at now: TimeInterval,
+        residualMalformedEvents: Int = 0
+    ) -> [OneStepStreamAction] {
         guard phase == .streaming else { return [] }
+        if residualMalformedEvents > 0 {
+            malformedEventCount += residualMalformedEvents
+            if malformedEventCount >= policy.malformedEventThreshold {
+                return degrade(.malformedEvents(count: malformedEventCount), at: now)
+            }
+        }
         return degrade(.eofBeforeDone, at: now)
     }
 
@@ -197,18 +214,32 @@ public struct OneStepStreamMachine: Sendable {
 /// - 轮询结果被编码为与 SSE 同形的 `plan_card` 帧，上层无需区分来源；
 /// - 终止（done / error / cancel）会取消全部内部任务并结束输出流。
 public actor OneStepStreamCoordinator {
+    /// 协调器为**单次使用**：重复 `start` 或终态后 `start` 一律抛错，绝不静默遗弃 continuation。
+    public enum LifecycleError: Error, Equatable, Sendable {
+        /// 已有会话在运行（同一实例重复 `start`）。
+        case alreadyStarted
+        /// 会话已到终态（done / 明确错误 / 取消）。
+        case alreadyFinished
+    }
+
+    private enum Lifecycle {
+        case idle
+        case running
+        case finished
+    }
+
     private let clock: any CovaClock
     private let transport: any SSEStreamingTransport
     private let poller: any OneStepPlanPolling
     private let policy: OneStepDegradationPolicy
 
+    private var lifecycle: Lifecycle = .idle
     private var machine: OneStepStreamMachine?
     private var sessionId = ""
     private var output: AsyncStream<CovaSSEFrame>.Continuation?
     private var sseTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
-    private var didFinish = false
 
     public init(
         clock: any CovaClock,
@@ -222,8 +253,23 @@ public actor OneStepStreamCoordinator {
         self.policy = policy
     }
 
+    private var isFinished: Bool { lifecycle == .finished }
+
     /// 启动会话，返回统一事件流（SSE 帧与轮询计划卡帧同形）。
-    public func start(sessionId: String, agentRequest: HTTPRequest) async -> AsyncStream<CovaSSEFrame> {
+    ///
+    /// 单次使用：`.running` → `alreadyStarted`，`.finished` → `alreadyFinished`；均不创建流、
+    /// 不启动任何任务，因此不存在 continuation/任务泄漏。
+    @discardableResult
+    public func start(sessionId: String, agentRequest: HTTPRequest) async throws -> AsyncStream<CovaSSEFrame> {
+        switch lifecycle {
+        case .running:
+            throw LifecycleError.alreadyStarted
+        case .finished:
+            throw LifecycleError.alreadyFinished
+        case .idle:
+            break
+        }
+        lifecycle = .running
         let (stream, continuation) = AsyncStream.makeStream(of: CovaSSEFrame.self)
         output = continuation
         self.sessionId = sessionId
@@ -234,12 +280,13 @@ public actor OneStepStreamCoordinator {
         return stream
     }
 
-    /// 上层取消：终止 SSE 与轮询并结束输出流。
+    /// 上层取消：终止 SSE 与轮询并结束输出流（幂等；终态后为 no-op）。
     public func cancel() async {
-        guard !didFinish, var machine else { return }
+        let now = await clock.now()
+        guard !isFinished, var machine else { return }
         let actions = machine.cancel()
         self.machine = machine
-        apply(actions, now: await clock.now())
+        apply(actions, now: now)
     }
 
     // MARK: - 观测（测试/调试）
@@ -266,56 +313,69 @@ public actor OneStepStreamCoordinator {
             }
             guard !Task.isCancelled else { return }
             for frame in parser.finish() { await handle(frame) }
-            await handleStreamEnded()
+            await handleStreamEnded(residualMalformedEvents: parser.discardedIncompleteEventCount)
         } catch is CancellationError {
             return
         } catch {
             guard !Task.isCancelled else { return }
-            await handleStreamEnded()
+            await handleStreamEnded(residualMalformedEvents: 0)
         }
     }
 
+    /// 关键并发约定（M1）：**先取时间（唯一 await），再同步读-改-写状态机**。
+    /// 任何 `await` 都不得出现在读 `machine` 与写回之间，否则会让出 actor 并以过期副本
+    /// 覆盖并发方刚写入的状态（回退/重复轮询/轮询结果丢失）。
     private func handle(_ frame: CovaSSEFrame) async {
-        guard !didFinish, var machine else { return }
-        let actions = machine.frameReceived(frame, at: await clock.now())
+        let now = await clock.now()
+        guard !isFinished, var machine else { return }
+        let actions = machine.frameReceived(frame, at: now)
         self.machine = machine
-        apply(actions, now: await clock.now())
+        apply(actions, now: now)
     }
 
-    private func handleStreamEnded() async {
-        guard !didFinish, var machine else { return }
-        let actions = machine.streamEnded(at: await clock.now())
+    private func handleStreamEnded(residualMalformedEvents: Int) async {
+        let now = await clock.now()
+        guard !isFinished, var machine else { return }
+        let actions = machine.streamEnded(at: now, residualMalformedEvents: residualMalformedEvents)
         self.machine = machine
-        apply(actions, now: await clock.now())
+        apply(actions, now: now)
     }
 
     // MARK: - 轮询
 
     private func performPoll() {
+        // 同一时刻只允许一个在途轮询任务：先取消旧的，避免无主任务并发。
+        pollTask?.cancel()
         let poller = self.poller
         let sessionId = self.sessionId
         pollTask = Task { [weak self] in
             do {
                 let cards = try await poller.pollPlans(sessionId: sessionId)
+                guard !Task.isCancelled else { return }
                 await self?.receivePoll(cards)
             } catch {
+                guard !Task.isCancelled else { return }
                 await self?.receivePollFailure()
             }
         }
     }
 
     private func receivePoll(_ cards: [OneStepPlanCardDto]) async {
-        guard !didFinish, var machine else { return }
-        let actions = machine.pollReceived(cards, at: await clock.now())
+        let now = await clock.now()
+        pollTask = nil
+        guard !isFinished, var machine else { return }
+        let actions = machine.pollReceived(cards, at: now)
         self.machine = machine
-        apply(actions, now: await clock.now())
+        apply(actions, now: now)
     }
 
     private func receivePollFailure() async {
-        guard !didFinish, var machine else { return }
-        let actions = machine.pollFailed(at: await clock.now())
+        let now = await clock.now()
+        pollTask = nil
+        guard !isFinished, var machine else { return }
+        let actions = machine.pollFailed(at: now)
         self.machine = machine
-        apply(actions, now: await clock.now())
+        apply(actions, now: now)
     }
 
     // MARK: - 动作与定时
@@ -344,7 +404,7 @@ public actor OneStepStreamCoordinator {
     private func rescheduleTimer(now: TimeInterval) {
         timerTask?.cancel()
         timerTask = nil
-        guard !didFinish, let deadline = machine?.nextDeadline() else { return }
+        guard !isFinished, let deadline = machine?.nextDeadline() else { return }
         let delay = max(0, deadline - now)
         let clock = self.clock
         timerTask = Task { [weak self] in
@@ -354,15 +414,16 @@ public actor OneStepStreamCoordinator {
     }
 
     private func timerFired() async {
-        guard !didFinish, var machine else { return }
-        let actions = machine.deadlineReached(at: await clock.now())
+        let now = await clock.now()
+        guard !isFinished, var machine else { return }
+        let actions = machine.deadlineReached(at: now)
         self.machine = machine
-        apply(actions, now: await clock.now())
+        apply(actions, now: now)
     }
 
     private func finish() {
-        guard !didFinish else { return }
-        didFinish = true
+        guard !isFinished else { return }
+        lifecycle = .finished
         sseTask?.cancel()
         sseTask = nil
         pollTask?.cancel()

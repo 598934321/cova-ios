@@ -19,18 +19,46 @@ public struct URLSessionSSETransport: SSEStreamingTransport {
     /// 单次 yield 的字节上限（避免长连接把整段缓存进内存）。
     public static let chunkByteLimit = 4096
 
+    /// SSE 空闲超时（等待数据的间隔上限）。
+    ///
+    /// 必须**大于** D6 的 30s 静默窗口：否则 URLSession 会在 15s（普通请求超时）就把长连接
+    /// 掐断，`consume` 会把它当 EOF → 恒报 `.eofBeforeDone`，使「30s 静默」几乎不可达。
+    /// 60s = 2× 静默窗口，活性判定权收归降级状态机。
+    public static let idleTimeout: TimeInterval = 60
+
+    /// SSE 资源总时长（近似无限）。
+    ///
+    /// `timeoutIntervalForResource` 是**整条连接的总时限**，对无限事件流必须足够大，
+    /// 否则流会在总时限到达时被强制终止。取 URLSession 默认量级（7 天），
+    /// 真正的活性由心跳与 30s 静默逻辑负责。
+    public static let resourceTimeout: TimeInterval = 7 * 24 * 60 * 60
+
     private let session: URLSession
 
     public init() {
-        session = URLSessionTransport.makeDefaultSession()
+        session = Self.makeDefaultSession()
     }
 
     init(session: URLSession) {
         self.session = session
     }
 
+    /// SSE 专用会话：空闲 60s、资源 ≈无限（与普通请求的 15s/15s 明确区分）。
+    static func makeDefaultSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = idleTimeout
+        configuration.timeoutIntervalForResource = resourceTimeout
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
+    }
+
     public func stream(_ request: HTTPRequest) async throws -> AsyncThrowingStream<Data, Error> {
-        let urlRequest = URLSessionTransport.makeURLRequest(request)
+        // 纵深防御（D10）：即便调用方绕过请求工厂，也拒绝非生产 origin，绝不发起请求。
+        guard CovaEnvironment.isProductionOrigin(request.url) else {
+            throw CovaAPIError.invalidRequestURL
+        }
+        let urlRequest = URLSessionTransport.makeURLRequest(request, timeoutInterval: Self.idleTimeout)
         let session = self.session
         return AsyncThrowingStream { continuation in
             let task = Task {

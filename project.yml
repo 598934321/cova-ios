@@ -59,8 +59,9 @@ targets:
         # → 0.2.11/22 G3-c 三审修复（等待者归属复核 F1 / me 吊销清理 F2 / restore 提交原子性 F3）
         # → 0.2.12/23 G3-c 验收落证
         # → 0.2.13/24 G3-d SSE 增量解析器 + 降级状态机（D6）
-        CFBundleShortVersionString: "0.2.13"
-        CFBundleVersion: "24"
+        # → 0.2.14/25 G3-d 评审修复（M1 竞态/M2 单次使用/M3 SSE 超时/M4 测试竞态 + m1..m5）
+        CFBundleShortVersionString: "0.2.14"
+        CFBundleVersion: "25"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

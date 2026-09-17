@@ -179,6 +179,36 @@ final class SSEFrameParserTests: XCTestCase {
         XCTAssertEqual(frames[0].decodePayload(CovaSSETextEventDto.self)?.text, body)
     }
 
+    func testOverlongLineCountedAsSingleMalformedEventAndStreamContinues() {
+        var parser = SSEFrameParser()
+        let long = String(repeating: "x", count: SSEFrameParser.maxLineBytes + 100)
+        let frames = parser.consume(Array("data: \(long)\n\nevent: done\ndata: {}\n\n".utf8))
+        // 超限行 → 该事件作废（计 1 个坏事件）；随后的正常事件照常解析。
+        XCTAssertEqual(parser.malformedEventCount, 1)
+        XCTAssertEqual(frames.count, 1)
+        XCTAssertEqual(frames[0].event, .done)
+        XCTAssertEqual(parser.discardedIncompleteEventCount, 0)
+    }
+
+    func testOverlongEventDataCountedOnceAndNotDispatched() {
+        var parser = SSEFrameParser()
+        let segment = String(repeating: "y", count: 1 << 19)
+        var text = "data: "
+        for _ in 0..<17 { text += segment + "\ndata: " }
+        text += "\n\n"
+        let frames = parser.consume(Array(text.utf8))
+        XCTAssertTrue(frames.isEmpty)
+        XCTAssertEqual(parser.malformedEventCount, 1)
+    }
+
+    func testDiscardedIncompleteEventCountedAtEOF() {
+        var parser = SSEFrameParser()
+        _ = parser.consume(Array("event: text\ndata: {\"text\":\"x\"}".utf8))
+        XCTAssertTrue(parser.finish().isEmpty)
+        XCTAssertEqual(parser.malformedEventCount, 1)
+        XCTAssertEqual(parser.discardedIncompleteEventCount, 1)
+    }
+
     func testMultipleEventsInOneChunk() {
         let (frames, _) = parse("event: text\ndata: {\"text\":\"1\"}\n\nevent: text\ndata: {\"text\":\"2\"}\n\n")
         XCTAssertEqual(frames.count, 2)

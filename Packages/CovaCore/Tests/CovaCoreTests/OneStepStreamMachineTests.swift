@@ -63,6 +63,35 @@ final class OneStepStreamMachineTests: XCTestCase {
         XCTAssertEqual(machine.degradedBy, .eofBeforeDone)
     }
 
+    func testEOFResidualMalformedCountsTowardMalformedTrigger() {
+        var machine = makeMachine()
+        _ = machine.frameReceived(makeSSEFrame("text", "bad", malformed: true), at: 1)
+        _ = machine.frameReceived(makeSSEFrame("text", "bad", malformed: true), at: 2)
+        let actions = machine.streamEnded(at: 3, residualMalformedEvents: 1)
+        XCTAssertEqual(actions, [.terminateStreaming, .pollNow])
+        XCTAssertEqual(machine.degradedBy, .malformedEvents(count: 3))
+        XCTAssertEqual(machine.malformedEventCount, 3)
+    }
+
+    func testEOFResidualBelowThresholdStillReportsEOF() {
+        var machine = makeMachine()
+        let actions = machine.streamEnded(at: 3, residualMalformedEvents: 1)
+        XCTAssertEqual(actions, [.terminateStreaming, .pollNow])
+        XCTAssertEqual(machine.degradedBy, .eofBeforeDone)
+        XCTAssertEqual(machine.malformedEventCount, 1)
+    }
+
+    func testSSEDeliveredPlanCardRegistersSignatureForPollDedupe() throws {
+        var machine = makeMachine()
+        let card = try cards()[0]
+        let payload = try JSONEncoder().encode(card)
+        let frame = CovaSSEFrame(event: .planCard, payload: payload)
+        XCTAssertEqual(machine.frameReceived(frame, at: 1).count, 1)
+        _ = machine.streamEnded(at: 2)
+        // 首轮轮询返回同一张卡：已被 SSE 登记 → 不重复投递。
+        XCTAssertTrue(machine.pollReceived([card], at: 3).isEmpty)
+    }
+
     func testDoneYieldsFrameAndFinishes() {
         var machine = makeMachine()
         let frame = makeSSEFrame("done", "{}")

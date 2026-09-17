@@ -9,8 +9,17 @@ import XCTest
 actor VirtualClock: CovaClock {
     private var current: TimeInterval = 0
     private var waiters: [UUID: (deadline: TimeInterval, continuation: CheckedContinuation<Void, Error>)] = [:]
+    /// 每次取时前主动让出的调度次数：>0 时放大「跨 await 读-改-写」竞态窗口（确定性复现 M1）。
+    private let yields: Int
 
-    func now() -> TimeInterval { current }
+    init(yields: Int = 0) {
+        self.yields = yields
+    }
+
+    func now() async -> TimeInterval {
+        for _ in 0..<yields { await Task.yield() }
+        return current
+    }
 
     func sleep(seconds: TimeInterval) async throws {
         if seconds <= 0 { return }
@@ -113,6 +122,15 @@ actor FrameCollector {
     func snapshot() -> [CovaSSEFrame] { frames }
 }
 
+/// 消费者完成标志：`for await` 循环真正退出（含未 append 的帧已处理完）后才为 true。
+///
+/// 用于消除「状态位已终态但消费者尚未 append」的测试侧竞态（M4）。
+actor CompletionFlag {
+    private var completed = false
+    func mark() { completed = true }
+    func isCompleted() -> Bool { completed }
+}
+
 /// 有限让步轮询：等待条件成立（不真实等待，仅让出执行权）。
 @discardableResult
 func waitUntil(
@@ -124,6 +142,29 @@ func waitUntil(
         await Task.yield()
     }
     return await condition()
+}
+
+/// 以 1s 步进推进虚拟时间，直到条件成立或达到上限。
+///
+/// 相比一次 `advance(by: N)`，它对「定时器取消/重排之间的注册空窗」不敏感——无论等待者
+/// 何时注册（deadline = 注册时刻 + 间隔），步进推进都能在有限上限内命中，消除测试侧时序竞态。
+func advanceUntil(
+    _ clock: VirtualClock,
+    maxSeconds: Int = 200,
+    _ condition: @Sendable () async -> Bool
+) async {
+    for _ in 0..<maxSeconds {
+        if await condition() { return }
+        await clock.advance(by: 1)
+        await Task.yield()
+    }
+}
+
+/// 结束消费者任务：先取消（解除未结束流上的 `for await` 阻塞）再等待。
+/// 避免回归时测试永久悬挂，让失败以断言形式呈现而非 gate 超时。
+func awaitConsumer(_ consumer: Task<Void, Never>) async {
+    consumer.cancel()
+    _ = await consumer.value
 }
 
 /// 断言条件最终成立（有限让步轮询；避免 `XCTAssert*(await …)` 的 autoclosure 限制）。

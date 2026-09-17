@@ -107,8 +107,12 @@ public struct URLSessionTransport: HTTPTransport {
         return URLSession(configuration: configuration)
     }
 
-    static func makeURLRequest(_ request: HTTPRequest) -> URLRequest {
-        var urlRequest = URLRequest(url: request.url, timeoutInterval: timeout)
+    /// `timeoutInterval` 默认取契约 15s；SSE 长连接传入更长的空闲阈值（见 `URLSessionSSETransport`）。
+    static func makeURLRequest(
+        _ request: HTTPRequest,
+        timeoutInterval: TimeInterval = URLSessionTransport.timeout
+    ) -> URLRequest {
+        var urlRequest = URLRequest(url: request.url, timeoutInterval: timeoutInterval)
         urlRequest.httpMethod = request.method.rawValue
         urlRequest.httpBody = request.body
         for (field, value) in request.headers {
