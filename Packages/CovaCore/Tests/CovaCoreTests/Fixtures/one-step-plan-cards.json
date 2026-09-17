@@ -1,0 +1,66 @@
+{
+  "planCards": [
+    {
+      "contractVersion": "cova.one-step-plan.v1",
+      "planCardId": "plan-test-0001",
+      "sessionId": "session-test-0001",
+      "cardIndex": 0,
+      "revision": 4,
+      "status": "demos_ready",
+      "sourceMessage": { "messageId": "msg-test-0001", "text": "做一首夏日广告配乐" },
+      "type": "vocal",
+      "summary": "夏日广告配乐，明亮流行",
+      "title": {
+        "selected": "Summer Signal",
+        "candidates": ["Summer Signal", "Bright Coast", "Sunlit Avenue"],
+        "page": 1,
+        "pageSize": 10,
+        "total": 50
+      },
+      "style": {
+        "analysisZh": "明亮、上扬的夏日流行，带一点电子质感",
+        "promptEn": "Bright uplifting summer pop with light electronic texture",
+        "revision": 2
+      },
+      "variants": [
+        { "title": "Summer Signal", "direction": "melody-led" },
+        { "title": "Bright Coast", "direction": "structure-led" }
+      ],
+      "lyrics": {
+        "source": "generated",
+        "sourceText": "全文",
+        "sourceHash": "hash-test",
+        "sections": [
+          { "sectionId": "s1", "type": "intro", "label": "Intro", "text": "[Intro]", "order": 0 },
+          { "sectionId": "s2", "type": "chorus", "label": "副歌", "text": "夏日信号", "order": 1 }
+        ],
+        "displayText": "[Intro]\n夏日信号",
+        "generationText": "summer signal",
+        "revision": 3,
+        "operation": "regenerate"
+      },
+      "parameters": {
+        "operation": "create",
+        "availableCoverUploadIds": [],
+        "vocalGender": "f",
+        "weirdness": 0.3,
+        "styleWeight": 0.7,
+        "targetDurationSec": 120,
+        "durationSec": 120,
+        "bpm": 118,
+        "styleTags": ["A07:instrument:钢琴"],
+        "musicianId": ["A07", "A11"],
+        "pronunciationFix": true
+      },
+      "coverEligibility": { "pending": false, "items": [] },
+      "snapshotHash": "snapshot-test",
+      "updatedAt": "2026-09-17T02:00:00.000Z",
+      "credits": 315,
+      "futureUnknownField": "ignored"
+    },
+    {
+      "planCardId": "plan-test-0002",
+      "status": "analyzing"
+    }
+  ]
+}

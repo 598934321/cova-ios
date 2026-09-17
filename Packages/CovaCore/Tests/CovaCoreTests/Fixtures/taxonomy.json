@@ -1,0 +1,40 @@
+{
+  "taxonomy": {
+    "scene": [
+      { "id": "短视频/Vlog", "label": "短视频/Vlog", "aliases": ["短视频", "片头"], "active": true, "source": "taxonomy-v3", "sortOrder": 0, "version": 1 }
+    ],
+    "mood": [
+      { "id": "希望", "label": "希望", "aliases": [], "active": true, "source": "plan", "sortOrder": 0, "version": 3 }
+    ],
+    "genre": [
+      { "id": "R&B", "label": "R&B", "aliases": [], "active": true, "source": "genre-vocab", "sortOrder": 100, "version": 1 }
+    ],
+    "subgenre": [
+      { "id": "Neo Soul", "label": "Neo Soul", "aliases": ["parent:R&B"], "active": true, "source": "genre-vocab-v3", "sortOrder": 0, "version": 1 }
+    ],
+    "style": [
+      { "id": "chinese-style-genre", "label": "中国风", "aliases": ["新中式"], "active": true, "source": "style-split", "sortOrder": 0, "version": 1 }
+    ],
+    "instrument": [
+      { "id": "钢琴", "label": "钢琴", "aliases": [], "active": true, "source": "product-extension", "sortOrder": 0, "version": 1 }
+    ],
+    "attribute": [
+      { "id": "温润律动", "label": "温润律动", "aliases": [], "active": true, "source": "product-extension", "sortOrder": 0, "version": 3 }
+    ],
+    "energy": [
+      { "id": "low-energy", "label": "低", "aliases": ["低能量"], "active": true, "source": "plan", "sortOrder": 0, "version": 1 }
+    ],
+    "tag": [
+      { "id": "character-story", "label": "人物故事", "aliases": [], "active": true, "source": "product-extension", "sortOrder": 0, "version": 1 }
+    ],
+    "vocalType": [
+      { "id": "instrumental", "label": "instrumental", "aliases": ["纯音乐"], "active": true, "source": "plan", "sortOrder": 0, "version": 2 }
+    ],
+    "type": [
+      { "id": "流行", "label": "现代流行", "aliases": ["流行"], "active": true, "source": "taxonomy-v2", "sortOrder": 0, "version": 2 }
+    ],
+    "musicalKey": [
+      { "id": "C", "label": "C", "aliases": [], "active": true, "source": "plan", "sortOrder": 0, "version": 1 }
+    ]
+  }
+}

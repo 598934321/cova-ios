@@ -1,0 +1,21 @@
+{
+  "jobs": [
+    {
+      "id": "job-test-0001",
+      "sessionId": "session-test-0001",
+      "status": "processing",
+      "costCredits": 315,
+      "metadata": "{\"candidates\":[]}",
+      "idempotencyKey": "idem-test-0001"
+    },
+    {
+      "id": "job-test-0002",
+      "sessionId": null,
+      "status": "failed",
+      "costCredits": 0,
+      "metadata": null,
+      "idempotencyKey": null,
+      "errorMessage": "生成服务繁忙，请重试"
+    }
+  ]
+}

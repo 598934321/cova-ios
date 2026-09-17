@@ -12,6 +12,8 @@
 | 5 | APPLE-SIGNIN | Sign in with Apple 端点（若提供任何第三方登录则 Apple 强制；v1.0 仅邮箱登录可豁免，建议预留） | 上架可选 | — |
 | 6 | LIBRARY-DOWNLOAD-RANGE | `GET /api/downloads/:id/file` 支持 Range（断点续传） | M3 | Range 请求返回 206 与正确字节 |
 | 7 | PUSH-DEVICE-TOKEN | 远程推送设备 token 注册端点（生成完成推送） | M3 可选 | v1.0 用本地通知兜底，不阻塞 |
+| 8 | TRACK-DETAIL-VARIANT-FIELDS | `GET /api/tracks/:id` 详情响应的 `track` 缺少列表接口（`GET /api/tracks`）中存在的变体字段族 `variantGroupId / variantRole / variantCount / variants`（2026-09-17 实测：列表有、详情无） | M1（非阻塞，客户端已按可选容忍） | 同一曲目在列表与详情返回一致的变体字段；否则详情页无法展示 A/B 变体 |
+| 9 | PLAYLIST-DETAIL-SAVE-STATE | `GET /api/playlists/:id` 详情响应的 `playlist` 缺少列表接口中存在的用户态字段 `isSaved / writable / disabledReason / saveAction`（2026-09-17 实测：列表有、详情无） | M1（非阻塞，客户端已按可选容忍） | 详情响应带上收藏态，或提供明确的替代收藏态来源 |
 
 ## 已确认可用（无需等待，可并行开发）
 

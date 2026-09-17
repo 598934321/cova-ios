@@ -11,7 +11,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "CovaCore"),
-        .testTarget(name: "CovaCoreTests", dependencies: ["CovaCore"])
+        .testTarget(
+            name: "CovaCoreTests",
+            dependencies: ["CovaCore"],
+            resources: [.copy("Fixtures")]
+        )
     ],
     swiftLanguageModes: [.v6]
 )

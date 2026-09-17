@@ -1,0 +1,196 @@
+import Foundation
+
+/// 计划卡 12 态（逐字对齐后端契约 `OneStepPlanStatus`）。
+///
+/// 封闭枚举：契约外取值会解码失败（`CovaAPIError.decoding`），不静默降级。
+public enum OneStepPlanStatus: String, Codable, CaseIterable, Equatable, Sendable {
+    case analyzing
+    case ready
+    case patching
+    case starting
+    case generating
+    case mediaStaging = "media_staging"
+    case demosReady = "demos_ready"
+    case deliveryPreparing = "delivery_preparing"
+    case rehydrating
+    case manualRecovery = "manual_recovery"
+    case retryableFailure = "retryable_failure"
+    case archived
+}
+
+/// 计划类型（api-contracts 4：`type('vocal'|'instrumental')`）。
+public enum OneStepPlanType: String, Codable, Equatable, Sendable {
+    case vocal
+    case instrumental
+}
+
+/// 计划卡来源消息（归属校验用：`sourceMessage.messageId`）。
+public struct OneStepSourceMessageDto: Codable, Equatable, Sendable {
+    public let messageId: String?
+    public let text: String?
+
+    enum CodingKeys: String, CodingKey {
+        case messageId
+        case text
+    }
+}
+
+/// 曲名选择（api-contracts 4：`title{selected, candidates}`）。
+public struct OneStepTitleDto: Codable, Equatable, Sendable {
+    public let selected: String?
+    public let candidates: [String]?
+    public let page: Int?
+    public let pageSize: Int?
+    public let total: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case selected
+        case candidates
+        case page
+        case pageSize
+        case total
+    }
+}
+
+/// 曲风分析（api-contracts 4：`style{analysisZh, promptEn}`）。
+public struct OneStepStyleDto: Codable, Equatable, Sendable {
+    public let analysisZh: String?
+    public let promptEn: String?
+    public let revision: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case analysisZh
+        case promptEn
+        case revision
+    }
+}
+
+/// 歌词分段（D15：静态展示，无时间轴）。
+public struct OneStepLyricsSectionDto: Codable, Equatable, Sendable {
+    public let sectionId: String?
+    public let type: String?
+    public let label: String?
+    public let text: String?
+    public let order: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case sectionId
+        case type
+        case label
+        case text
+        case order
+    }
+}
+
+/// 歌词文档（api-contracts 4：`lyrics（LyricsDocument 分 section）`）。
+public struct OneStepLyricsDocumentDto: Codable, Equatable, Sendable {
+    public let source: String?
+    public let sourceText: String?
+    public let sourceHash: String?
+    public let sections: [OneStepLyricsSectionDto]?
+    public let displayText: String?
+    public let generationText: String?
+    public let revision: Int?
+    public let operation: String?
+
+    enum CodingKeys: String, CodingKey {
+        case source
+        case sourceText
+        case sourceHash
+        case sections
+        case displayText
+        case generationText
+        case revision
+        case operation
+    }
+}
+
+/// A/B 双版本方向（D1）。
+public struct OneStepPlanVariantDto: Codable, Equatable, Sendable {
+    public let title: String?
+    public let direction: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title
+        case direction
+    }
+}
+
+/// 计划参数（api-contracts 4 点名项 + 真实简单标量）。
+///
+/// `musicianId` 真实为 `String | String[]` 联合类型、`coverEligibility` 结构复杂，
+/// 本轮不建模（由「未知字段忽略」承接），避免臆造联合类型。
+public struct OneStepPlanParametersDto: Codable, Equatable, Sendable {
+    public let operation: String?
+    public let vocalGender: String?
+    public let weirdness: Double?
+    public let styleWeight: Double?
+    public let targetDurationSec: Int?
+    public let durationSec: Int?
+    public let bpm: Int?
+    public let availableCoverUploadIds: [String]?
+    public let styleTags: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case operation
+        case vocalGender
+        case weirdness
+        case styleWeight
+        case targetDurationSec
+        case durationSec
+        case bpm
+        case availableCoverUploadIds
+        case styleTags
+    }
+}
+
+/// 一步模式计划卡（api-contracts 4 / 后端 `cova.one-step-plan.v1` 投影）。
+public struct OneStepPlanCardDto: Codable, Equatable, Sendable {
+    public let planCardId: String
+    public let status: OneStepPlanStatus
+
+    public let contractVersion: String?
+    public let sessionId: String?
+    public let cardIndex: Int?
+    public let revision: Int?
+    public let sourceMessage: OneStepSourceMessageDto?
+    public let type: OneStepPlanType?
+    public let summary: String?
+    public let title: OneStepTitleDto?
+    public let style: OneStepStyleDto?
+    public let variants: [OneStepPlanVariantDto]?
+    public let lyrics: OneStepLyricsDocumentDto?
+    public let parameters: OneStepPlanParametersDto?
+    public let snapshotHash: String?
+    public let updatedAt: String?
+    public let credits: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case planCardId
+        case status
+        case contractVersion
+        case sessionId
+        case cardIndex
+        case revision
+        case sourceMessage
+        case type
+        case summary
+        case title
+        case style
+        case variants
+        case lyrics
+        case parameters
+        case snapshotHash
+        case updatedAt
+        case credits
+    }
+}
+
+/// `GET /api/studio/one-step/plans?sessionId=` 响应封套（真实响应：`{planCards}`）。
+public struct OneStepPlanCardsResponseDto: Codable, Equatable, Sendable {
+    public let planCards: [OneStepPlanCardDto]
+
+    enum CodingKeys: String, CodingKey {
+        case planCards
+    }
+}

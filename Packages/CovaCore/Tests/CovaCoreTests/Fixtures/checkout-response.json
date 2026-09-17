@@ -1,0 +1,31 @@
+{
+  "batchId": "batch-test-0001",
+  "chargedCredits": 10,
+  "skippedOwned": ["library-test-0002"],
+  "balance": 110,
+  "downloads": [
+    {
+      "trackId": "library-test-0001",
+      "downloadId": "dl-test-0001",
+      "url": "/api/downloads/dl-test-0001/file",
+      "filename": "Golden-Beacon.mp3",
+      "owned": false
+    },
+    {
+      "trackId": "library-test-0002",
+      "downloadId": "dl-test-0002",
+      "url": "/api/downloads/dl-test-0002/file",
+      "filename": "Two-Versions.mp3",
+      "owned": true
+    }
+  ],
+  "items": [
+    {
+      "trackId": "library-test-0001",
+      "downloadId": "dl-test-0001",
+      "url": "/api/downloads/dl-test-0001/file",
+      "filename": "Golden-Beacon.mp3",
+      "owned": false
+    }
+  ]
+}

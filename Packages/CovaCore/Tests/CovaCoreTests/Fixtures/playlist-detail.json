@@ -1,0 +1,48 @@
+{
+  "playlist": {
+    "id": "PL-test-01",
+    "title": "Daily Bright",
+    "titleCn": "明亮氛围感歌单",
+    "description": "Bright instrumental picks",
+    "descriptionCn": "明亮情绪纯音乐每日精选。",
+    "cover": "https://cdn.invalid/covers/pl01.jpeg",
+    "coverMode": "fallback",
+    "coverFit": "cover",
+    "coverFocalX": 50,
+    "coverFocalY": 50,
+    "curator": "Cova 编辑部",
+    "createdAt": "2026-09-17T01:08:00.000Z",
+    "coverUrl": "https://cdn.invalid/covers/pl01.jpeg",
+    "coverMedia": {
+      "imageUrl": "https://cdn.invalid/covers/pl01.jpeg",
+      "fit": "cover",
+      "focalX": 50,
+      "focalY": 50
+    },
+    "trackCount": 1,
+    "totalDuration": 209.592
+  },
+  "tracks": [
+    {
+      "id": "library-test-0001",
+      "title": "Golden Beacon",
+      "cover": "https://cdn.invalid/covers/0001.jpeg",
+      "duration": 209.592,
+      "bpm": 76,
+      "audioUrl": "https://cdn.invalid/audio/0001.mp3",
+      "waveformPeaks": [0.17],
+      "previewStart": 167.02,
+      "previewEnd": 186.67,
+      "highlightStart": 167.02,
+      "highlightEnd": 186.67,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "energy": "中",
+      "artist": { "id": "A07", "name": "Elise Moreau" },
+      "scenes": [],
+      "moods": [],
+      "tags": [],
+      "displayLabels": []
+    }
+  ]
+}

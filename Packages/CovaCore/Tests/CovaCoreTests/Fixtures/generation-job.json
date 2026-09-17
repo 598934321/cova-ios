@@ -1,0 +1,21 @@
+{
+  "job": {
+    "id": "job-test-0001",
+    "userId": "user-0001",
+    "sessionId": "session-test-0001",
+    "provider": "suno",
+    "status": "succeeded",
+    "prompt": "bright summer pop",
+    "lyrics": "夏日信号",
+    "costCredits": 315,
+    "costProviderCredits": 0,
+    "metadata": "{\"ok\":true,\"candidates\":[{\"id\":\"cand-1\",\"title\":\"Summer Signal\",\"audioUrl\":\"https://cdn.invalid/audio/c1.mp3\",\"audioDownloadUrl\":\"https://cdn.invalid/audio/c1-download.mp3\",\"audioDownloadStatus\":\"ready\",\"coverUrl\":\"https://cdn.invalid/covers/c1.jpeg\",\"duration\":118.4,\"mediaReferenceId\":\"ref-1\",\"favorite\":false},{\"id\":\"cand-2\",\"title\":\"Bright Coast\",\"audioUrl\":\"https://cdn.invalid/audio/c2.mp3\",\"audioDownloadStatus\":\"pending\",\"duration\":120.0,\"favorite\":true}]}",
+    "idempotencyKey": "idem-test-0001",
+    "errorMessage": null,
+    "createdAt": "2026-09-17T02:10:00.000Z",
+    "updatedAt": "2026-09-17T02:12:00.000Z",
+    "completedAt": "2026-09-17T02:12:00.000Z",
+    "providerJobId": "provider-test",
+    "resultAudioUrl": "https://cdn.invalid/audio/result.mp3"
+  }
+}

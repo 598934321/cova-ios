@@ -1,4 +1,4 @@
-import CovaCore
+@testable import CovaCore
 import XCTest
 
 final class CovaEnvironmentTests: XCTestCase {
@@ -29,9 +29,106 @@ final class CovaEnvironmentTests: XCTestCase {
 
     func testIsProductionOriginRejectsNonDefaultPort() {
         XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "https://covalink.cn:8443")!))
+        XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "https://covalink.cn:3110")!))
     }
 
     func testIsProductionOriginRejectsHTTPSWithoutHost() {
         XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "https:")!))
+    }
+
+    func testIsProductionOriginAcceptsSubpathsAndUppercaseHost() {
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(URL(string: "https://covalink.cn/api/tracks")!))
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(URL(string: "https://COVALINK.CN:443/api/tracks")!))
+    }
+
+    func testIsProductionOriginRejectsNonHTTPSchemes() {
+        XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "ftp://covalink.cn")!))
+        XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "http://covalink.cn:443")!))
+    }
+
+    func testIsProductionOriginRejectsHostLookalikes() {
+        XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "https://covalink.cn.evil.invalid")!))
+        XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "https://evil.invalid/?next=covalink.cn")!))
+        XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "https://example.invalid")!))
+    }
+
+    func testIsProductionOriginRejectsPrivateAndLoopbackHosts() {
+        let rejected = [
+            "https://localhost",
+            "https://sub.localhost",
+            "https://device.local",
+            "https://service.internal",
+            "https://nas.lan",
+            "https://router.home",
+            "https://10.0.0.5",
+            "https://127.0.0.1",
+            "https://0.0.0.0",
+            "https://169.254.1.1",
+            "https://172.16.0.1",
+            "https://172.31.255.254",
+            "https://192.168.1.10",
+            "https://[::1]",
+            "https://[fe80::1]",
+            "https://[fc00::1]",
+            "https://[fd12:3456::1]"
+        ]
+        for raw in rejected {
+            XCTAssertFalse(
+                CovaEnvironment.isProductionOrigin(URL(string: raw)!),
+                "应拒绝私网/环回出口：\(raw)"
+            )
+        }
+    }
+
+    func testIsNonPublicHostClassifiesHosts() {
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("localhost"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("api.localhost"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("printer.local"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("vault.internal"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("box.lan"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("hub.home"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("10.1.2.3"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("127.0.0.1"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("0.0.0.0"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("169.254.9.9"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("172.16.0.1"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("172.31.9.9"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("192.168.0.1"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("::1"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("fe80::abcd"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("fc00::1"))
+        XCTAssertTrue(CovaEnvironment.isNonPublicHost("fd00::1"))
+
+        XCTAssertFalse(CovaEnvironment.isNonPublicHost("covalink.cn"))
+        XCTAssertFalse(CovaEnvironment.isNonPublicHost("example.invalid"))
+        XCTAssertFalse(CovaEnvironment.isNonPublicHost("8.8.8.8"))
+        XCTAssertFalse(CovaEnvironment.isNonPublicHost("172.32.0.1"))
+        XCTAssertFalse(CovaEnvironment.isNonPublicHost("1.2.3"))
+        XCTAssertFalse(CovaEnvironment.isNonPublicHost("a.b.c.d"))
+        XCTAssertFalse(CovaEnvironment.isNonPublicHost("999.1.1.1"))
+        XCTAssertFalse(CovaEnvironment.isNonPublicHost("2001:db8::1"))
+    }
+
+    func testMakeAPIURLBuildsProductionURLs() {
+        let plain = CovaEnvironment.makeAPIURL(path: "/api/tracks")
+        XCTAssertEqual(plain?.absoluteString, "https://covalink.cn/api/tracks")
+
+        let query = CovaEnvironment.makeAPIURL(
+            path: "/api/tracks",
+            queryItems: [URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "search", value: "夏日")]
+        )
+        XCTAssertEqual(query?.host, "covalink.cn")
+        XCTAssertEqual(query?.path, "/api/tracks")
+        XCTAssertEqual(query?.query?.contains("page=1"), true)
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(query!))
+    }
+
+    func testMakeAPIURLRejectsHostOverrides() {
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "api/tracks"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "https://evil.invalid/tracks"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/a://b"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/api/tracks?page=2"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/api/tracks#frag"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: ""))
     }
 }

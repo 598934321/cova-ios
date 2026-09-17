@@ -1,0 +1,47 @@
+{
+  "playlists": [
+    {
+      "id": "PL-test-01",
+      "title": "Daily Bright",
+      "titleCn": "明亮氛围感歌单",
+      "description": "Bright instrumental picks",
+      "descriptionCn": "明亮情绪纯音乐每日精选。",
+      "cover": "https://cdn.invalid/covers/pl01.jpeg",
+      "coverDefault": null,
+      "coverMode": "fallback",
+      "coverAlt": null,
+      "coverFit": "cover",
+      "coverFocalX": 50,
+      "coverFocalY": 50,
+      "coverUpdatedAt": null,
+      "scene": null,
+      "curator": "Cova 编辑部",
+      "createdAt": "2026-09-17T01:08:00.000Z",
+      "coverUrl": "https://cdn.invalid/covers/pl01.jpeg",
+      "coverMedia": {
+        "imageUrl": "https://cdn.invalid/covers/pl01.jpeg",
+        "fallbackUrl": "https://cdn.invalid/covers/pl01.jpeg",
+        "alt": "明亮氛围感歌单",
+        "fit": "cover",
+        "focalX": 50,
+        "focalY": 50,
+        "mode": "fallback",
+        "updatedAt": null
+      },
+      "isSaved": false,
+      "writable": false,
+      "disabledReason": "官方歌单使用收藏",
+      "saveAction": {
+        "kind": "bookmark",
+        "icon": "bookmark",
+        "saved": false,
+        "endpoint": "/api/saved-playlists",
+        "addMethod": "POST",
+        "removeMethod": "DELETE"
+      },
+      "trackCount": 10,
+      "totalDuration": 1480.56,
+      "futureUnknownField": 1
+    }
+  ]
+}
