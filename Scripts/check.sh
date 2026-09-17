@@ -23,7 +23,9 @@
 # 用法：./Scripts/check.sh
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 物理路径（pwd -P）：dump-package / .SwiftFileList 由工具链输出真实路径，
+# 若本仓经符号链接访问（如 /tmp -> /private/tmp），非物理 ROOT 会导致前缀比对误判。
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 
 SCHEME="Cova"
