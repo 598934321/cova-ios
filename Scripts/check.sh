@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # 本地门禁（G0–G4 全程复用，fail-closed）：
-#   预热模拟器 → 生成工程 → 结构与零第三方依赖 → 分层依赖边界（含各包 Tests/）
-#   → 配置钉死 + Debug 构建（iOS 模拟器）+ 产物 Info.plist 保真
+#   预热模拟器 → 生成工程 → 结构与零第三方依赖（含本地制品/框架）
+#   → 分层依赖边界（含各包 Tests/）→ 有效构建设置钉死 + Debug 构建 + 产物保真
 #   → 应用工程测试（xcresult 计数 + xccov 采集有效性）
 #   → 核心层包测试（iOS 模拟器，xcresult 计数）
-#   → 核心层平台中立性静态断言 → 核心层行覆盖率 ≥80%（SwiftPM 插桩 + llvm-cov）
+#   → 核心层平台中立性不变量断言（禁止条件编译类别）
+#   → 核心层行覆盖率 ≥80%（SwiftPM 插桩 + llvm-cov）
 # 任一步失败均非零退出；日志落在 .build/check/ 下（.build/ 不入 git）。
 # 用法：./Scripts/check.sh
 set -euo pipefail
@@ -22,23 +23,29 @@ PACKAGE_DERIVED_DATA="$LOG_DIR/DerivedData-CovaCore"
 APP_BUNDLE="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/Cova.app"
 RESULT_BUNDLE="$LOG_DIR/Cova.xcresult"
 CORE_RESULT_BUNDLE="$LOG_DIR/CovaCoreTests.xcresult"
+SCANNER="$ROOT/Scripts/swift-scan.awk"
+BASELINE_FILE="$ROOT/Scripts/test-count-baseline.env"
 mkdir -p "$LOG_DIR"
 
 PACKAGES="CovaCore CovaPlayer CovaUI CovaFeature"
 CORE_SOURCES="Packages/CovaCore/Sources/"
-MIN_TESTS_APP=2
-MIN_TESTS_CORE=4
+CORE_PACKAGE_SWIFT="Packages/CovaCore/Package.swift"
 
 # 覆盖率阈值：常量基准，环境变量只允许抬高（防止把门禁调到 0 绕过）
 COVERAGE_FLOOR=80
 CORE_COVERAGE_MIN="$COVERAGE_FLOOR"
 
-# 钉死的关键配置（D13 / AGENTS 版本规则）
+# 钉死的关键配置（D1 / D13 / AGENTS 版本规则）
 REQUIRED_APP_BUNDLE_ID="cn.covalink.ios"
 REQUIRED_TEST_BUNDLE_ID="cn.covalink.ios.tests"
 REQUIRED_DEPLOYMENT_TARGET="26.0"
-# 覆盖率在 macOS 宿主侧测量，故 CovaCore 必须平台中立（否则测量口径与 iOS 编译面不一致）
+REQUIRED_SWIFT_VERSION="6.0"
+REQUIRED_EFFECTIVE_SWIFT="6"
+REQUIRED_STRICT_CONCURRENCY="complete"
+# CovaCore 是纯逻辑层（D3/D9），覆盖率在宿主侧测量 → 模块面必须完全平台中立
 IOS_ONLY_MODULES="UIKit SwiftUI AVFoundation AVKit ARKit CoreMotion HealthKit WidgetKit Photos PhotosUI BackgroundTasks CallKit WatchKit SpriteKit MetalKit MapKit"
+# CovaCore 平台声明白名单（.macOS 仅用于宿主侧覆盖率测量，不得用于产品分支）
+REQUIRED_CORE_PLATFORMS=".iOS(.v26),.macOS(.v14)"
 
 fail() {
   echo "❌ $1"
@@ -56,6 +63,15 @@ if [ -n "${COVA_CORE_COVERAGE_MIN:-}" ]; then
   echo "提示：覆盖率阈值被抬高到 ${CORE_COVERAGE_MIN}%（基准 ${COVERAGE_FLOOR}%）"
 fi
 
+# 测试数量下限来自入库基线文件（删测试必须显式改它，随 commit 进入审查）
+[ -f "$BASELINE_FILE" ] || fail "缺少测试数量基线文件 ${BASELINE_FILE}"
+# shellcheck disable=SC1090
+. "$BASELINE_FILE"
+case "${APP_MIN:-}" in ''|*[!0-9]*) fail "基线 APP_MIN 非法：'${APP_MIN:-}'" ;; esac
+case "${CORE_MIN:-}" in ''|*[!0-9]*) fail "基线 CORE_MIN 非法：'${CORE_MIN:-}'" ;; esac
+[ "$APP_MIN" -ge 1 ] || fail "基线 APP_MIN=${APP_MIN} 必须 >= 1（零测试不允许）"
+[ "$CORE_MIN" -ge 1 ] || fail "基线 CORE_MIN=${CORE_MIN} 必须 >= 1（零测试不允许）"
+
 allowed_deps() {
   case "$1" in
     CovaCore)    echo "" ;;
@@ -65,15 +81,24 @@ allowed_deps() {
   esac
 }
 
-# 源码内测试函数计数（先剥行注释与单行块注释，避免注释虚增/虚减）
+# 统一扫描入口（剥离注释与字符串后按 mode 输出；见 Scripts/swift-scan.awk）
+scan_swift() {
+  local mode="$1"; shift
+  find "$@" -name '*.swift' -exec awk -f "$SCANNER" -v mode="$mode" {} + 2>/dev/null
+}
+
+imported_modules() {
+  [ -d "$1" ] || return 0
+  scan_swift imports "$1" | sort -u
+}
+
 declared_test_count() {
   [ -d "$1" ] || { echo 0; return 0; }
-  { find "$1" -name '*.swift' -exec awk '
-      { line = $0
-        sub(/\/\/.*/, "", line)
-        gsub(/\/\*[^*]*\*\//, " ", line)
-        print line }' {} + 2>/dev/null || true; } \
-    | grep -oE 'func[[:space:]]+test[A-Za-z0-9_]*' | wc -l | tr -d ' '
+  scan_swift declared "$1" | awk '{ s += $1 } END { print s + 0 }'
+}
+
+conditional_compilation_hits() {
+  scan_swift conditional "$@"
 }
 
 # 可信计数源：xcresult 测试摘要（不受测试输出文本影响）
@@ -89,39 +114,14 @@ xcresult_test_count() {
   echo $(( p + f + s ))
 }
 
-# SwiftPM 覆盖率运行未被测试执行时，测试源码的覆盖命中数为 0（结构化产物，不受测试输出文本影响）
-
 assert_tests() {
   local label="$1" executed="$2" srcdir="$3" min="$4" declared
   declared="$(declared_test_count "$srcdir")"
   case "$executed" in ''|*[!0-9]*) fail "${label}：无法取得可信执行用例数（值='${executed}'）" ;; esac
-  echo "    ${label}：executed(可信源)=${executed}，declared(源码，已剥注释)=${declared}，下限=${min}"
-  [ "$executed" -ge "$min" ] || fail "${label}：执行用例数 ${executed} < 下限 ${min}（零测试/测试被清空一律失败）"
-  [ "$declared" -ge "$min" ] || fail "${label}：源码内测试函数数 ${declared} < 下限 ${min}（不得删除/弱化既有测试）"
+  echo "    ${label}：executed(可信源)=${executed}，declared(源码，已剥注释/字符串)=${declared}，基线=${min}"
+  [ "$executed" -ge "$min" ] || fail "${label}：执行用例数 ${executed} < 基线 ${min}（不得删除/弱化既有测试）"
+  [ "$declared" -ge "$min" ] || fail "${label}：源码内测试函数数 ${declared} < 基线 ${min}（不得删除/弱化既有测试）"
   [ "$executed" -ge "$declared" ] || fail "${label}：执行用例数 ${executed} < 声明测试函数数 ${declared}（存在未执行的测试）"
-}
-
-# 提取目录下所有 Swift 源码 import 的模块名。
-# 关键：先按行剥注释，再把整个文件压平成一行后分词 —— 覆盖 @testable import、种类前缀、
-# 以及 `import\nCovaPlayer` 这类换行拆分形态。
-imported_modules() {
-  [ -d "$1" ] || return 0
-  find "$1" -name '*.swift' -exec awk '
-    { line = $0
-      sub(/\/\/.*/, "", line)
-      gsub(/\/\*[^*]*\*\//, " ", line)
-      buf = buf " " line }
-    END {
-      gsub(/[^A-Za-z0-9_]/, " ", buf)
-      n = split(buf, t, " ")
-      for (i = 1; i <= n; i++) {
-        if (t[i] == "import" || t[i] == "canImport") {
-          j = i + 1
-          if (t[j] ~ /^(typealias|struct|class|enum|protocol|func|var|let)$/) j++
-          if (t[j] != "") print t[j]
-        }
-      }
-    }' {} + 2>/dev/null | sort -u
 }
 
 check_imports() {
@@ -153,6 +153,7 @@ echo "==> 2/8 校验工程结构与零第三方依赖"
 test -f project.yml || fail "缺少 project.yml"
 test -f Config/Info.plist || fail "缺少 Config/Info.plist"
 test -f Cova/CovaApp.swift || fail "缺少 Cova/CovaApp.swift"
+test -f "$SCANNER" || fail "缺少源码扫描器 $(basename "$SCANNER")"
 test -d design/assets/CovaAssets.xcassets/AppIcon.appiconset || fail "缺少官方 AppIcon 资产"
 test -f design/assets/CovaAssets.xcassets/AppIcon.appiconset/Contents.json || fail "AppIcon 资产缺少 Contents.json"
 for pkg in $PACKAGES; do
@@ -163,18 +164,23 @@ for tdir in CovaTests Packages/CovaCore/Tests; do
   [ "$(declared_test_count "$tdir")" -ge 1 ] \
     || fail "${tdir} 下没有任何测试函数（测试文件缺失或已清空）"
 done
+[ "$(declared_test_count CovaTests)" -ge "$APP_MIN" ] \
+  || fail "CovaTests 源码测试函数数 $(declared_test_count CovaTests) < 基线 ${APP_MIN}（删/弱化测试必须显式改基线并接受审查）"
+[ "$(declared_test_count Packages/CovaCore/Tests)" -ge "$CORE_MIN" ] \
+  || fail "CovaCore/Tests 源码测试函数数 $(declared_test_count Packages/CovaCore/Tests) < 基线 ${CORE_MIN}（删/弱化测试必须显式改基线并接受审查）"
 
-# 零第三方依赖：剥注释 + 跨行压平后，命中 url: 或 http(s):// 一律失败。
-# 覆盖 .package(url:…)、.package(name:url:…)、.binaryTarget(url:…)、project.yml packages url:
+# 零第三方依赖：剥注释 + 跨行压平后，命中任一形态即失败。
+# 覆盖 .package(url:…)、.package(name:url:…)、.binaryTarget(url:…/path:…)、project.yml 的
+# url: / frameworks: / - framework:（本地二进制制品同样不允许，白名单为空）。
 for spec in $(find Packages -name Package.swift) project.yml; do
   flat="$(sed -E 's#//.*##' "$spec" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
   case "$flat" in
-    *"url:"*|*"url :"*|*"http://"*|*"https://"*)
-      fail "$spec 含远程依赖/远程制品声明（url: 或 http(s)://），违反零第三方依赖白名单（AGENTS.md 硬边界 4）"
+    *"url:"*|*"url :"*|*"http://"*|*"https://"*|*".binaryTarget("*|*"frameworks:"*|*"framework:"*)
+      fail "$spec 含远程依赖/远程制品/二进制制品/框架声明，违反零第三方依赖白名单（AGENTS.md 硬边界 4）"
       ;;
   esac
 done
-echo "    结构校验通过（4 个本地包，无外部依赖/远程制品）"
+echo "    结构校验通过（4 个本地包，无外部依赖/远程制品/框架）"
 
 echo "==> 3/8 校验分层依赖边界"
 echo "    说明：Xcode 集成本地包时不拒绝未声明跨模块 import，故此处为唯一静态防线"
@@ -195,21 +201,67 @@ for pkg in $PACKAGES; do
 done
 check_imports "Cova(应用)" "Cova" "$PACKAGES" || violations=1
 check_imports "CovaTests(测试)" "CovaTests" "$PACKAGES" || violations=1
-[ "$violations" -eq 0 ] || fail "分层依赖边界校验未通过"
-echo "    分层边界校验通过（含各包 Tests/）"
 
-echo "==> 4/8 配置钉死 + Debug 构建（iOS Simulator）+ 产物保真"
-grep -qE "^[[:space:]]*PRODUCT_BUNDLE_IDENTIFIER:[[:space:]]*cn\\.covalink\\.ios[[:space:]]*$" project.yml \
-  || fail "project.yml 的 App bundle id 不是钉死值 ${REQUIRED_APP_BUNDLE_ID}（D13）"
-grep -qE "^[[:space:]]*PRODUCT_BUNDLE_IDENTIFIER:[[:space:]]*cn\\.covalink\\.ios\\.tests[[:space:]]*$" project.yml \
-  || fail "project.yml 的测试 bundle id 不是钉死值 ${REQUIRED_TEST_BUNDLE_ID}"
-grep -qE "^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET:[[:space:]]*\"?${REQUIRED_DEPLOYMENT_TARGET}\"?[[:space:]]*$" project.yml \
-  || fail "project.yml 未声明 iOS ${REQUIRED_DEPLOYMENT_TARGET} 部署目标（D1）"
-flat_proj="$(tr '\n' ' ' < project.yml)"
-case "$flat_proj" in *"SWIFT_STRICT_CONCURRENCY: complete"*) ;; *) fail "project.yml 未开启 Swift 严格并发检查" ;; esac
-EXPECT_VERSION="$(grep -E '^[[:space:]]+CFBundleShortVersionString:' project.yml | head -1 | sed -E 's/.*: *"?([^"]*)"?/\1/')"
-EXPECT_BUILD="$(grep -E '^[[:space:]]+CFBundleVersion:' project.yml | head -1 | sed -E 's/.*: *"?([^"]*)"?/\1/')"
-[ -n "$EXPECT_VERSION" ] && [ -n "$EXPECT_BUILD" ] || fail "无法从 project.yml 解析版本号"
+echo "    平台中立性依据：D3/D9 —— CovaCore 是纯逻辑层（Codable + 沙盒文件），不需要任何平台条件编译；"
+echo "          覆盖率在宿主侧测得，故整个「条件编译」类别被禁止，而非枚举具体平台写法。"
+neutral_violations=0
+CC_HITS="$(conditional_compilation_hits Packages/CovaCore/Sources Packages/CovaCore/Tests || true)"
+if [ -n "$CC_HITS" ]; then
+  echo "$CC_HITS" | head -20 | sed 's/^/    /'
+  echo "    ↑ CovaCore 出现条件编译指令（#if / #elseif / #else / #endif）：违反平台中立性不变量"
+  neutral_violations=1
+fi
+CORE_IMPORTS="$(imported_modules Packages/CovaCore/Sources)"
+for m in $IOS_ONLY_MODULES; do
+  if echo "$CORE_IMPORTS" | grep -qx "$m"; then
+    echo "    CovaCore 引用了 iOS-only 模块：${m}"
+    neutral_violations=1
+  fi
+done
+FLAT_PKG="$(sed -E 's#//.*##' "$CORE_PACKAGE_SWIFT" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+case "$FLAT_PKG" in
+  *".when(platforms:"*) echo "    CovaCore/Package.swift 含平台条件构建设置 .when(platforms:)"; neutral_violations=1 ;;
+esac
+case "$FLAT_PKG" in
+  *".define("*|*".unsafeFlags("*) echo "    CovaCore/Package.swift 含 .define()/.unsafeFlags()（可绕过平台中立性）"; neutral_violations=1 ;;
+esac
+CORE_PLATFORMS="$(grep -E '^[[:space:]]*platforms:' "$CORE_PACKAGE_SWIFT" | head -1 \
+  | sed -E 's/.*\[(.*)\].*/\1/' | tr -d ' ')"
+[ "$CORE_PLATFORMS" = "$REQUIRED_CORE_PLATFORMS" ] \
+  || { echo "    CovaCore 平台声明为 [${CORE_PLATFORMS}]，必须恰为 [${REQUIRED_CORE_PLATFORMS}]（.macOS 仅供宿主侧覆盖率测量）"; neutral_violations=1; }
+
+[ "$violations" -eq 0 ] || fail "分层依赖边界校验未通过"
+[ "$neutral_violations" -eq 0 ] || fail "CovaCore 平台中立性不变量被破坏（拒绝出覆盖率报告）"
+echo "    分层边界校验通过（含各包 Tests/）"
+echo "    平台中立性不变量成立：无条件编译、无 iOS-only import、CovaCore 平台声明受控"
+
+echo "==> 4/8 有效构建设置钉死（xcodebuild -showBuildSettings）+ Debug 构建 + 产物保真"
+APPSET="$LOG_DIR/build-settings-app.log"
+TESTSET="$LOG_DIR/build-settings-tests.log"
+xcodebuild -project "$PROJECT" -target Cova -configuration Debug -showBuildSettings \
+  > "$APPSET" 2>&1 || fail "无法读取 Cova target 的有效构建设置"
+xcodebuild -project "$PROJECT" -target CovaTests -configuration Debug -showBuildSettings \
+  > "$TESTSET" 2>&1 || fail "无法读取 CovaTests target 的有效构建设置"
+eff() {
+  grep -E "^[[:space:]]+$2 = " "$1" | head -1 | sed -E "s/^[[:space:]]+$2 = //"
+}
+assert_eff() { # file key expected label
+  local got
+  got="$(eff "$1" "$2")"
+  [ "$got" = "$3" ] || fail "$4：有效构建设置 $2='${got}'，应为 '$3'（不得被 target 级覆盖）"
+  echo "    $4：$2=${got}"
+}
+assert_eff "$APPSET" EFFECTIVE_SWIFT_VERSION "$REQUIRED_EFFECTIVE_SWIFT" "Cova Swift 语言版本"
+assert_eff "$APPSET" SWIFT_VERSION "$REQUIRED_SWIFT_VERSION" "Cova SWIFT_VERSION"
+assert_eff "$APPSET" SWIFT_STRICT_CONCURRENCY "$REQUIRED_STRICT_CONCURRENCY" "Cova 严格并发"
+assert_eff "$APPSET" IPHONEOS_DEPLOYMENT_TARGET "$REQUIRED_DEPLOYMENT_TARGET" "Cova 部署目标（D1）"
+assert_eff "$APPSET" PRODUCT_BUNDLE_IDENTIFIER "$REQUIRED_APP_BUNDLE_ID" "Cova bundle id（D13）"
+assert_eff "$TESTSET" EFFECTIVE_SWIFT_VERSION "$REQUIRED_EFFECTIVE_SWIFT" "CovaTests Swift 语言版本"
+assert_eff "$TESTSET" SWIFT_STRICT_CONCURRENCY "$REQUIRED_STRICT_CONCURRENCY" "CovaTests 严格并发"
+assert_eff "$TESTSET" PRODUCT_BUNDLE_IDENTIFIER "$REQUIRED_TEST_BUNDLE_ID" "CovaTests bundle id"
+EXPECT_VERSION="$(eff "$APPSET" CFBundleShortVersionString)"
+EXPECT_BUILD="$(eff "$APPSET" CFBundleVersion)"
+[ -n "$EXPECT_VERSION" ] && [ -n "$EXPECT_BUILD" ] || fail "无法从有效构建设置取版本号"
 echo "$EXPECT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || fail "CFBundleShortVersionString='${EXPECT_VERSION}' 不符合 X.Y.Z（AGENTS 版本规则）"
 echo "$EXPECT_BUILD" | grep -qE '^[1-9][0-9]*$' \
@@ -228,8 +280,8 @@ ACT_BUILD="$(plist CFBundleVersion)"
 ACT_BUNDLE_ID="$(plist CFBundleIdentifier)"
 ACT_MIN_OS="$(plist MinimumOSVersion)"
 ACT_BG_MODE="$(plist UIBackgroundModes:0)"
-[ "$ACT_VERSION" = "$EXPECT_VERSION" ] || fail "产物 CFBundleShortVersionString=${ACT_VERSION}，project.yml=${EXPECT_VERSION}"
-[ "$ACT_BUILD" = "$EXPECT_BUILD" ] || fail "产物 CFBundleVersion=${ACT_BUILD}，project.yml=${EXPECT_BUILD}"
+[ "$ACT_VERSION" = "$EXPECT_VERSION" ] || fail "产物 CFBundleShortVersionString=${ACT_VERSION}，有效设置=${EXPECT_VERSION}"
+[ "$ACT_BUILD" = "$EXPECT_BUILD" ] || fail "产物 CFBundleVersion=${ACT_BUILD}，有效设置=${EXPECT_BUILD}"
 [ "$ACT_BUNDLE_ID" = "$REQUIRED_APP_BUNDLE_ID" ] \
   || fail "产物 bundle id=${ACT_BUNDLE_ID}，钉死值=${REQUIRED_APP_BUNDLE_ID}（D13）"
 [ "$ACT_MIN_OS" = "$REQUIRED_DEPLOYMENT_TARGET" ] || fail "产物 MinimumOSVersion=${ACT_MIN_OS}，应为 ${REQUIRED_DEPLOYMENT_TARGET}（D1）"
@@ -247,7 +299,7 @@ if ! xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
 fi
 grep -E "^\*\* TEST (SUCCEEDED|FAILED) \*\*" "$LOG_DIR/test-app.log" | tail -1
 APP_EXEC="$(xcresult_test_count "$RESULT_BUNDLE" || true)"
-assert_tests "CovaTests" "$APP_EXEC" "CovaTests" "$MIN_TESTS_APP"
+assert_tests "CovaTests" "$APP_EXEC" "CovaTests" "$APP_MIN"
 xcrun xccov view --report "$RESULT_BUNDLE" > "$LOG_DIR/xccov.txt" 2>/dev/null \
   || fail "无法读取覆盖率报告（gatherCoverageData 未生效？）"
 MAX_EXEC_LINES="$(grep -oE '\([0-9]+/[0-9]+\)' "$LOG_DIR/xccov.txt" | tr -d '()' \
@@ -268,28 +320,11 @@ if ! (cd Packages/CovaCore && xcodebuild -scheme CovaCore -configuration Debug \
 fi
 grep -E "^\*\* TEST (SUCCEEDED|FAILED) \*\*" "$LOG_DIR/test-core-ios.log" | tail -1
 CORE_IOS_EXEC="$(xcresult_test_count "$CORE_RESULT_BUNDLE" || true)"
-assert_tests "CovaCoreTests(iOS)" "$CORE_IOS_EXEC" "Packages/CovaCore/Tests" "$MIN_TESTS_CORE"
+assert_tests "CovaCoreTests(iOS)" "$CORE_IOS_EXEC" "Packages/CovaCore/Tests" "$CORE_MIN"
 
-echo "==> 7/8 核心层平台中立性静态断言（覆盖率在宿主侧测量，须与 iOS 编译面一致）"
-neutral_violations=0
-CORE_IMPORTS="$(imported_modules Packages/CovaCore/Sources)"
-for m in $IOS_ONLY_MODULES; do
-  if echo "$CORE_IMPORTS" | grep -qx "$m"; then
-    echo "    CovaCore 引用了 iOS-only 模块：${m} —— macOS 侧覆盖率会掩盖该代码"
-    neutral_violations=1
-  fi
-done
-if grep -rInE 'os\(iOS\)|canImport\((UIKit|SwiftUI|AVFoundation|AVKit|ARKit|CoreMotion|HealthKit|WidgetKit|Photos|PhotosUI|BackgroundTasks)\)|targetEnvironment\(' \
-  Packages/CovaCore/Sources; then
-  echo "    上方条件编译使 CovaCore 代码在 macOS 测量中被排除"
-  neutral_violations=1
-fi
-[ "$neutral_violations" -eq 0 ] || fail "CovaCore 含 iOS-only 代码，宿主侧覆盖率口径无效（拒绝出报告）"
-echo "    平台中立性校验通过（无 iOS-only import / 条件编译）"
-
-echo "==> 8/8 核心层行覆盖率（SwiftPM 插桩 + llvm-cov，阈值 ${CORE_COVERAGE_MIN}%）"
+echo "==> 7/8 核心层行覆盖率（SwiftPM 插桩 + llvm-cov，阈值 ${CORE_COVERAGE_MIN}%）"
 echo "    说明：Xcode 不为本地 SwiftPM 包目标产出 xccov 覆盖率，故由 SwiftPM 插桩测量；"
-echo "          被测源码与 iOS 运行同一份，平台中立性已由 7/8 静态强制。"
+echo "          被测源码与 iOS 运行同一份，平台中立性已由 3/8 不变量强制。"
 if [ -d Packages/CovaCore/.build ]; then
   find Packages/CovaCore/.build -type d -name codecov -exec rm -rf {} + >/dev/null 2>&1 || true
 fi
@@ -299,7 +334,7 @@ if ! swift test --package-path Packages/CovaCore --enable-code-coverage \
   tail -60 "$LOG_DIR/test-core-coverage.log"
   exit 1
 fi
-# 稳健发现产物：不硬编码二进制名/目录布局（Xcode 26 → .build/debug，Xcode 27 → .build/out/Products/Debug）
+# 稳健发现产物：不硬编码二进制名/目录布局
 CORE_BIN_DIR="$(swift build --package-path Packages/CovaCore --show-bin-path 2>/dev/null | tail -1)"
 if [ -z "$CORE_BIN_DIR" ] || [ ! -d "$CORE_BIN_DIR" ]; then
   CORE_BIN_DIR="$(find Packages/CovaCore/.build -type d -name Debug 2>/dev/null | head -1)"
@@ -319,9 +354,6 @@ fi
 [ -n "$CORE_PROF" ] && [ -f "$CORE_PROF" ] \
   || fail "无法定位 profdata（--show-codecov-path 与 glob 均失败）"
 echo "    产物发现：$(basename "$CORE_BIN_DIR")/$(basename "$CORE_BIN") + $(basename "$CORE_PROF")（零命名硬编码）"
-
-CORE_HOST_EXEC_NOTE="覆盖率运行自身不依赖日志文本：以「测试源码命中行数 > 0」证明测试确实执行"
-echo "    ${CORE_HOST_EXEC_NOTE}"
 
 COVERAGE="$(xcrun llvm-cov export "$CORE_BIN" -instr-profile="$CORE_PROF" --format=lcov 2>/dev/null | awk -v core="$CORE_SOURCES" -v tdir="Packages/CovaCore/Tests/" '
   /^SF:/ { in_core = (index($0, core) > 0); in_test = (index($0, tdir) > 0) }

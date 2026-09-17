@@ -9,6 +9,10 @@ final class CovaEnvironmentTests: XCTestCase {
         XCTAssertEqual(url.absoluteString, "https://covalink.cn")
     }
 
+    func testAPIBaseURLUsesDefaultHTTPSPort() {
+        XCTAssertNil(CovaEnvironment.apiBaseURL.port)
+    }
+
     func testAPIBaseURLRejectsLocalhostAndProviderGateway() {
         let url = CovaEnvironment.apiBaseURL
         XCTAssertNotEqual(url.host, "localhost")
@@ -21,6 +25,10 @@ final class CovaEnvironmentTests: XCTestCase {
         XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "http://covalink.cn")!))
         XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "https://localhost")!))
         XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "https://127.0.0.1:3110")!))
+    }
+
+    func testIsProductionOriginRejectsNonDefaultPort() {
+        XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "https://covalink.cn:8443")!))
     }
 
     func testIsProductionOriginRejectsHTTPSWithoutHost() {

@@ -49,9 +49,9 @@ targets:
         PRODUCT_NAME: Cova
         PRODUCT_BUNDLE_IDENTIFIER: cn.covalink.ios
         # 版本（AGENTS.md：每次 commit 递增，小迭代 +0.0.1 / 大迭代 +0.1）
-        # 0.1.0/1 骨架 → 0.1.1/2 首轮门禁加固 → 0.1.2/3 第二轮复审修复（产物发现/阈值/平台中立性）
-        CFBundleShortVersionString: "0.1.2"
-        CFBundleVersion: "3"
+        # 0.1.0/1 骨架 → 0.1.1/2 门禁加固 → 0.1.2/3 产物发现/阈值 → 0.1.3/4 平台中立性不变量 + 有效构建设置
+        CFBundleShortVersionString: "0.1.3"
+        CFBundleVersion: "4"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
