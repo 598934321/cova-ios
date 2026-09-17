@@ -129,6 +129,8 @@ public struct HTTPOneStepPlanPoller: OneStepPlanPolling {
     }
 
     public func pollPlans(sessionId: String) async throws -> [OneStepPlanCardDto] {
+        // 传输入口取消守卫（M-1）：任务已取消时不得发起请求。
+        try Task.checkCancellation()
         let request = try CovaSSERequests.oneStepPlans(sessionId: sessionId)
         let response = try await transport.send(request)
         let data = try CovaAPIClient.payload(from: response)

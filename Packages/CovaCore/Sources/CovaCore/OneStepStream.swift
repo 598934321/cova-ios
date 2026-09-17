@@ -414,6 +414,8 @@ public actor OneStepStreamCoordinator {
         let poller = self.poller
         let sessionId = self.sessionId
         pollTask = Task { [weak self] in
+            // M-1：与 SSE 入口同理，**调用轮询传输之前**先检查取消，避免 cancel 返回后仍发起一次 pollPlans。
+            guard !Task.isCancelled else { return }
             do {
                 let cards = try await poller.pollPlans(sessionId: sessionId)
                 guard !Task.isCancelled else { return }

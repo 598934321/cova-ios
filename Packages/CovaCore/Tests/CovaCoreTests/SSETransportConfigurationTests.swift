@@ -3,46 +3,74 @@ import Foundation
 import XCTest
 
 /// 拦截 `URLSession` 请求并记下 URLRequest（不产生任何真实网络）。
-private final class CapturingURLProtocol: URLProtocol {
-    nonisolated(unsafe) static var captured: [URLRequest] = []
+///
+/// 可配置为：正常响应（指定状态码/响应体）、传输失败（指定错误）。
+private final class StubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var capturedRequests: [URLRequest] = []
+    nonisolated(unsafe) static var statusCode = 200
+    nonisolated(unsafe) static var responseBody = Data()
+    nonisolated(unsafe) static var failure: Error?
     private static let lock = NSLock()
 
-    static func reset() {
+    static func configure(statusCode: Int = 200, body: Data = Data(), failure: Error? = nil) {
         lock.lock()
-        captured = []
+        capturedRequests = []
+        self.statusCode = statusCode
+        self.responseBody = body
+        self.failure = failure
         lock.unlock()
     }
 
-    static func snapshot() -> [URLRequest] {
+    static func captured() -> [URLRequest] {
         lock.lock()
         defer { lock.unlock() }
-        return captured
+        return capturedRequests
+    }
+
+    private static func record(_ request: URLRequest) {
+        lock.lock()
+        capturedRequests.append(request)
+        lock.unlock()
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.lock.lock()
-        Self.captured.append(request)
-        Self.lock.unlock()
+        Self.record(request)
+        if let failure = Self.failure {
+            client?.urlProtocol(self, didFailWithError: failure)
+            return
+        }
         let response = HTTPURLResponse(
             url: request.url!,
-            statusCode: 200,
+            statusCode: Self.statusCode,
             httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "text/event-stream"]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data("event: done\ndata: {}\n\n".utf8))
+        if !Self.responseBody.isEmpty {
+            client?.urlProtocol(self, didLoad: Self.responseBody)
+        }
         client?.urlProtocolDidFinishLoading(self)
     }
 
     override func stopLoading() {}
 }
 
-/// M3：SSE 生产传输必须使用「无限流」超时语义（空闲 > 30s 静默窗口、资源总时限足够大），
-/// 与普通请求的 15s/15s 明确区分。**不发任何网络请求**（仅读会话配置 / 断言守卫）。
+/// M3/F2/Minor-1：SSE 生产传输的超时语义、请求构造与关键生产分支。
+/// **不发任何真实网络**（自定义 `URLProtocol` 拦截）。
 final class SSETransportConfigurationTests: XCTestCase {
+    private func makeStubTransport() -> URLSessionSSETransport {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        return URLSessionSSETransport(session: URLSession(configuration: configuration))
+    }
+
+    private func agentRequest() throws -> HTTPRequest {
+        try CovaSSERequests.agent(jsonBody: Data("{}".utf8))
+    }
+
     func testSSESessionUsesLongIdleAndNearInfiniteResourceTimeout() {
         let session = URLSessionSSETransport.makeDefaultSession()
         XCTAssertEqual(session.configuration.timeoutIntervalForRequest, URLSessionSSETransport.idleTimeout)
@@ -64,7 +92,7 @@ final class SSETransportConfigurationTests: XCTestCase {
     }
 
     func testSSERequestUsesIdleTimeoutNotContract15s() throws {
-        let request = try CovaSSERequests.agent(jsonBody: Data("{}".utf8))
+        let request = try agentRequest()
         let urlRequest = URLSessionTransport.makeURLRequest(
             request,
             timeoutInterval: URLSessionSSETransport.idleTimeout
@@ -76,23 +104,86 @@ final class SSETransportConfigurationTests: XCTestCase {
 
     /// F2：钉死 `stream()` 实际发出的 URLRequest 超时 = idleTimeout（删掉 `timeoutInterval:` 实参即红）。
     func testStreamBuildsURLRequestWithIdleTimeout() async throws {
-        CapturingURLProtocol.reset()
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [CapturingURLProtocol.self]
-        let transport = URLSessionSSETransport(session: URLSession(configuration: configuration))
+        StubURLProtocol.configure(body: Data("event: done\ndata: {}\n\n".utf8))
+        let transport = makeStubTransport()
 
-        let request = try CovaSSERequests.agent(jsonBody: Data("{}".utf8))
-        let stream = try await transport.stream(request)
+        let stream = try await transport.stream(try agentRequest())
         for try await _ in stream {}
 
-        let captured = CapturingURLProtocol.snapshot()
+        let captured = StubURLProtocol.captured()
         XCTAssertEqual(captured.count, 1)
         XCTAssertEqual(captured.first?.timeoutInterval, URLSessionSSETransport.idleTimeout)
         XCTAssertNotEqual(captured.first?.timeoutInterval, URLSessionTransport.timeout)
     }
 
+    /// Minor-1：已取消的任务调用 `stream()` 必须抛出（`.cancelled`）且**不发起网络**。
+    func testStreamThrowsCancellationWhenTaskCancelledWithoutNetwork() async throws {
+        StubURLProtocol.configure(body: Data("event: done\ndata: {}\n\n".utf8))
+        let transport = makeStubTransport()
+        let request = try agentRequest()
+
+        let task = Task { () -> CovaAPIError in
+            do {
+                _ = try await transport.stream(request)
+                return .invalidResponse // 哨兵：不应发生
+            } catch {
+                return CovaAPIError.normalize(error)
+            }
+        }
+        task.cancel()
+        let error = await task.value
+        XCTAssertEqual(error, .cancelled)
+        XCTAssertTrue(StubURLProtocol.captured().isEmpty, "取消后不得发起网络")
+    }
+
+    /// Minor-1：非 2xx → `.invalidResponse`。
+    func testStreamMapsNonSuccessStatusToInvalidResponse() async throws {
+        StubURLProtocol.configure(statusCode: 500, body: Data())
+        let transport = makeStubTransport()
+
+        let stream = try await transport.stream(try agentRequest())
+        do {
+            for try await _ in stream {}
+            XCTFail("非 2xx 应抛错")
+        } catch let error as CovaAPIError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+    }
+
+    /// Minor-1：响应体按 `chunkByteLimit` 分块产出，且字节不丢。
+    func testStreamSplitsBodyIntoChunkLimitSizedPieces() async throws {
+        let total = 10_000
+        StubURLProtocol.configure(body: Data(repeating: 0x41, count: total))
+        let transport = makeStubTransport()
+
+        let stream = try await transport.stream(try agentRequest())
+        var chunks: [Data] = []
+        for try await chunk in stream { chunks.append(chunk) }
+
+        XCTAssertEqual(chunks.reduce(0) { $0 + $1.count }, total)
+        XCTAssertEqual(chunks.count, 3, "10000 字节应切成 4096 + 4096 + 1808")
+        XCTAssertEqual(chunks[0].count, URLSessionSSETransport.chunkByteLimit)
+        XCTAssertEqual(chunks[1].count, URLSessionSSETransport.chunkByteLimit)
+        XCTAssertEqual(chunks[2].count, total - 2 * URLSessionSSETransport.chunkByteLimit)
+    }
+
+    /// Minor-1：底层传输错误归一化为 `CovaAPIError`。
+    func testStreamNormalizesTransportFailure() async throws {
+        StubURLProtocol.configure(failure: URLError(.timedOut))
+        let transport = makeStubTransport()
+
+        let stream = try await transport.stream(try agentRequest())
+        do {
+            for try await _ in stream {}
+            XCTFail("传输失败应抛错")
+        } catch let error as CovaAPIError {
+            XCTAssertEqual(error, .timeout)
+        }
+    }
+
     func testSSETransportRejectsNonProductionOriginWithoutNetwork() async {
-        let transport = URLSessionSSETransport()
+        StubURLProtocol.configure(body: Data("event: done\ndata: {}\n\n".utf8))
+        let transport = makeStubTransport()
         let request = HTTPRequest(
             method: .post,
             url: URL(string: "https://evil.example/api/studio/agent")!
@@ -105,5 +196,6 @@ final class SSETransportConfigurationTests: XCTestCase {
         } catch {
             XCTFail("错误类型不符：\(error)")
         }
+        XCTAssertTrue(StubURLProtocol.captured().isEmpty)
     }
 }

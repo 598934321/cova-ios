@@ -441,6 +441,35 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         }
     }
 
+    /// M-1（轮询入口）：cancel 返回后，计划卡轮询调用数不再新增。
+    ///
+    /// 用可让出时钟放大「降级发起轮询 → cancel 抢先」的窗口；`sawPollBeforeCancel` 证明非空转。
+    func testCancelReturnedPreventsFurtherPlanPollCalls() async throws {
+        var sawPollBeforeCancel = 0
+        for iteration in 0..<400 {
+            let clock = VirtualClock(yields: 30)
+            let sse = FakeSSEStreamingTransport()
+            let poller = FakePlanPoller()
+            for _ in 0..<4 { await poller.enqueue(try planCards()) }
+            let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
+            let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
+            let collector = FrameCollector()
+            let consumer = Task { for await frame in stream { await collector.append(frame) } }
+
+            await sse.waitUntilOpened()
+            await advanceUntil(clock) { await coordinator.currentPhase() == .polling }
+            await coordinator.cancel()
+            let atReturn = await poller.callCount()
+            if atReturn > 0 { sawPollBeforeCancel += 1 }
+            for _ in 0..<400 { await Task.yield() }
+            let after = await poller.callCount()
+            XCTAssertEqual(after, atReturn, "第 \(iteration) 次：cancel 返回后仍发起了轮询传输")
+
+            await awaitConsumer(consumer)
+        }
+        XCTAssertGreaterThan(sawPollBeforeCancel, 0, "探针空转：从未观察到取消前的轮询调用")
+    }
+
     /// 并发 start ∥ cancel：无论调度顺序如何，最终都不得存在未取消的活跃会话，
     /// 且 cancel 返回后传输调用数不再增加。
     func testConcurrentStartAndCancelLeavesNoActiveSession() async throws {
@@ -718,6 +747,29 @@ final class HTTPOneStepPlanPollerTests: XCTestCase {
         } catch let error as CovaAPIError {
             XCTAssertEqual(error, .decoding(field: "planCards"))
         }
+    }
+
+    /// M-1：轮询传输入口的取消守卫——已取消任务调用 `pollPlans` 抛错且**不发请求**。
+    func testPollPlansThrowsCancellationWithoutTransportCall() async throws {
+        let body = try Fixture.data("one-step-plan-cards")
+        let transport = FakeHTTPTransport { _ in
+            HTTPResponse(statusCode: 200, body: body)
+        }
+        let poller = HTTPOneStepPlanPoller(transport: transport)
+
+        let task = Task { () -> Bool in
+            do {
+                _ = try await poller.pollPlans(sessionId: "s-1")
+                return false
+            } catch {
+                return error is CancellationError || (error as? CovaAPIError) == .cancelled
+            }
+        }
+        task.cancel()
+        let cancelled = await task.value
+        XCTAssertTrue(cancelled, "已取消任务应抛 CancellationError/.cancelled")
+        let calls = await transport.requestCount(path: "/api/studio/one-step/plans")
+        XCTAssertEqual(calls, 0, "取消后不得发起轮询请求")
     }
 
     func testRequestFactoryUsesProductionOriginAndSSEAccept() throws {

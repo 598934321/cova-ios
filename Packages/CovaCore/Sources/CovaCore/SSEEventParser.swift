@@ -198,11 +198,8 @@ public struct SSEFrameParser: Sendable {
     }
 
     private mutating func dispatch(into frames: inout [CovaSSEFrame]) {
-        if suppressCurrentEvent {
-            suppressCurrentEvent = false
-            resetEvent()
-            return
-        }
+        // 注意：本方法只在「未被 suppress」时由 process(line:) 调用（suppress 期间的空行在 process
+        // 内清标志后直接返回），故无需在此再处理 suppress —— 原分支为不可达死代码（Minor-2）。
         guard !dataLines.isEmpty else {
             resetEvent()
             return
