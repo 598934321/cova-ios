@@ -10,14 +10,23 @@ private final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var statusCode = 200
     nonisolated(unsafe) static var responseBody = Data()
     nonisolated(unsafe) static var failure: Error?
+    nonisolated(unsafe) static var delaysResponse = false
+    nonisolated(unsafe) static var stopLoadingTotal = 0
     private static let lock = NSLock()
 
-    static func configure(statusCode: Int = 200, body: Data = Data(), failure: Error? = nil) {
+    static func configure(
+        statusCode: Int = 200,
+        body: Data = Data(),
+        failure: Error? = nil,
+        delaysResponse: Bool = false
+    ) {
         lock.lock()
         capturedRequests = []
         self.statusCode = statusCode
         self.responseBody = body
         self.failure = failure
+        self.delaysResponse = delaysResponse
+        stopLoadingTotal = 0
         lock.unlock()
     }
 
@@ -27,9 +36,21 @@ private final class StubURLProtocol: URLProtocol {
         return capturedRequests
     }
 
+    static func stopLoadingCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopLoadingTotal
+    }
+
     private static func record(_ request: URLRequest) {
         lock.lock()
         capturedRequests.append(request)
+        lock.unlock()
+    }
+
+    private static func recordStop() {
+        lock.lock()
+        stopLoadingTotal += 1
         lock.unlock()
     }
 
@@ -49,13 +70,17 @@ private final class StubURLProtocol: URLProtocol {
             headerFields: ["Content-Type": "text/event-stream"]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        // delaysResponse：保持连接不结束，供取消测试观察 stopLoading。
+        guard !Self.delaysResponse else { return }
         if !Self.responseBody.isEmpty {
             client?.urlProtocol(self, didLoad: Self.responseBody)
         }
         client?.urlProtocolDidFinishLoading(self)
     }
 
-    override func stopLoading() {}
+    override func stopLoading() {
+        Self.recordStop()
+    }
 }
 
 /// M3/F2/Minor-1：SSE 生产传输的超时语义、请求构造与关键生产分支。
@@ -162,9 +187,34 @@ final class SSETransportConfigurationTests: XCTestCase {
 
         XCTAssertEqual(chunks.reduce(0) { $0 + $1.count }, total)
         XCTAssertEqual(chunks.count, 3, "10000 字节应切成 4096 + 4096 + 1808")
-        XCTAssertEqual(chunks[0].count, URLSessionSSETransport.chunkByteLimit)
-        XCTAssertEqual(chunks[1].count, URLSessionSSETransport.chunkByteLimit)
-        XCTAssertEqual(chunks[2].count, total - 2 * URLSessionSSETransport.chunkByteLimit)
+        // 安全解包：即便分块数回归，也只是断言失败而非下标越界崩溃（Minor-2）。
+        XCTAssertEqual(chunks.first?.count, URLSessionSSETransport.chunkByteLimit)
+        XCTAssertEqual(chunks.dropFirst().first?.count, URLSessionSSETransport.chunkByteLimit)
+        XCTAssertEqual(chunks.last?.count, total - 2 * URLSessionSSETransport.chunkByteLimit)
+    }
+
+    /// M-1/D16②：取消消费任务必须立即取消底层 URLSession 任务（`stopLoading` 被调用）。
+    func testStreamCancellationStopsUnderlyingURLSessionTask() async throws {
+        StubURLProtocol.configure(body: Data(), delaysResponse: true)
+        let transport = makeStubTransport()
+        let request = try agentRequest()
+
+        let task = Task {
+            do {
+                let stream = try await transport.stream(request)
+                for try await _ in stream {}
+            } catch {
+                // 取消以错误结束，属预期。
+            }
+        }
+        // 请求已发起并停在未完成状态。
+        let started = await waitUntil { !StubURLProtocol.captured().isEmpty }
+        XCTAssertTrue(started)
+
+        task.cancel()
+        _ = await task.value
+        let stopped = await waitUntil { StubURLProtocol.stopLoadingCount() > 0 }
+        XCTAssertTrue(stopped, "取消后必须停止底层 URLSession 任务")
     }
 
     /// Minor-1：底层传输错误归一化为 `CovaAPIError`。

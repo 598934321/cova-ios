@@ -257,6 +257,15 @@ public actor OneStepStreamCoordinator {
     private var pollTask: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
 
+    /// 已调度的周期数（D16 有界语义的确定性观测量）：`cancel()` 返回后必须不再增长。
+    private var scheduledSSECycles = 0
+    private var scheduledPollCycles = 0
+
+    /// 测试专用注入点：在 SSE / 轮询任务体开始、取消守卫之前 await（生产恒 nil；TD-34）。
+    /// 用于确定性锁定「顶层取消守卫阻止了新一轮传输调用」。
+    private var beforeSSETaskStart: (@Sendable () async -> Void)?
+    private var beforePollTaskStart: (@Sendable () async -> Void)?
+
     public init(
         clock: any CovaClock,
         transport: any SSEStreamingTransport,
@@ -331,13 +340,29 @@ public actor OneStepStreamCoordinator {
     /// 是否已锁定终态（含「start 前被 cancel」）。
     public func isTerminated() -> Bool { lifecycle == .finished }
     public func currentPhase() -> OneStepStreamPhase? { machine?.phase }
+
+    /// 已调度的 SSE / 轮询周期数（D16：`cancel()` 返回后不再增长）。`@testable` 可见。
+    func scheduledSSECycleCount() -> Int { scheduledSSECycles }
+    func scheduledPollCycleCount() -> Int { scheduledPollCycles }
+
+    /// 测试专用注入点（生产不使用；TD-34）。
+    func setBeforeSSETaskStart(_ hook: (@Sendable () async -> Void)?) {
+        beforeSSETaskStart = hook
+    }
+
+    func setBeforePollTaskStart(_ hook: (@Sendable () async -> Void)?) {
+        beforePollTaskStart = hook
+    }
     public func degradationTrigger() -> OneStepDegradationTrigger? { machine?.degradedBy }
     public func malformedEventCount() -> Int { machine?.malformedEventCount ?? 0 }
 
     // MARK: - SSE
 
     private func startSSE(_ request: HTTPRequest) {
+        scheduledSSECycles += 1
+        let hook = beforeSSETaskStart
         sseTask = Task { [weak self] in
+            await hook?()
             await self?.consume(request)
         }
     }
@@ -409,12 +434,17 @@ public actor OneStepStreamCoordinator {
     // MARK: - 轮询
 
     private func performPoll() {
+        // 顶层同步守卫（D16）：已终态不再调度新的轮询周期（确定性计数器可观测）。
+        guard !isFinished else { return }
+        scheduledPollCycles += 1
         // 同一时刻只允许一个在途轮询任务：先取消旧的，避免无主任务并发。
         pollTask?.cancel()
         let poller = self.poller
         let sessionId = self.sessionId
+        let hook = beforePollTaskStart
         pollTask = Task { [weak self] in
-            // M-1：与 SSE 入口同理，**调用轮询传输之前**先检查取消，避免 cancel 返回后仍发起一次 pollPlans。
+            await hook?()
+            // 顶层取消守卫：取消后不得进入本轮周期（其结果也不得投递）。
             guard !Task.isCancelled else { return }
             do {
                 let cards = try await poller.pollPlans(sessionId: sessionId)

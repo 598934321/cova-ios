@@ -56,6 +56,27 @@ actor VirtualClock: CovaClock {
     func pendingWaiterCount() -> Int { waiters.count }
 }
 
+/// 可放行的异步门：`wait()` 挂起直到 `open()`。
+///
+/// 用于**确定性**构造「任务已创建但停在取消守卫之前」的注入点场景（不依赖调度竞态）。
+actor AsyncGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func open() {
+        opened = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func isWaiting() -> Bool { continuation != nil }
+}
+
 /// 首次 `now()` 阻塞直到放行；用于**确定性**构造「`start` 的 `await` 窗口内 cancel」。
 /// 其余时间行为与 `VirtualClock` 一致（`sleep` 由 `advance` 放行）。
 actor GatedNowClock: CovaClock {

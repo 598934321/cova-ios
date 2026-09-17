@@ -1,4 +1,4 @@
-import CovaCore
+@testable import CovaCore
 import Foundation
 import XCTest
 
@@ -415,59 +415,87 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         XCTAssertTrue(frames.isEmpty)
     }
 
-    /// M-1 契约（无 flake）：`cancel()` 返回后，SSE 传输调用数不再增加。
-    ///
-    /// 无论 `start` 的 SSE 任务是否已抢先发起一次传输（此时该调用发生在 cancel 返回**之前**），
-    /// cancel 返回后都不得再新增调用；取消先胜的轮次（`atReturn == 0`）必须保持 0。
-    func testCancelReturnedPreventsFurtherSSETransportCalls() async throws {
-        for iteration in 0..<300 {
-            let clock = VirtualClock()
-            let sse = FakeSSEStreamingTransport()
-            let poller = FakePlanPoller()
-            let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
-            let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
+    /// D16①（确定性计数器）：`cancel()` 返回后不再调度新的轮询周期。
+    func testCancelStopsSchedulingNewPollCycles() async throws {
+        let clock = VirtualClock()
+        let sse = FakeSSEStreamingTransport()
+        let poller = FakePlanPoller()
+        await poller.enqueue(try planCards())
+        let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
+        let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
+        let collector = FrameCollector()
+        let consumer = Task { for await frame in stream { await collector.append(frame) } }
 
-            await coordinator.cancel()
-            let atReturn = await sse.streamCalls()
-            let collector = FrameCollector()
-            let consumer = Task { for await frame in stream { await collector.append(frame) } }
-            for _ in 0..<200 { await Task.yield() }
-            let after = await sse.streamCalls()
-            XCTAssertEqual(after, atReturn, "第 \(iteration) 次：cancel 返回后仍发起了 SSE 传输")
+        await sse.waitUntilOpened()
+        await advanceUntil(clock) { await coordinator.currentPhase() == .polling }
+        let cyclesAtCancel = await coordinator.scheduledPollCycleCount()
+        XCTAssertEqual(cyclesAtCancel, 1, "降级应恰好调度一个轮询周期")
 
-            await awaitConsumer(consumer)
-            let frames = await collector.snapshot()
-            XCTAssertTrue(frames.isEmpty, "第 \(iteration) 次：取消后不得投递帧")
-        }
+        await coordinator.cancel()
+        // 时间大幅推进也不得再调度新周期（取消已终止定时器 + 状态机终态）。
+        await clock.advance(by: 10_000)
+        for _ in 0..<300 { await Task.yield() }
+        let cyclesAfter = await coordinator.scheduledPollCycleCount()
+        XCTAssertEqual(cyclesAfter, cyclesAtCancel, "cancel 返回后不得再调度新的轮询周期")
+
+        await awaitConsumer(consumer)
     }
 
-    /// M-1（轮询入口）：cancel 返回后，计划卡轮询调用数不再新增。
+    /// Minor-1（确定性注入点）：轮询任务顶层取消守卫阻止取消后进入 `pollPlans`。
     ///
-    /// 用可让出时钟放大「降级发起轮询 → cancel 抢先」的窗口；`sawPollBeforeCancel` 证明非空转。
-    func testCancelReturnedPreventsFurtherPlanPollCalls() async throws {
-        var sawPollBeforeCancel = 0
-        for iteration in 0..<400 {
-            let clock = VirtualClock(yields: 30)
-            let sse = FakeSSEStreamingTransport()
-            let poller = FakePlanPoller()
-            for _ in 0..<4 { await poller.enqueue(try planCards()) }
-            let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
-            let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
-            let collector = FrameCollector()
-            let consumer = Task { for await frame in stream { await collector.append(frame) } }
+    /// 注入点让轮询任务停在守卫**之前**；cancel 后再放行 → 守卫必须直接返回。
+    func testPollTopGuardPreventsCycleCallAfterCancel() async throws {
+        let clock = VirtualClock()
+        let sse = FakeSSEStreamingTransport()
+        let poller = FakePlanPoller()
+        let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
+        let gate = AsyncGate()
+        await coordinator.setBeforePollTaskStart { await gate.wait() }
 
-            await sse.waitUntilOpened()
-            await advanceUntil(clock) { await coordinator.currentPhase() == .polling }
-            await coordinator.cancel()
-            let atReturn = await poller.callCount()
-            if atReturn > 0 { sawPollBeforeCancel += 1 }
-            for _ in 0..<400 { await Task.yield() }
-            let after = await poller.callCount()
-            XCTAssertEqual(after, atReturn, "第 \(iteration) 次：cancel 返回后仍发起了轮询传输")
+        let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
+        let collector = FrameCollector()
+        let consumer = Task { for await frame in stream { await collector.append(frame) } }
 
-            await awaitConsumer(consumer)
-        }
-        XCTAssertGreaterThan(sawPollBeforeCancel, 0, "探针空转：从未观察到取消前的轮询调用")
+        await sse.waitUntilOpened()
+        await advanceUntil(clock) { await coordinator.currentPhase() == .polling }
+        await assertEventually { await gate.isWaiting() }
+
+        await coordinator.cancel()
+        await gate.open()
+        for _ in 0..<300 { await Task.yield() }
+
+        let calls = await poller.callCount()
+        XCTAssertEqual(calls, 0, "取消后顶层守卫必须阻止本轮周期进入 pollPlans")
+        let cycles = await coordinator.scheduledPollCycleCount()
+        XCTAssertEqual(cycles, 1)
+        await awaitConsumer(consumer)
+    }
+
+    /// D16：（SSE 入口）注入点确定性锁定 consume 顶层守卫。
+    func testSSETopGuardPreventsTransportCallAfterCancel() async throws {
+        let clock = VirtualClock()
+        let sse = FakeSSEStreamingTransport()
+        let poller = FakePlanPoller()
+        let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
+        let gate = AsyncGate()
+        await coordinator.setBeforeSSETaskStart { await gate.wait() }
+
+        let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
+        let collector = FrameCollector()
+        let consumer = Task { for await frame in stream { await collector.append(frame) } }
+
+        await assertEventually { await gate.isWaiting() }
+        await coordinator.cancel()
+        await gate.open()
+        for _ in 0..<300 { await Task.yield() }
+
+        let calls = await sse.streamCalls()
+        XCTAssertEqual(calls, 0, "取消后 SSE 顶层守卫必须阻止发起传输")
+        let terminated = await coordinator.isTerminated()
+        XCTAssertTrue(terminated)
+        await awaitConsumer(consumer)
+        let frames = await collector.snapshot()
+        XCTAssertTrue(frames.isEmpty)
     }
 
     /// 并发 start ∥ cancel：无论调度顺序如何，最终都不得存在未取消的活跃会话，
@@ -482,7 +510,6 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
             let startTask = Task { try await coordinator.start(sessionId: "s", agentRequest: try agentRequest()) }
             let cancelTask = Task { await coordinator.cancel() }
             await cancelTask.value
-            let callsAtCancelReturn = await sse.streamCalls()
             let result = await startTask.result
 
             switch result {
@@ -502,15 +529,9 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
                     .alreadyFinished,
                     "第 \(iteration) 次：cancel 先于 start 应抛 alreadyFinished"
                 )
-                // cancel 先于 start：从未发起传输。
-                let afterFailure = await sse.streamCalls()
-                XCTAssertEqual(afterFailure, 0, "第 \(iteration) 次：cancel 先于 start 则不得发起传输")
             }
 
             for _ in 0..<300 { await Task.yield() }
-            let after = await sse.streamCalls()
-            XCTAssertEqual(after, callsAtCancelReturn, "第 \(iteration) 次：cancel 返回后仍发起了传输")
-
             let terminated = await coordinator.isTerminated()
             XCTAssertTrue(terminated, "第 \(iteration) 次：协调器必须终态")
             let phase = await coordinator.currentPhase()
@@ -518,11 +539,13 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
                 phase == nil || phase == .finished,
                 "第 \(iteration) 次：不得停在 \(String(describing: phase))"
             )
-            if after > 0 {
+            // D16①：cancel 后不再调度新周期（本场景未推进时钟，SSE 后无降级，故均为 0）。
+            let pollCycles = await coordinator.scheduledPollCycleCount()
+            XCTAssertEqual(pollCycles, 0, "第 \(iteration) 次：取消后不得调度轮询周期")
+            // D16②：若已授权发起过 SSE 传输，必须已终止。
+            if await sse.isOpened() {
                 await assertEventually { await sse.isTerminated() }
             }
-            let calls = await poller.callCount()
-            XCTAssertEqual(calls, 0, "第 \(iteration) 次：取消后不得轮询")
         }
     }
 
