@@ -23,9 +23,10 @@
 
 - [x] 文档包落盘：`PLAN.md` / `PRD.md` / `decisions.md` / `NEEDS.md` / `api-contracts.md` /
       `design-language.md` / `release-runbook.md` / `design/` 全套
-- [ ] 工程骨架：XcodeGen `project.yml` + SwiftPM 本地包 + 空 App 可构建 +
-      `Scripts/check.sh` 绿灯 + 首个 commit
-- **闸门**：用户批准 D1（部署目标 iOS 26+）与 D12（合规策略）
+- [x] 工程骨架：XcodeGen `project.yml` + SwiftPM 本地包 + 空 App 可构建 +
+      `Scripts/check.sh` 绿灯 + 首个 commit（`3bbb99a`→`2591238`，8 轮隔离评审后
+      0 Critical / 0 Major 通过；证据见 `docs/log/20260917.md` 环 5）
+- **闸门**：用户批准 D1（部署目标 iOS 26+）与 D12（合规策略）——**2026-09-17 已批准** ✅
 
 ### G1 — Figma 设计方向稿（2–3 天）
 
