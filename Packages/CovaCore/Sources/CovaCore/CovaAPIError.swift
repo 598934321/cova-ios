@@ -37,6 +37,10 @@ public enum CovaAPIError: Error, Equatable, Sendable {
     case invalidResponse
     /// 出站 URL 未通过出口守卫（D10）：非生产 origin、相对路径非法等。请求**未发出**。
     case invalidRequestURL
+    /// 会话已变化（换号/登出/新 generation）：在途请求不得用新账号凭证重放（D8）。
+    case sessionChanged
+    /// 凭证存储读取失败（Keychain 等返回异常状态）——与「本无凭证」不同，必须可观测。
+    case credentialReadFailed
     /// 401：凭证缺失/过期（上层触发 single-flight refresh 后重放一次）。
     case unauthorized(apiCode: String?)
     /// 非 2xx 且非 401。
@@ -71,6 +75,8 @@ public enum CovaAPIError: Error, Equatable, Sendable {
         case .transport(let code): return "传输错误(\(code))"
         case .invalidResponse: return "响应格式无效"
         case .invalidRequestURL: return "请求地址非法（已拒绝出站）"
+        case .sessionChanged: return "会话已变化（已放弃重放）"
+        case .credentialReadFailed: return "凭证读取失败"
         case .unauthorized(let apiCode): return "未授权(\(apiCode ?? "no_code"))"
         case .httpStatus(let code, let apiCode): return "服务端错误(\(code)/\(apiCode ?? "no_code"))"
         case .decoding(let field): return "响应解码失败(\(field ?? "unknown"))"

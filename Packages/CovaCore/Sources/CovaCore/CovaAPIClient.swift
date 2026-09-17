@@ -1,16 +1,5 @@
 import Foundation
 
-/// API client 视角的凭证来源（由认证状态机 `CovaAuthSession` 实现）。
-///
-/// - `accessToken()`：当前 access token；无则 `nil`（请求不带授权头）。
-/// - `refreshAccessToken(replacing:)`：401 后取可用 token。若当前 token 已不同于
-///   `staleToken`（其它并发请求已完成刷新），直接返回当前 token、**不再触发刷新**；
-///   否则执行 single-flight 刷新。**失败时实现方负责清理凭证并转 signed-out**。
-public protocol APICredentialProviding: Sendable {
-    func accessToken() async -> SecretString?
-    func refreshAccessToken(replacing staleToken: SecretString?) async throws -> SecretString
-}
-
 /// 出站请求组装：**唯一**把相对路径变成绝对 URL 的入口，均经 `CovaEnvironment` 守卫（D10）。
 enum APIRequestBuilder {
     static func make(
@@ -81,8 +70,12 @@ public actor CovaAPIClient {
 
     /// 执行一次请求并返回 2xx 响应体（非 2xx 抛 `CovaAPIError`）。
     ///
-    /// 401 处理：仅当本次请求**附带过** access token 时才尝试 refresh（无 token 的 401
-    /// 视为普通未授权，不触发刷新，避免把登录失败误判成会话过期）。
+    /// 会话绑定（M-1）：
+    /// - 请求发出前捕获 `AuthSessionSnapshot`（owner + generation + 所用 access token）；
+    /// - 仅当本次请求**附带过** access token 时才处理 401；
+    /// - 重放前由 `refreshAccessToken(for:)` 校验「owner 与 generation 未变」，
+    ///   变了即 `.sessionChanged` —— 绝不用新账号凭证重放旧账号的在途请求（D8）；
+    /// - 重放仅一次，不再二次刷新。
     @discardableResult
     public func perform(
         method: HTTPMethod,
@@ -90,21 +83,19 @@ public actor CovaAPIClient {
         queryItems: [URLQueryItem] = [],
         jsonBody: Data? = nil
     ) async throws -> Data {
-        let token = await credentials.accessToken()
+        let snapshot = try await credentials.currentSession()
         let request = try APIRequestBuilder.make(
             method: method,
             path: path,
             queryItems: queryItems,
-            bearer: token,
+            bearer: snapshot?.accessToken,
             jsonBody: jsonBody
         )
         let response = try await send(request)
-        guard response.statusCode == 401, token != nil else {
+        guard response.statusCode == 401, let snapshot else {
             return try Self.payload(from: response)
         }
-        // 并发 401 在此等待同一次刷新（single-flight 语义在 credentials 内实现；
-        // 若其它并发请求已抢先刷新，`replacing:` 会直接返回当前 token，不重复触发）。
-        let refreshed = try await credentials.refreshAccessToken(replacing: token)
+        let refreshed = try await credentials.refreshAccessToken(for: snapshot)
         let replay = try APIRequestBuilder.make(
             method: method,
             path: path,
@@ -112,7 +103,6 @@ public actor CovaAPIClient {
             bearer: refreshed,
             jsonBody: jsonBody
         )
-        // 重放仅一次：不再对重放结果做 refresh。
         return try Self.payload(from: try await send(replay))
     }
 

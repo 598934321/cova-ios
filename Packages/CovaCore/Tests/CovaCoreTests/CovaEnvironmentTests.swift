@@ -205,4 +205,26 @@ final class CovaEnvironmentTests: XCTestCase {
         XCTAssertEqual(midSlash?.host, "covalink.cn")
         XCTAssertTrue(CovaEnvironment.isProductionOrigin(midSlash!))
     }
+
+    /// m-3：`.` / `..` 路径段（含百分号编码）必须拒绝；含点但非独立段不误杀。
+    func testMakeAPIURLRejectsDotSegments() {
+        XCTAssertTrue(CovaEnvironment.containsTraversalSegment("/api/../tracks"))
+        XCTAssertTrue(CovaEnvironment.containsTraversalSegment("/api/./tracks"))
+        XCTAssertTrue(CovaEnvironment.containsTraversalSegment("/.."))
+        XCTAssertTrue(CovaEnvironment.containsTraversalSegment("/api/%2e%2e/tracks"))
+        XCTAssertFalse(CovaEnvironment.containsTraversalSegment("/api/v1.2/tracks"))
+        XCTAssertFalse(CovaEnvironment.containsTraversalSegment("/api/tracks"))
+
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/api/../tracks"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/../api"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/api/./tracks"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/."))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/.."))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/api/%2e%2e/tracks"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/api/%2E./tracks"))
+
+        let dotted = CovaEnvironment.makeAPIURL(path: "/api/v1.2/tracks")
+        XCTAssertEqual(dotted?.path, "/api/v1.2/tracks")
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(dotted!))
+    }
 }

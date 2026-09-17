@@ -60,7 +60,7 @@ final class CovaAPIClientTests: XCTestCase {
         let concurrency = 12
         let transport = GatedTransport(expectedOldArrivals: concurrency)
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         try await session.signIn(email: "tester@example.invalid", password: SecretString("placeholder"))
         let client = CovaAPIClient(transport: transport, credentials: session)
 
@@ -100,7 +100,7 @@ final class CovaAPIClientTests: XCTestCase {
             }
         }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         try await session.signIn(email: "tester@example.invalid", password: SecretString("placeholder"))
         let client = CovaAPIClient(transport: transport, credentials: session)
 
@@ -112,7 +112,7 @@ final class CovaAPIClientTests: XCTestCase {
         }
 
         let state = await session.currentState()
-        let token = await session.accessToken()
+        let token = try await session.accessToken()
         let principal = await session.currentPrincipal()
         let owner = await stack.lifecycle.currentOwner()
         XCTAssertEqual(state, .signedOut)
@@ -134,7 +134,7 @@ final class CovaAPIClientTests: XCTestCase {
             }
         }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         try await session.signIn(email: "tester@example.invalid", password: SecretString("placeholder"))
         let client = CovaAPIClient(transport: transport, credentials: session)
 
@@ -162,7 +162,7 @@ final class CovaAPIClientTests: XCTestCase {
             throw CovaAPIError.timeout
         }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         let client = CovaAPIClient(transport: transport, credentials: session)
 
         do {
@@ -176,7 +176,7 @@ final class CovaAPIClientTests: XCTestCase {
     func testURLSessionURLErrorIsNormalized() async throws {
         let transport = FakeHTTPTransport { _ in throw URLError(.timedOut) }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         let client = CovaAPIClient(transport: transport, credentials: session)
         do {
             let _: EmptyDTO = try await client.get("/api/tracks/1")
@@ -191,7 +191,7 @@ final class CovaAPIClientTests: XCTestCase {
             HTTPResponse(statusCode: 200, body: Data(#"{"count":"not-a-number"}"#.utf8))
         }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         let client = CovaAPIClient(transport: transport, credentials: session)
         do {
             let _: CountDTO = try await client.get("/api/probe")
@@ -205,7 +205,7 @@ final class CovaAPIClientTests: XCTestCase {
         let body = Data(#"{"error":"积分不足","code":"INSUFFICIENT_CREDITS"}"#.utf8)
         let transport = FakeHTTPTransport { _ in HTTPResponse(statusCode: 402, body: body) }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         let client = CovaAPIClient(transport: transport, credentials: session)
         do {
             let _: EmptyDTO = try await client.get("/api/downloads/checkout")
@@ -218,7 +218,7 @@ final class CovaAPIClientTests: XCTestCase {
     func testUnknownTransportErrorMapsToTransportCode() async throws {
         let transport = FakeHTTPTransport { _ in throw NSError(domain: "probe.domain", code: 4321) }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         let client = CovaAPIClient(transport: transport, credentials: session)
         do {
             let _: EmptyDTO = try await client.get("/api/probe")
@@ -233,7 +233,7 @@ final class CovaAPIClientTests: XCTestCase {
     func testIllegalOutboundPathsAreRejectedWithoutAnyTransportCall() async throws {
         let transport = FakeHTTPTransport { _ in HTTPResponse(statusCode: 200, body: TestTransportData.ok) }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         let client = CovaAPIClient(transport: transport, credentials: session)
 
         let illegal = [
@@ -242,7 +242,11 @@ final class CovaAPIClientTests: XCTestCase {
             "/api/tracks\\..\\..",
             "/api/tracks?injected=1",
             "/api/tracks#fragment",
-            "api/tracks"
+            "api/tracks",
+            "/api/../tracks",
+            "/api/./tracks",
+            "/api/%2e%2e/tracks",
+            "/api/%2E%2E/tracks"
         ]
         for path in illegal {
             do {
@@ -261,7 +265,7 @@ final class CovaAPIClientTests: XCTestCase {
     func testNoAuthorizationHeaderWhenSignedOut() async throws {
         let transport = FakeHTTPTransport { _ in HTTPResponse(statusCode: 200, body: TestTransportData.ok) }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         let client = CovaAPIClient(transport: transport, credentials: session)
         let _: EmptyDTO = try await client.get("/api/tracks")
 
@@ -275,7 +279,7 @@ final class CovaAPIClientTests: XCTestCase {
     func testGuestKeepsBrowsingWithoutAuthorizationHeader() async throws {
         let transport = FakeHTTPTransport { _ in HTTPResponse(statusCode: 200, body: TestTransportData.ok) }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         await session.continueAsGuest()
         let client = CovaAPIClient(transport: transport, credentials: session)
         let _: EmptyDTO = try await client.get("/api/tracks")
@@ -297,7 +301,7 @@ final class CovaAPIClientTests: XCTestCase {
             return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
         }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         try await session.signIn(email: "tester@example.invalid", password: SecretString("placeholder"))
         let client = CovaAPIClient(transport: transport, credentials: session)
 
@@ -306,7 +310,7 @@ final class CovaAPIClientTests: XCTestCase {
 
         let recorded = await transport.recordedRequests()
         let logoutCount = await transport.requestCount(path: CovaAuthSession.logoutPath)
-        let token = await session.accessToken()
+        let token = try await session.accessToken()
         XCTAssertEqual(recorded.last?.bearerToken, nil, "登出后请求不得携带旧 token")
         XCTAssertEqual(logoutCount, 1)
         XCTAssertNil(token)
@@ -324,7 +328,7 @@ final class CovaAPIClientTests: XCTestCase {
             return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
         }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         let client = CovaAPIClient(transport: transport, credentials: session)
 
         let _: EmptyDTO = try await client.post("/api/probe", body: ProbeBody(value: "a"))
@@ -342,7 +346,7 @@ final class CovaAPIClientTests: XCTestCase {
     func testQueryItemsAreForwarded() async throws {
         let transport = FakeHTTPTransport { _ in HTTPResponse(statusCode: 200, body: TestTransportData.ok) }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         let client = CovaAPIClient(transport: transport, credentials: session)
         let _: EmptyDTO = try await client.get("/api/tracks", queryItems: [URLQueryItem(name: "similarTo", value: "abc")])
 
@@ -358,7 +362,7 @@ final class CovaAPIClientTests: XCTestCase {
             return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
         }
         let stack = makeTestStack()
-        let session = CovaAuthSession(transport: transport, secureStore: stack.secureStore, lifecycle: stack.lifecycle)
+        let session = makeAuthSession(transport: transport, stack: stack)
         try await session.signIn(email: "tester@example.invalid", password: SecretString("placeholder"))
         let client = CovaAPIClient(transport: transport, credentials: session)
         let _: EmptyDTO = try await client.get("/api/tracks")
@@ -369,4 +373,101 @@ final class CovaAPIClientTests: XCTestCase {
         let rendered = renderAllSurfaces(signed)
         XCTAssertFalse(rendered.contains("ACCESS_TOKEN_PLACEHOLDER"), "authorization header 不得进入描述面：\(rendered)")
     }
+
+    // MARK: - M-1：在途请求绑定 owner/generation（切号竞态）
+
+    private func testSwitchingSetup(triggerPath: String) -> (FakeHTTPTransport, SwitchSessionBox) {
+        let script = SwitchLoginScript()
+        let box = SwitchSessionBox()
+        let transport = FakeHTTPTransport { request in
+            switch request.url.path {
+            case CovaAuthSession.loginPath:
+                return HTTPResponse(statusCode: 200, body: script.next())
+            case triggerPath:
+                // 在途请求返回 401 之前切换到账号 B（复现评审注入的竞态）。
+                if let session = box.session {
+                    _ = try? await session.signIn(email: "switch@example.invalid", password: SecretString("pw"))
+                }
+                return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
+            default:
+                return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
+            }
+        }
+        return (transport, box)
+    }
+
+    func testAccountSwitchDuringInFlightReadFailsWithSessionChanged() async throws {
+        let (transport, box) = testSwitchingSetup(triggerPath: GatedTransport.protectedPath)
+        let stack = makeTestStack()
+        let session = makeAuthSession(transport: transport, stack: stack)
+        box.session = session
+        try await session.signIn(email: "a@example.invalid", password: SecretString("pw"))
+        let client = CovaAPIClient(transport: transport, credentials: session)
+
+        do {
+            let _: EmptyDTO = try await client.get(GatedTransport.protectedPath)
+            XCTFail("切号后在途请求不得重放")
+        } catch {
+            XCTAssertEqual(error as? CovaAPIError, .sessionChanged)
+        }
+
+        let protected = (await transport.recordedRequests()).filter { $0.url.path == GatedTransport.protectedPath }
+        XCTAssertEqual(protected.count, 1, "不得发生重放")
+        XCTAssertEqual(protected.first?.bearerToken, "ACCESS_TOKEN_PLACEHOLDER", "只允许用 A 的 token 发出原始请求")
+        XCTAssertFalse(protected.contains { $0.bearerToken == "SECOND_ACCESS" }, "绝不能用 B 的 token 重放 A 的请求")
+        let currentToken = try await session.accessToken()
+        XCTAssertEqual(currentToken?.rawValue, "SECOND_ACCESS", "账号已切到 B")
+    }
+
+    func testAccountSwitchDuringInFlightWriteFailsWithSessionChanged() async throws {
+        let (transport, box) = testSwitchingSetup(triggerPath: "/api/probe")
+        let stack = makeTestStack()
+        let session = makeAuthSession(transport: transport, stack: stack)
+        box.session = session
+        try await session.signIn(email: "a@example.invalid", password: SecretString("pw"))
+        let client = CovaAPIClient(transport: transport, credentials: session)
+
+        do {
+            let _: EmptyDTO = try await client.post("/api/probe", body: ProbeBody(value: "x"))
+            XCTFail("切号后在途写请求不得重放")
+        } catch {
+            XCTAssertEqual(error as? CovaAPIError, .sessionChanged)
+        }
+
+        let probe = (await transport.recordedRequests()).filter { $0.url.path == "/api/probe" }
+        XCTAssertEqual(probe.count, 1, "写请求不得重放")
+        XCTAssertEqual(probe.first?.method, .post)
+        XCTAssertEqual(probe.first?.bearerToken, "ACCESS_TOKEN_PLACEHOLDER")
+        XCTAssertFalse(probe.contains { $0.bearerToken == "SECOND_ACCESS" })
+    }
+
+    func testStaleSnapshotIsRejectedEvenWithoutAccountSwitch() async throws {
+        let transport = FakeHTTPTransport { _ in HTTPResponse(statusCode: 200, body: TestTransportData.ok) }
+        let stack = makeTestStack()
+        let session = makeAuthSession(transport: transport, stack: stack)
+        let staleSnapshot = AuthSessionSnapshot(
+            principal: PrincipalID(rawValue: "user-0001"),
+            generation: .initial,
+            accessToken: SecretString("stale")
+        )
+        do {
+            _ = try await session.refreshAccessToken(for: staleSnapshot)
+            XCTFail("未认证时快照刷新应失败")
+        } catch {
+            XCTAssertEqual(error as? CovaAPIError, .sessionChanged)
+        }
+    }
 }
+
+/// 在途切号测试：延迟注入 session 引用（transport 与 session 互相依赖）。
+private final class SwitchSessionBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: CovaAuthSession?
+
+    var session: CovaAuthSession? {
+        get { lock.lock(); defer { lock.unlock() }; return value }
+        set { lock.lock(); value = newValue; lock.unlock() }
+    }
+}
+
+

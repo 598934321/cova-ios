@@ -37,6 +37,7 @@ public enum CovaEnvironment {
         guard !path.contains("://") else { return nil }
         guard !path.contains("?") && !path.contains("#") else { return nil }
         guard !path.contains("\\") else { return nil }
+        guard !containsTraversalSegment(path) else { return nil }
         var components = URLComponents()
         components.scheme = apiBaseURL.scheme
         components.host = apiBaseURL.host()
@@ -44,6 +45,17 @@ public enum CovaEnvironment {
         components.queryItems = queryItems.isEmpty ? nil : queryItems
         guard let url = components.url, isProductionOrigin(url) else { return nil }
         return url
+    }
+
+    /// 路径穿越守卫（m-3）：拒绝 `.` / `..` 路径段，以及百分号编码的 `%2e`（大小写不敏感）。
+    ///
+    /// host 已由 `makeAPIURL` 钉死为生产 host，因此穿越无法改变 origin；本检查是纵深防御，
+    /// 与文档「拒绝路径穿越」的表述对齐（fail-closed）。
+    static func containsTraversalSegment(_ path: String) -> Bool {
+        if path.lowercased().contains("%2e") { return true }
+        return path
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .contains { $0 == "." || $0 == ".." }
     }
 
     /// authority 规范性：`URL` 会把 `:0443` 归一化成 `port == 443`，只有回到原始字符串

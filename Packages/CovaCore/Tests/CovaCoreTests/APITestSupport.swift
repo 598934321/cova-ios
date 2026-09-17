@@ -67,17 +67,77 @@ final class InMemoryOwnerStore: OwnerScopedStoring, @unchecked Sendable {
     }
 }
 
+/// 读取总是抛错的凭证存储（m-2：读失败必须可观测，不能等同于「本无凭证」）。
+final class ReadFailingSecureStore: SecureStore, @unchecked Sendable {
+    private let inner: InMemorySecureStore
+
+    init(inner: InMemorySecureStore) {
+        self.inner = inner
+    }
+
+    func set(_ secret: SecretString, for item: SecureStoreItem) throws {
+        try inner.set(secret, for: item)
+    }
+
+    func secret(for item: SecureStoreItem) throws -> SecretString? {
+        throw SecureStoreError.status(-25300)
+    }
+
+    func removeSecret(for item: SecureStoreItem) throws {
+        try inner.removeSecret(for: item)
+    }
+
+    func removeAllSecrets(for principalId: PrincipalID) throws {
+        try inner.removeAllSecrets(for: principalId)
+    }
+}
+
+/// 登录脚本：第一次返回账号 A，之后返回账号 B（切号测试用）。
+final class SwitchLoginScript: @unchecked Sendable {
+    static let secondLogin = Data(
+        #"{"user":{"id":"user-0002","name":"乙","role":"user","email":"b@example.invalid","covaId":null,"phone":null,"isArtist":false,"isPartner":false},"token":"SECOND_ACCESS","refreshToken":"SECOND_REFRESH","expiresIn":7200}"#.utf8
+    )
+
+    private let lock = NSLock()
+    private var count = 0
+
+    func next() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return count == 1 ? TestTransportData.login : Self.secondLogin
+    }
+}
+
 struct TestStack {
     let secureStore: InMemorySecureStore
     let ownerStore: InMemoryOwnerStore
     let lifecycle: SessionLifecycle
+    let activeOwnerStore: InMemoryActiveOwnerStore
 }
 
 func makeTestStack(cleaners: [any LocalSessionStateClearing] = []) -> TestStack {
     let secureStore = InMemorySecureStore()
     let ownerStore = InMemoryOwnerStore()
     let lifecycle = SessionLifecycle(secureStore: secureStore, ownerStore: ownerStore, cleaners: cleaners)
-    return TestStack(secureStore: secureStore, ownerStore: ownerStore, lifecycle: lifecycle)
+    return TestStack(
+        secureStore: secureStore,
+        ownerStore: ownerStore,
+        lifecycle: lifecycle,
+        activeOwnerStore: InMemoryActiveOwnerStore()
+    )
+}
+
+func makeAuthSession(
+    transport: any HTTPTransport,
+    stack: TestStack
+) -> CovaAuthSession {
+    CovaAuthSession(
+        transport: transport,
+        secureStore: stack.secureStore,
+        lifecycle: stack.lifecycle,
+        activeOwnerStore: stack.activeOwnerStore
+    )
 }
 
 /// 把值在全部描述/反射面渲染成文本（用于泄漏断言）。
@@ -110,6 +170,7 @@ func dumpString(_ value: Any) -> String {
 enum TestTransportData {
     static let login = try! Fixture.data("auth-login")
     static let refresh = try! Fixture.data("auth-refresh")
+    static let me = try! Fixture.data("auth-me")
     static let unauthorized = Data(#"{"error":"unauthorized"}"#.utf8)
     static let ok = Data("{}".utf8)
 }
