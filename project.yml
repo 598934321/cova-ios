@@ -53,8 +53,9 @@ targets:
         # → 0.2.5/16 G3-b 幂等键/Keychain 封装/owner 绑定持久化
         # → 0.2.6/17 G3-b 评审修复（M1/M2 + m1..m7）
         # → 0.2.7/18 G3-b 验收落证
-        CFBundleShortVersionString: "0.2.7"
-        CFBundleVersion: "18"
+        # → 0.2.8/19 G3-c API client/认证状态机/single-flight refresh（含 TD-22/23/24）
+        CFBundleShortVersionString: "0.2.8"
+        CFBundleVersion: "19"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

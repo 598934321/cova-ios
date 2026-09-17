@@ -5,9 +5,12 @@ final class PlayReportDTOTests: XCTestCase {
     func testRequestDefaultsToAppIOSSourceAndUsesContractKeys() throws {
         XCTAssertEqual(PlayReportRequestDto.appIOSSource, "app-ios")
 
-        let request = PlayReportRequestDto(
+        let request = try PlayReportRequestDto(
             trackId: "library-1",
-            idempotencyKey: try IdempotencyKey(validating: "play-0001")
+            token: IdempotentRequestToken(
+                operation: .playReport,
+                key: IdempotencyKey(validating: IdempotentOperation.playReport.keyPrefix + String(repeating: "0", count: 32))
+            )
         )
         XCTAssertEqual(request.source, "app-ios")
         try XCTAssertEncodedJSONEqual(

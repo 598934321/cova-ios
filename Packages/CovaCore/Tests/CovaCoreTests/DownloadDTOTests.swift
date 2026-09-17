@@ -28,7 +28,7 @@ final class DownloadDTOTests: XCTestCase {
         XCTAssertEqual(downloads.count, 2)
         XCTAssertEqual(downloads[0].trackId, "library-test-0001")
         XCTAssertEqual(downloads[0].downloadId, "dl-test-0001")
-        XCTAssertEqual(downloads[0].url, "/api/downloads/dl-test-0001/file")
+        XCTAssertEqual(downloads[0].url?.rawValue, "/api/downloads/dl-test-0001/file")
         XCTAssertEqual(downloads[0].filename, "Golden-Beacon.mp3")
         XCTAssertEqual(downloads[0].owned, false)
         XCTAssertEqual(downloads[1].owned, true)

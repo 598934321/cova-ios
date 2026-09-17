@@ -104,7 +104,7 @@ final class AuthDTOTests: XCTestCase {
     }
 
     func testLoginRequestEncodesContractKeys() throws {
-        let request = CovaLoginRequestDto(email: "tester@example.invalid", password: "placeholder")
+        let request = CovaLoginRequestDto(email: "tester@example.invalid", password: SecretString("placeholder"))
         try XCTAssertEncodedJSONEqual(
             JSONEncoder().encode(request),
             fixture: "requests/login-request"

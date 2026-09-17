@@ -68,11 +68,15 @@ public struct CovaMeResponse: Codable, Equatable, Sendable {
 // MARK: - 登录 / 刷新 / 登出（api-contracts 1）
 
 /// `POST /api/auth/login` 请求体。
+///
+/// TD-23（硬边界 3）：`password` 为 `SecretString` —— 描述/反射/Mirror 面恒为 `<redacted>`，
+/// 且**不可编码**。这里以自定义 `encode(to:)` 在写请求体时取 `rawValue`：
+/// 密码只有在「发往生产 origin 的请求体」这一条路径上才会成为明文字节。
 public struct CovaLoginRequestDto: Codable, Equatable, Sendable {
     public let email: String
-    public let password: String
+    public let password: SecretString
 
-    public init(email: String, password: String) {
+    public init(email: String, password: SecretString) {
         self.email = email
         self.password = password
     }
@@ -80,6 +84,13 @@ public struct CovaLoginRequestDto: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case email
         case password
+    }
+
+    /// 手写编码：`SecretString` 不实现 `Encodable`，此处是密码进入请求体的唯一出口。
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(email, forKey: .email)
+        try container.encode(password.rawValue, forKey: .password)
     }
 }
 

@@ -342,6 +342,23 @@ public struct TrackPageDto: Codable, Equatable, Sendable {
     }
 }
 
+/// `GET /api/tracks` 的投影判别（TD-15）。
+///
+/// 实测（2026-09-17）：只有 **非空** 的 `similarTo` 才返回 similar 投影；空串 `similarTo=`
+/// 与未传递都返回普通列表投影。因此判别式必须是「非空」而非「键/参数存在」。
+public enum TrackListProjection: Equatable, Sendable {
+    case normal
+    case similar
+
+    /// 依据 `similarTo` 查询值选择投影：去首尾空白后为空 → 普通列表，否则 → similar。
+    public static func forSimilarTo(_ value: String?) -> TrackListProjection {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .normal
+        }
+        return .similar
+    }
+}
+
 /// `GET /api/tracks/:id` 响应：详情 + 相似曲目。
 ///
 /// `similar` 元素用独立模型 `SimilarTrackDto`（真实投影与列表不同，见其文档）。

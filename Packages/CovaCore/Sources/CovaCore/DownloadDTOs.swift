@@ -2,12 +2,13 @@ import Foundation
 
 /// 下载条目（api-contracts 3：`DownloadItemDto`）。
 ///
-/// 注意：`url` 是**授权后可下载的签名/代理地址**，属敏感数据 —— 禁止写日志、禁止进持久化索引
-/// （AGENTS 硬边界 3 / D7）。
-public struct DownloadItemDto: Codable, Equatable, Sendable {
+/// TD-23：`url` 是**授权后可下载的签名/代理地址**，收口为 `SecretString?` ——
+/// 描述/反射/Mirror 面恒为 `<redacted>`，且本 DTO 降为仅 `Decodable`，
+/// 编译期无法把签名 URL 重新序列化进持久化索引（AGENTS 硬边界 3 / D7）。
+public struct DownloadItemDto: Decodable, Equatable, Sendable {
     public let trackId: String
     public let downloadId: String
-    public let url: String?
+    public let url: SecretString?
     public let filename: String?
     public let owned: Bool?
 
@@ -25,7 +26,11 @@ public struct DownloadItemDto: Codable, Equatable, Sendable {
 /// D8：扣费写操作**必须带幂等键**，字段名与契约一致（`idempotencyKey`）；
 /// 值为类型化的 `IdempotencyKey`（非法键无法进入请求体）。
 /// D12：v1.0 不开放扣费 UI 入口 —— 本类型只做契约建模，不代表已启用下载流程。
-public struct DownloadCheckoutRequestDto: Codable, Equatable, Sendable {
+///
+/// TD-24：只接受 `IdempotentRequestToken`（operation 必须为 `.downloadCheckout`），
+/// 直接构造错配键会在 init 抛 `operationMismatch`；且本类型仅 `Encodable`
+/// （无法从任意 JSON 灌入任意幂等键）。
+public struct DownloadCheckoutRequestDto: Encodable, Equatable, Sendable {
     /// 契约固定格式。
     public static let mp3Format = "mp3"
 
@@ -36,11 +41,14 @@ public struct DownloadCheckoutRequestDto: Codable, Equatable, Sendable {
     public init(
         trackIds: [String],
         format: String = DownloadCheckoutRequestDto.mp3Format,
-        idempotencyKey: IdempotencyKey
-    ) {
+        token: IdempotentRequestToken
+    ) throws {
+        guard token.operation == .downloadCheckout else {
+            throw IdempotencyKeyError.operationMismatch
+        }
         self.trackIds = trackIds
         self.format = format
-        self.idempotencyKey = idempotencyKey
+        self.idempotencyKey = token.key
     }
 
     enum CodingKeys: String, CodingKey {
@@ -69,7 +77,9 @@ public struct DownloadCheckoutInfoDto: Codable, Equatable, Sendable {
 /// `POST /api/downloads/checkout` 响应：
 /// `{batchId, chargedCredits, skippedOwned[], balance, downloads[], items[]}`。
 /// `downloads` / `items` 为同一集合的两个键名，均建模以容忍后端择一返回。
-public struct DownloadCheckoutResponseDto: Codable, Equatable, Sendable {
+///
+/// 仅 `Decodable`：元素含脱敏签名 URL，禁止被重新序列化（TD-23）。
+public struct DownloadCheckoutResponseDto: Decodable, Equatable, Sendable {
     public let batchId: String?
     public let chargedCredits: Int?
     public let skippedOwned: [String]?

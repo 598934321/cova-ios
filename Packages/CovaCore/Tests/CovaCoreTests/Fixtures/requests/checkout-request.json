@@ -4,5 +4,5 @@
     "library-2"
   ],
   "format": "mp3",
-  "idempotencyKey": "checkout-0001"
+  "idempotencyKey": "cova-download-checkout-00000000000000000000000000000000"
 }

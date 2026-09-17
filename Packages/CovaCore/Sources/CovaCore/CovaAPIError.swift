@@ -35,6 +35,8 @@ public enum CovaAPIError: Error, Equatable, Sendable {
     case transport(code: Int)
     /// 响应不是合法 HTTP 响应（无状态码）。
     case invalidResponse
+    /// 出站 URL 未通过出口守卫（D10）：非生产 origin、相对路径非法等。请求**未发出**。
+    case invalidRequestURL
     /// 401：凭证缺失/过期（上层触发 single-flight refresh 后重放一次）。
     case unauthorized(apiCode: String?)
     /// 非 2xx 且非 401。
@@ -68,6 +70,7 @@ public enum CovaAPIError: Error, Equatable, Sendable {
         case .cancelled: return "请求已取消"
         case .transport(let code): return "传输错误(\(code))"
         case .invalidResponse: return "响应格式无效"
+        case .invalidRequestURL: return "请求地址非法（已拒绝出站）"
         case .unauthorized(let apiCode): return "未授权(\(apiCode ?? "no_code"))"
         case .httpStatus(let code, let apiCode): return "服务端错误(\(code)/\(apiCode ?? "no_code"))"
         case .decoding(let field): return "响应解码失败(\(field ?? "unknown"))"
@@ -104,6 +107,20 @@ public enum CovaAPIError: Error, Equatable, Sendable {
         default:
             return .transport(code: transportErrorCode)
         }
+    }
+
+    /// 任意底层错误 → 统一的 `CovaAPIError`（传输层与认证层共用）。
+    ///
+    /// 已是 `CovaAPIError` 的原样返回；`CancellationError` → `.cancelled`；
+    /// `NSURLErrorDomain` → 整数映射；其余 → `.transport(code:)`（失败路径，不携带明文）。
+    public static func normalize(_ error: Error) -> CovaAPIError {
+        if let api = error as? CovaAPIError { return api }
+        if error is CancellationError { return .cancelled }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            return classify(transportErrorCode: nsError.code)
+        }
+        return .transport(code: nsError.code)
     }
 
     /// 解码失败 → 错误（只保留字段路径，不保留原始响应）。

@@ -3,5 +3,5 @@
   "planCardId": "plan-1",
   "revision": 4,
   "snapshotHash": "snapshot-1",
-  "idempotencyKey": "start-0001"
+  "idempotencyKey": "cova-plan-start-00000000000000000000000000000000"
 }

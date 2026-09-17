@@ -24,10 +24,15 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
         )
     }
 
+    /// TD-24：写请求 DTO 的幂等键只能经 `IdempotentRequestToken` 注入（见 `IdempotencyTests`）。
+    private func token(_ operation: IdempotentOperation, hex: String = String(repeating: "0", count: 32)) throws -> IdempotentRequestToken {
+        try IdempotentRequestToken(operation: operation, key: IdempotencyKey(validating: operation.keyPrefix + hex))
+    }
+
     func testPlayReportRequestIsConstructibleAndDefaultsToAppIOSSource() throws {
-        let request = PlayReportRequestDto(
+        let request = try PlayReportRequestDto(
             trackId: "library-1",
-            idempotencyKey: try IdempotencyKey(validating: "play-0001")
+            token: token(.playReport)
         )
         XCTAssertEqual(PlayReportRequestDto.appIOSSource, "app-ios")
         XCTAssertEqual(request.source, "app-ios")
@@ -38,9 +43,9 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
     }
 
     func testDownloadCheckoutRequestIsConstructibleAndDefaultsToMp3() throws {
-        let request = DownloadCheckoutRequestDto(
+        let request = try DownloadCheckoutRequestDto(
             trackIds: ["library-1", "library-2"],
-            idempotencyKey: try IdempotencyKey(validating: "checkout-0001")
+            token: token(.downloadCheckout)
         )
         XCTAssertEqual(DownloadCheckoutRequestDto.mp3Format, "mp3")
         XCTAssertEqual(request.format, "mp3")
@@ -51,12 +56,12 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
     }
 
     func testOneStepPlanStartRequestIsConstructibleAndCarriesIdempotencyKey() throws {
-        let request = OneStepPlanStartRequestDto(
+        let request = try OneStepPlanStartRequestDto(
             sessionId: "session-1",
             planCardId: "plan-1",
             revision: 4,
             snapshotHash: "snapshot-1",
-            idempotencyKey: try IdempotencyKey(validating: "start-0001")
+            token: token(.planStart)
         )
         try XCTAssertEncodedJSONEqual(
             JSONEncoder().encode(request),
@@ -87,7 +92,7 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
     }
 
     func testLoginRequestIsConstructibleFromOutsideModule() throws {
-        let request = CovaLoginRequestDto(email: "tester@example.invalid", password: "placeholder")
+        let request = CovaLoginRequestDto(email: "tester@example.invalid", password: SecretString("placeholder"))
         try XCTAssertEncodedJSONEqual(
             JSONEncoder().encode(request),
             fixture: "requests/login-request"

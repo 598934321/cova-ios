@@ -200,9 +200,11 @@ public struct OneStepPlanCardsResponseDto: Codable, Equatable, Sendable {
 /// `POST /api/studio/one-step/plans/start` 请求体
 /// （契约：`{sessionId, planCardId, revision, snapshotHash, idempotencyKey}`）。
 ///
-/// D8：计划启动属扣费写操作，幂等键字段名与契约一致（`idempotencyKey`）；
-/// 值为类型化的 `IdempotencyKey`（非法键无法进入请求体）。
-public struct OneStepPlanStartRequestDto: Codable, Equatable, Sendable {
+/// D8：计划启动属扣费写操作，幂等键字段名与契约一致（`idempotencyKey`）。
+///
+/// TD-24：只接受 `IdempotentRequestToken`（operation 必须为 `.planStart`），
+/// 直接构造错配键会在 init 抛 `operationMismatch`；仅 `Encodable`。
+public struct OneStepPlanStartRequestDto: Encodable, Equatable, Sendable {
     public let sessionId: String
     public let planCardId: String
     public let revision: Int
@@ -214,13 +216,16 @@ public struct OneStepPlanStartRequestDto: Codable, Equatable, Sendable {
         planCardId: String,
         revision: Int,
         snapshotHash: String,
-        idempotencyKey: IdempotencyKey
-    ) {
+        token: IdempotentRequestToken
+    ) throws {
+        guard token.operation == .planStart else {
+            throw IdempotencyKeyError.operationMismatch
+        }
         self.sessionId = sessionId
         self.planCardId = planCardId
         self.revision = revision
         self.snapshotHash = snapshotHash
-        self.idempotencyKey = idempotencyKey
+        self.idempotencyKey = token.key
     }
 
     enum CodingKeys: String, CodingKey {

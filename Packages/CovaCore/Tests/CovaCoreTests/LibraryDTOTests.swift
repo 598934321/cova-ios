@@ -210,6 +210,24 @@ final class LibraryDTOTests: XCTestCase {
         XCTAssertNoThrow(try Fixture.decode(TrackPageDto.self, "track-page"))
     }
 
+    /// TD-16 反向守卫：普通列表载荷**不得**被 similar 投影 DTO 解出（两套投影互斥）。
+    func testNormalTrackPageIsNotDecodableAsSimilarProjection() throws {
+        let data = try Fixture.data("track-page")
+        XCTAssertThrowsError(try JSONDecoder().decode(SimilarTrackPageDto.self, from: data)) { error in
+            XCTAssertTrue(error is DecodingError, "应为 DecodingError，实际：\(error)")
+        }
+    }
+
+    /// TD-15：投影判别必须按「similarTo 非空」，空串/空白等同未传（普通列表投影）。
+    func testProjectionDiscriminationUsesNonEmptySimilarTo() {
+        XCTAssertEqual(TrackListProjection.forSimilarTo(nil), .normal)
+        XCTAssertEqual(TrackListProjection.forSimilarTo(""), .normal)
+        XCTAssertEqual(TrackListProjection.forSimilarTo("   "), .normal)
+        XCTAssertEqual(TrackListProjection.forSimilarTo("\n"), .normal)
+        XCTAssertEqual(TrackListProjection.forSimilarTo("library-1"), .similar)
+        XCTAssertEqual(TrackListProjection.forSimilarTo(" library-1 "), .similar)
+    }
+
     func testDecodesTrackPreviewUrl() throws {
         let preview = try Fixture.decode(TrackPreviewUrlDto.self, "track-preview-url")
         XCTAssertEqual(preview.url.hasPrefix("https://"), true)

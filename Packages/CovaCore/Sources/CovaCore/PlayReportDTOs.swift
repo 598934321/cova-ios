@@ -3,7 +3,10 @@ import Foundation
 /// 播放上报（api-contracts 2：`POST /api/tracks/play`，`source: "app-ios"` + 幂等键）。
 ///
 /// D8/D10：一次实际播放一个幂等键；`source` 固定为 `app-ios`（NEEDS-2 待后端 allowlist 放行）。
-public struct PlayReportRequestDto: Codable, Equatable, Sendable {
+///
+/// TD-24：只接受 `IdempotentRequestToken`（operation 必须为 `.playReport`）；
+/// 仅 `Encodable`，无法从任意 JSON 灌入任意幂等键。
+public struct PlayReportRequestDto: Encodable, Equatable, Sendable {
     /// iOS 客户端播放来源标识（D10）。
     public static let appIOSSource = "app-ios"
 
@@ -11,10 +14,17 @@ public struct PlayReportRequestDto: Codable, Equatable, Sendable {
     public let source: String
     public let idempotencyKey: IdempotencyKey
 
-    public init(trackId: String, source: String = PlayReportRequestDto.appIOSSource, idempotencyKey: IdempotencyKey) {
+    public init(
+        trackId: String,
+        source: String = PlayReportRequestDto.appIOSSource,
+        token: IdempotentRequestToken
+    ) throws {
+        guard token.operation == .playReport else {
+            throw IdempotencyKeyError.operationMismatch
+        }
         self.trackId = trackId
         self.source = source
-        self.idempotencyKey = idempotencyKey
+        self.idempotencyKey = token.key
     }
 
     enum CodingKeys: String, CodingKey {

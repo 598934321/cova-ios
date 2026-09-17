@@ -18,13 +18,17 @@ public enum GenerationCandidateDownloadStatus: String, Codable, Equatable, Senda
 }
 
 /// 生成候选（api-contracts 4：`GenerationCandidate`）。
-public struct GenerationCandidateDto: Codable, Equatable, Sendable {
+///
+/// TD-23：`audioUrl` / `audioDownloadUrl` 可能为授权/签名地址，收口为 `SecretString?`
+/// （描述/反射面恒 `<redacted>`）；本类型与 `GenerationJobMetadataDto` 降为仅 `Decodable`，
+/// 编译期禁止把敏感音频地址重新序列化进持久化索引。
+public struct GenerationCandidateDto: Decodable, Equatable, Sendable {
     public let id: String
     public let title: String?
-    public let audioUrl: String?
+    public let audioUrl: SecretString?
     public let coverUrl: String?
     public let duration: Double?
-    public let audioDownloadUrl: String?
+    public let audioDownloadUrl: SecretString?
     public let audioDownloadStatus: GenerationCandidateDownloadStatus?
     public let mediaReferenceId: String?
     public let favorite: Bool?
@@ -42,8 +46,8 @@ public struct GenerationCandidateDto: Codable, Equatable, Sendable {
     }
 }
 
-/// 生成任务 `metadata` JSON 字符串的结构化视图。
-public struct GenerationJobMetadataDto: Codable, Equatable, Sendable {
+/// 生成任务 `metadata` JSON 字符串的结构化视图（仅 `Decodable`，见 `GenerationCandidateDto`）。
+public struct GenerationJobMetadataDto: Decodable, Equatable, Sendable {
     public let candidates: [GenerationCandidateDto]?
     public let makeInstrumental: Bool?
 

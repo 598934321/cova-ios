@@ -157,44 +157,63 @@ final class IdempotencyTests: XCTestCase {
 
     // MARK: - 一次逻辑操作一个键；重试/重放复用同一个键
 
-    func testRetryReusesSameKeyForDownloadCheckout() {
+    func testRetryReusesSameKeyForDownloadCheckout() throws {
         let token = IdempotentRequestToken(operation: .downloadCheckout)
-        let first = DownloadCheckoutRequestDto(trackIds: ["library-1"], idempotencyKey: token.key)
-        let retry = DownloadCheckoutRequestDto(trackIds: ["library-1"], idempotencyKey: token.key)
-        let replay = DownloadCheckoutRequestDto(trackIds: ["library-1"], idempotencyKey: token.key)
+        let first = try DownloadCheckoutRequestDto(trackIds: ["library-1"], token: token)
+        let retry = try DownloadCheckoutRequestDto(trackIds: ["library-1"], token: token)
+        let replay = try DownloadCheckoutRequestDto(trackIds: ["library-1"], token: token)
         XCTAssertEqual(first.idempotencyKey, retry.idempotencyKey)
         XCTAssertEqual(retry.idempotencyKey, replay.idempotencyKey)
         XCTAssertEqual(first.idempotencyKey, token.key)
         XCTAssertTrue(token.key.isCanonical(for: .downloadCheckout))
     }
 
-    func testRetryReusesSameKeyForPlanStart() {
+    func testRetryReusesSameKeyForPlanStart() throws {
         let token = IdempotentRequestToken(operation: .planStart)
-        let request = OneStepPlanStartRequestDto(
+        let request = try OneStepPlanStartRequestDto(
             sessionId: "session-1",
             planCardId: "plan-1",
             revision: 4,
             snapshotHash: "hash-1",
-            idempotencyKey: token.key
+            token: token
         )
-        let retried = OneStepPlanStartRequestDto(
+        let retried = try OneStepPlanStartRequestDto(
             sessionId: "session-1",
             planCardId: "plan-1",
             revision: 4,
             snapshotHash: "hash-1",
-            idempotencyKey: token.key
+            token: token
         )
         XCTAssertEqual(request.idempotencyKey, retried.idempotencyKey)
         XCTAssertTrue(token.key.isCanonical(for: .planStart))
     }
 
-    func testRetryReusesSameKeyForPlayReport() {
+    func testRetryReusesSameKeyForPlayReport() throws {
         let token = IdempotentRequestToken(operation: .playReport)
-        let request = PlayReportRequestDto(trackId: "library-1", idempotencyKey: token.key)
-        let retried = PlayReportRequestDto(trackId: "library-1", idempotencyKey: token.key)
+        let request = try PlayReportRequestDto(trackId: "library-1", token: token)
+        let retried = try PlayReportRequestDto(trackId: "library-1", token: token)
         XCTAssertEqual(request.idempotencyKey, retried.idempotencyKey)
         XCTAssertEqual(request.source, "app-ios")
         XCTAssertTrue(token.key.isCanonical(for: .playReport))
+    }
+
+    /// TD-24：写请求 DTO 拒绝 operation↔key 错配（DTO 层不再接受任意键）。
+    func testWriteRequestDTOsRejectOperationMismatch() throws {
+        let checkoutToken = IdempotentRequestToken(operation: .downloadCheckout)
+        let planToken = IdempotentRequestToken(operation: .planStart)
+        let playToken = IdempotentRequestToken(operation: .playReport)
+
+        XCTAssertThrowsError(try DownloadCheckoutRequestDto(trackIds: ["t"], token: planToken)) { error in
+            XCTAssertEqual(error as? IdempotencyKeyError, .operationMismatch)
+        }
+        XCTAssertThrowsError(try OneStepPlanStartRequestDto(
+            sessionId: "s", planCardId: "p", revision: 1, snapshotHash: "h", token: playToken
+        )) { error in
+            XCTAssertEqual(error as? IdempotencyKeyError, .operationMismatch)
+        }
+        XCTAssertThrowsError(try PlayReportRequestDto(trackId: "t", token: checkoutToken)) { error in
+            XCTAssertEqual(error as? IdempotencyKeyError, .operationMismatch)
+        }
     }
 
     func testTwoLogicalOperationsGetDifferentKeys() {
