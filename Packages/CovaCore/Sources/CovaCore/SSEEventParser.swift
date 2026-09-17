@@ -45,8 +45,11 @@ public struct SSEFrameParser: Sendable {
 
     /// 格式错误（载荷非法 JSON / 超限 / EOF 残帧）事件累计数。
     public private(set) var malformedEventCount = 0
-    /// EOF 处被丢弃的残帧数（已计入 `malformedEventCount`；供协调器统一口径，m1）。
-    public private(set) var discardedIncompleteEventCount = 0
+    /// 被丢弃且**未派发**的坏事件数（超长行 / 超长事件数据 / EOF 残帧），已计入 `malformedEventCount`。
+    ///
+    /// 这些事件没有可派发的帧，必须由协调器显式回传状态机才能参与「3 个坏事件」判定与触发原因
+    /// （口径与载荷非法 JSON 的坏事件一致）。
+    public private(set) var discardedMalformedEventCount = 0
 
     public init() {}
 
@@ -77,8 +80,7 @@ public struct SSEFrameParser: Sendable {
             finishLine(into: &frames)
         }
         if !dataLines.isEmpty {
-            malformedEventCount += 1
-            discardedIncompleteEventCount += 1
+            markCurrentEventMalformed()
         }
         resetEvent()
         pendingLineFeed = false
@@ -169,9 +171,10 @@ public struct SSEFrameParser: Sendable {
         }
     }
 
-    /// 当前事件作废并计一个坏事件（超限/损坏路径）。
+    /// 当前事件作废并计一个坏事件（超限/损坏/EOF 残帧路径）。
     private mutating func markCurrentEventMalformed() {
         malformedEventCount += 1
+        discardedMalformedEventCount += 1
         eventName = ""
         dataLines.removeAll(keepingCapacity: true)
         pendingDataBytes = 0

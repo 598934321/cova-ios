@@ -183,6 +183,28 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         await awaitConsumer(harness.consumer)
     }
 
+    /// Minor-1：协议级坏事件（超长行）也要回传协调器参与「3 个坏事件」判定。
+    func testOverlongEventsParticipateInDegradation() async throws {
+        let clock = VirtualClock()
+        let sse = FakeSSEStreamingTransport()
+        let poller = FakePlanPoller()
+        await poller.enqueue(try planCards())
+        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+
+        await sse.waitUntilOpened()
+        let long = String(repeating: "x", count: SSEFrameParser.maxLineBytes + 50)
+        for _ in 0..<3 {
+            await sse.send("event: text\ndata: \(long)\n\n")
+        }
+        await assertEventually { await harness.coordinator.degradationTrigger() == .malformedEvents(count: 3) }
+        let malformed = await harness.coordinator.malformedEventCount()
+        XCTAssertEqual(malformed, 3)
+        await assertEventually { await planCardCount(harness.collector) == 2 }
+
+        await harness.coordinator.cancel()
+        await awaitConsumer(harness.consumer)
+    }
+
     // MARK: - m2：SSE 已投递的计划卡不再被首轮轮询重复
 
     func testSSEDeliveredPlanCardIsNotReEmittedByFirstPoll() async throws {
@@ -319,9 +341,54 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         }
     }
 
-    /// F3：`cancel()` 落在 `start()` 的 `await clock.now()` 窗口内也必须被尊重。
-    func testCancelDuringStartWindowIsRespected() async throws {
-        for iteration in 0..<60 {
+    // MARK: - M-1：确定性取消语义
+
+    /// 先 cancel 再 start：协调器锁定终态，start 抛错，绝不打开 SSE。
+    func testCancelBeforeStartLocksCoordinatorTerminated() async throws {
+        let clock = VirtualClock(yields: 8)
+        let sse = FakeSSEStreamingTransport()
+        let poller = FakePlanPoller()
+        let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
+
+        await coordinator.cancel()
+        let terminated = await coordinator.isTerminated()
+        XCTAssertTrue(terminated)
+
+        do {
+            _ = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
+            XCTFail("cancel 后 start 应抛错")
+        } catch let error as OneStepStreamCoordinator.LifecycleError {
+            XCTAssertEqual(error, .alreadyFinished)
+        }
+        let opened = await sse.isOpened()
+        XCTAssertFalse(opened, "cancel 后绝不打开 SSE")
+        let calls = await poller.callCount()
+        XCTAssertEqual(calls, 0)
+    }
+
+    /// start 后立即 cancel：终态、SSE 终止、无投递。
+    func testStartThenImmediateCancelTerminates() async throws {
+        let clock = VirtualClock(yields: 8)
+        let sse = FakeSSEStreamingTransport()
+        let poller = FakePlanPoller()
+        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        await sse.waitUntilOpened()
+
+        await harness.coordinator.cancel()
+        let terminated = await harness.coordinator.isTerminated()
+        XCTAssertTrue(terminated)
+        await assertEventually { await sse.isTerminated() }
+        await assertEventually { await harness.completed.isCompleted() }
+        let frames = await harness.collector.snapshot()
+        XCTAssertTrue(frames.isEmpty)
+        await awaitConsumer(harness.consumer)
+        let calls = await poller.callCount()
+        XCTAssertEqual(calls, 0)
+    }
+
+    /// 并发 start ∥ cancel：无论调度顺序如何，最终都不得存在未取消的活跃会话。
+    func testConcurrentStartAndCancelLeavesNoActiveSession() async throws {
+        for iteration in 0..<120 {
             let clock = VirtualClock(yields: 300)
             let sse = FakeSSEStreamingTransport()
             let poller = FakePlanPoller()
@@ -329,22 +396,40 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
 
             let startTask = Task { try await coordinator.start(sessionId: "s", agentRequest: try agentRequest()) }
             let cancelTask = Task { await coordinator.cancel() }
-            let stream = try await startTask.value
             await cancelTask.value
+            let result = await startTask.result
 
-            await assertEventually { await coordinator.currentPhase() == .finished }
-            let collector = FrameCollector()
-            let completed = CompletionFlag()
-            let consumer = Task {
-                for await frame in stream { await collector.append(frame) }
-                await completed.mark()
+            switch result {
+            case .success(let stream):
+                let collector = FrameCollector()
+                let completed = CompletionFlag()
+                let consumer = Task {
+                    for await frame in stream { await collector.append(frame) }
+                    await completed.mark()
+                }
+                await awaitConsumer(consumer)
+                let frames = await collector.snapshot()
+                XCTAssertTrue(frames.isEmpty, "第 \(iteration) 次：取消后不得投递帧")
+            case .failure(let error):
+                XCTAssertEqual(
+                    error as? OneStepStreamCoordinator.LifecycleError,
+                    .alreadyFinished,
+                    "第 \(iteration) 次：cancel 先于 start 应抛 alreadyFinished"
+                )
             }
-            await awaitConsumer(consumer)
-            let frames = await collector.snapshot()
+
+            let terminated = await coordinator.isTerminated()
+            XCTAssertTrue(terminated, "第 \(iteration) 次：协调器必须终态")
+            let phase = await coordinator.currentPhase()
+            XCTAssertTrue(
+                phase == nil || phase == .finished,
+                "第 \(iteration) 次：不得停在 \(String(describing: phase))"
+            )
+            if await sse.isOpened() {
+                await assertEventually { await sse.isTerminated() }
+            }
             let calls = await poller.callCount()
-            XCTAssertTrue(frames.isEmpty, "第 \(iteration) 次：start 窗口内 cancel 被丢弃")
             XCTAssertEqual(calls, 0, "第 \(iteration) 次：取消后不得轮询")
-            await coordinator.cancel()
         }
     }
 
@@ -454,6 +539,39 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
 
         await harness.coordinator.cancel()
         await awaitConsumer(harness.consumer)
+    }
+
+    // MARK: - Minor-2：轮询回包 ∥ 取消
+
+    func testPollResponseConcurrentWithCancelIsNotDelivered() async throws {
+        let clock = VirtualClock()
+        let sse = FakeSSEStreamingTransport()
+        let gate = GatedPlanPoller(response: try planCards())
+        let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: gate)
+        let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
+        let collector = FrameCollector()
+        let completed = CompletionFlag()
+        let consumer = Task {
+            for await frame in stream { await collector.append(frame) }
+            await completed.mark()
+        }
+
+        await sse.waitUntilOpened()
+        await advanceUntil(clock) { await gate.callCount() == 1 }
+
+        // 回包被闸门拦住：此刻 cancel 与回包并发。
+        await coordinator.cancel()
+        await gate.release()
+        await assertEventually { await completed.isCompleted() }
+        for _ in 0..<200 { await Task.yield() }
+
+        let frames = await collector.snapshot()
+        XCTAssertTrue(frames.isEmpty, "取消后不得投递轮询结果")
+        let phase = await coordinator.currentPhase()
+        XCTAssertEqual(phase, .finished)
+        let calls = await gate.callCount()
+        XCTAssertEqual(calls, 1, "不得重复降级/重复轮询")
+        await awaitConsumer(consumer)
     }
 }
 

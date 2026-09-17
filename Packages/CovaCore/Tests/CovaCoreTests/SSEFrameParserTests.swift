@@ -187,7 +187,7 @@ final class SSEFrameParserTests: XCTestCase {
         XCTAssertEqual(parser.malformedEventCount, 1)
         XCTAssertEqual(frames.count, 1)
         XCTAssertEqual(frames[0].event, .done)
-        XCTAssertEqual(parser.discardedIncompleteEventCount, 0)
+        XCTAssertEqual(parser.discardedMalformedEventCount, 1)
     }
 
     func testOverlongEventDataCountedOnceAndNotDispatched() {
@@ -199,6 +199,7 @@ final class SSEFrameParserTests: XCTestCase {
         let frames = parser.consume(Array(text.utf8))
         XCTAssertTrue(frames.isEmpty)
         XCTAssertEqual(parser.malformedEventCount, 1)
+        XCTAssertEqual(parser.discardedMalformedEventCount, 1)
     }
 
     func testDiscardedIncompleteEventCountedAtEOF() {
@@ -206,7 +207,7 @@ final class SSEFrameParserTests: XCTestCase {
         _ = parser.consume(Array("event: text\ndata: {\"text\":\"x\"}".utf8))
         XCTAssertTrue(parser.finish().isEmpty)
         XCTAssertEqual(parser.malformedEventCount, 1)
-        XCTAssertEqual(parser.discardedIncompleteEventCount, 1)
+        XCTAssertEqual(parser.discardedMalformedEventCount, 1)
     }
 
     func testMultipleEventsInOneChunk() {

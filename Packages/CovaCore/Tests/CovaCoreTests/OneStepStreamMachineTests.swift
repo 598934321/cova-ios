@@ -63,22 +63,23 @@ final class OneStepStreamMachineTests: XCTestCase {
         XCTAssertEqual(machine.degradedBy, .eofBeforeDone)
     }
 
-    func testEOFResidualMalformedCountsTowardMalformedTrigger() {
+    func testDiscardedMalformedEventsCountTowardMalformedTrigger() {
         var machine = makeMachine()
         _ = machine.frameReceived(makeSSEFrame("text", "bad", malformed: true), at: 1)
         _ = machine.frameReceived(makeSSEFrame("text", "bad", malformed: true), at: 2)
-        let actions = machine.streamEnded(at: 3, residualMalformedEvents: 1)
+        let actions = machine.recordDiscardedMalformedEvents(1, at: 3)
         XCTAssertEqual(actions, [.terminateStreaming, .pollNow])
         XCTAssertEqual(machine.degradedBy, .malformedEvents(count: 3))
         XCTAssertEqual(machine.malformedEventCount, 3)
     }
 
-    func testEOFResidualBelowThresholdStillReportsEOF() {
+    func testDiscardedMalformedEventBelowThresholdStillReportsEOF() {
         var machine = makeMachine()
-        let actions = machine.streamEnded(at: 3, residualMalformedEvents: 1)
+        XCTAssertTrue(machine.recordDiscardedMalformedEvents(1, at: 1).isEmpty)
+        XCTAssertEqual(machine.malformedEventCount, 1)
+        let actions = machine.streamEnded(at: 2)
         XCTAssertEqual(actions, [.terminateStreaming, .pollNow])
         XCTAssertEqual(machine.degradedBy, .eofBeforeDone)
-        XCTAssertEqual(machine.malformedEventCount, 1)
     }
 
     func testSSEDeliveredPlanCardRegistersSignatureForPollDedupe() throws {

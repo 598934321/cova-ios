@@ -87,6 +87,7 @@ actor FakeSSEStreamingTransport: SSEStreamingTransport {
     func endStream() { continuation?.finish() }
     func failStream(_ error: Error) { continuation?.finish(throwing: error) }
     func isTerminated() -> Bool { terminated }
+    func isOpened() -> Bool { opened }
 }
 
 /// 可注入的假计划卡轮询（零真实网络）。
@@ -112,6 +113,34 @@ actor FakePlanPoller: OneStepPlanPolling {
 
     func callCount() -> Int { calls }
     func sessionIds() -> [String] { requestedSessionIds }
+}
+
+/// 带闸门的计划卡轮询：回包停在闸门处，供测试制造「回包 ∥ 取消」竞态（Minor-2）。
+actor GatedPlanPoller: OneStepPlanPolling {
+    private let response: [OneStepPlanCardDto]
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    private var calls = 0
+
+    init(response: [OneStepPlanCardDto]) {
+        self.response = response
+    }
+
+    func pollPlans(sessionId: String) async throws -> [OneStepPlanCardDto] {
+        calls += 1
+        if !released {
+            await withCheckedContinuation { continuation = $0 }
+        }
+        return response
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func callCount() -> Int { calls }
 }
 
 /// 汇总协调器输出流（测试用）。

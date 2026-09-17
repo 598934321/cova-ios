@@ -122,21 +122,24 @@ public struct OneStepStreamMachine: Sendable {
 
     /// SSE 流正常或异常结束（EOF）。仅在仍处于 `streaming` 时触发降级——
     /// done 之后的 EOF 是正常收尾，不降级。
-    ///
-    /// `residualMalformedEvents` 为解析器在 EOF 处丢弃的残帧数（m1）：计入坏事件口径，
-    /// 达到阈值时降级原因同样报 `.malformedEvents`，而非恒报 `.eofBeforeDone`。
-    public mutating func streamEnded(
-        at now: TimeInterval,
-        residualMalformedEvents: Int = 0
-    ) -> [OneStepStreamAction] {
+    public mutating func streamEnded(at now: TimeInterval) -> [OneStepStreamAction] {
         guard phase == .streaming else { return [] }
-        if residualMalformedEvents > 0 {
-            malformedEventCount += residualMalformedEvents
-            if malformedEventCount >= policy.malformedEventThreshold {
-                return degrade(.malformedEvents(count: malformedEventCount), at: now)
-            }
-        }
         return degrade(.eofBeforeDone, at: now)
+    }
+
+    /// 回传解析器丢弃的坏事件（超长行 / 超长事件数据 / EOF 残帧；无对应帧）。
+    ///
+    /// 与载荷非法 JSON 的坏事件共用同一计数与阈值，因此达到阈值时降级原因同样为
+    /// `.malformedEvents`，而非恒报 `.eofBeforeDone`（Minor-1）。
+    public mutating func recordDiscardedMalformedEvents(
+        _ count: Int,
+        at now: TimeInterval
+    ) -> [OneStepStreamAction] {
+        guard phase == .streaming, count > 0 else { return [] }
+        lastActivityAt = now
+        malformedEventCount += count
+        guard malformedEventCount >= policy.malformedEventThreshold else { return [] }
+        return degrade(.malformedEvents(count: malformedEventCount), at: now)
     }
 
     /// 到达下一个截止时刻（超时 / 轮询节拍）。
@@ -298,17 +301,33 @@ public actor OneStepStreamCoordinator {
         return stream
     }
 
-    /// 上层取消：终止 SSE 与轮询并结束输出流（幂等；终态后为 no-op）。
+    /// 上层取消：终止 SSE 与轮询并结束输出流。
+    ///
+    /// **确定性取消语义（M-1）**：一旦调用，此协调器即锁定为终态，保证此后不会再有活跃会话：
+    /// - 未 `start`（`.idle`）→ 直接置终态；其后 `start()` 抛 `alreadyFinished`，绝不打开 SSE；
+    /// - 进行中（`.running`）→ 终止 SSE/轮询并结束输出流；
+    /// - 已终态 → no-op。
+    /// 因此无论 `cancel` 与 `start` 的调度顺序如何，都**不存在**「cancel 返回后 SSE 仍被打开」。
     public func cancel() async {
-        let now = await clock.now()
-        guard !isFinished, var machine else { return }
-        let actions = machine.cancel()
-        self.machine = machine
-        apply(actions, now: now)
+        switch lifecycle {
+        case .finished:
+            return
+        case .idle:
+            lifecycle = .finished
+            return
+        case .running:
+            let now = await clock.now()
+            guard !isFinished, var machine else { return }
+            let actions = machine.cancel()
+            self.machine = machine
+            apply(actions, now: now)
+        }
     }
 
     // MARK: - 观测（测试/调试）
 
+    /// 是否已锁定终态（含「start 前被 cancel」）。
+    public func isTerminated() -> Bool { lifecycle == .finished }
     public func currentPhase() -> OneStepStreamPhase? { machine?.phase }
     public func degradationTrigger() -> OneStepDegradationTrigger? { machine?.degradedBy }
     public func malformedEventCount() -> Int { machine?.malformedEventCount ?? 0 }
@@ -325,19 +344,42 @@ public actor OneStepStreamCoordinator {
         do {
             let chunks = try await transport.stream(request)
             var parser = SSEFrameParser()
+            var reportedDiscarded = 0
             for try await chunk in chunks {
                 if Task.isCancelled { return }
                 for frame in parser.consume(chunk) { await handle(frame) }
+                // 协议级坏事件（超长行/超长数据）无帧可派发，需显式回传参与坏事件判定。
+                reportedDiscarded = await reportDiscardedMalformed(
+                    total: parser.discardedMalformedEventCount,
+                    reported: reportedDiscarded
+                )
             }
             guard !Task.isCancelled else { return }
             for frame in parser.finish() { await handle(frame) }
-            await handleStreamEnded(residualMalformedEvents: parser.discardedIncompleteEventCount)
+            _ = await reportDiscardedMalformed(
+                total: parser.discardedMalformedEventCount,
+                reported: reportedDiscarded
+            )
+            await handleStreamEnded()
         } catch is CancellationError {
             return
         } catch {
             guard !Task.isCancelled else { return }
-            await handleStreamEnded(residualMalformedEvents: 0)
+            await handleStreamEnded()
         }
+    }
+
+    /// 把解析器新丢弃的坏事件增量回传状态机（唯一 await 前置，再同步读-改-写）。
+    @discardableResult
+    private func reportDiscardedMalformed(total: Int, reported: Int) async -> Int {
+        let delta = total - reported
+        guard delta > 0 else { return total }
+        let now = await clock.now()
+        guard !isFinished, var machine else { return total }
+        let actions = machine.recordDiscardedMalformedEvents(delta, at: now)
+        self.machine = machine
+        apply(actions, now: now)
+        return total
     }
 
     /// 关键并发约定（M1）：**先取时间（唯一 await），再同步读-改-写状态机**。
@@ -351,10 +393,10 @@ public actor OneStepStreamCoordinator {
         apply(actions, now: now)
     }
 
-    private func handleStreamEnded(residualMalformedEvents: Int) async {
+    private func handleStreamEnded() async {
         let now = await clock.now()
         guard !isFinished, var machine else { return }
-        let actions = machine.streamEnded(at: now, residualMalformedEvents: residualMalformedEvents)
+        let actions = machine.streamEnded(at: now)
         self.machine = machine
         apply(actions, now: now)
     }
