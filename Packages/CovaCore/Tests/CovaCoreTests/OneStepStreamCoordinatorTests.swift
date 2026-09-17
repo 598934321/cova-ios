@@ -31,9 +31,10 @@ private struct CoordinatorHarness {
 private func startCoordinator(
     clock: VirtualClock,
     sse: FakeSSEStreamingTransport,
-    poller: FakePlanPoller
+    poller: FakePlanPoller,
+    policy: OneStepDegradationPolicy = OneStepDegradationPolicy()
 ) async throws -> CoordinatorHarness {
-    let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
+    let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller, policy: policy)
     let stream = try await coordinator.start(sessionId: "session-test-0001", agentRequest: try agentRequest())
     let collector = FrameCollector()
     let completed = CompletionFlag()
@@ -360,6 +361,8 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         } catch let error as OneStepStreamCoordinator.LifecycleError {
             XCTAssertEqual(error, .alreadyFinished)
         }
+        let streamCalls = await sse.streamCalls()
+        XCTAssertEqual(streamCalls, 0, "cancel 后绝不发起 SSE 传输")
         let opened = await sse.isOpened()
         XCTAssertFalse(opened, "cancel 后绝不打开 SSE")
         let calls = await poller.callCount()
@@ -386,7 +389,60 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         XCTAssertEqual(calls, 0)
     }
 
-    /// 并发 start ∥ cancel：无论调度顺序如何，最终都不得存在未取消的活跃会话。
+    /// M-1 契约（确定性）：`start` 悬停在首个 `await now()` 时 `cancel()`——此后**绝不**发起传输。
+    func testCancelDuringStartAwaitWindowSuppressesTransport() async throws {
+        let clock = GatedNowClock()
+        let sse = FakeSSEStreamingTransport()
+        let poller = FakePlanPoller()
+        let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
+
+        let startTask = Task { try await coordinator.start(sessionId: "s", agentRequest: try agentRequest()) }
+        await assertEventually { await clock.isNowBlocked() }
+        await coordinator.cancel()
+        await clock.openNowGate()
+        let stream = try await startTask.value
+        for _ in 0..<300 { await Task.yield() }
+
+        let calls = await sse.streamCalls()
+        XCTAssertEqual(calls, 0, "start await 窗口内 cancel：不得发起 SSE 传输")
+        let terminated = await coordinator.isTerminated()
+        XCTAssertTrue(terminated)
+
+        let collector = FrameCollector()
+        let consumer = Task { for await frame in stream { await collector.append(frame) } }
+        await awaitConsumer(consumer)
+        let frames = await collector.snapshot()
+        XCTAssertTrue(frames.isEmpty)
+    }
+
+    /// M-1 契约（无 flake）：`cancel()` 返回后，SSE 传输调用数不再增加。
+    ///
+    /// 无论 `start` 的 SSE 任务是否已抢先发起一次传输（此时该调用发生在 cancel 返回**之前**），
+    /// cancel 返回后都不得再新增调用；取消先胜的轮次（`atReturn == 0`）必须保持 0。
+    func testCancelReturnedPreventsFurtherSSETransportCalls() async throws {
+        for iteration in 0..<300 {
+            let clock = VirtualClock()
+            let sse = FakeSSEStreamingTransport()
+            let poller = FakePlanPoller()
+            let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
+            let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
+
+            await coordinator.cancel()
+            let atReturn = await sse.streamCalls()
+            let collector = FrameCollector()
+            let consumer = Task { for await frame in stream { await collector.append(frame) } }
+            for _ in 0..<200 { await Task.yield() }
+            let after = await sse.streamCalls()
+            XCTAssertEqual(after, atReturn, "第 \(iteration) 次：cancel 返回后仍发起了 SSE 传输")
+
+            await awaitConsumer(consumer)
+            let frames = await collector.snapshot()
+            XCTAssertTrue(frames.isEmpty, "第 \(iteration) 次：取消后不得投递帧")
+        }
+    }
+
+    /// 并发 start ∥ cancel：无论调度顺序如何，最终都不得存在未取消的活跃会话，
+    /// 且 cancel 返回后传输调用数不再增加。
     func testConcurrentStartAndCancelLeavesNoActiveSession() async throws {
         for iteration in 0..<120 {
             let clock = VirtualClock(yields: 300)
@@ -397,6 +453,7 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
             let startTask = Task { try await coordinator.start(sessionId: "s", agentRequest: try agentRequest()) }
             let cancelTask = Task { await coordinator.cancel() }
             await cancelTask.value
+            let callsAtCancelReturn = await sse.streamCalls()
             let result = await startTask.result
 
             switch result {
@@ -416,7 +473,14 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
                     .alreadyFinished,
                     "第 \(iteration) 次：cancel 先于 start 应抛 alreadyFinished"
                 )
+                // cancel 先于 start：从未发起传输。
+                let afterFailure = await sse.streamCalls()
+                XCTAssertEqual(afterFailure, 0, "第 \(iteration) 次：cancel 先于 start 则不得发起传输")
             }
+
+            for _ in 0..<300 { await Task.yield() }
+            let after = await sse.streamCalls()
+            XCTAssertEqual(after, callsAtCancelReturn, "第 \(iteration) 次：cancel 返回后仍发起了传输")
 
             let terminated = await coordinator.isTerminated()
             XCTAssertTrue(terminated, "第 \(iteration) 次：协调器必须终态")
@@ -425,7 +489,7 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
                 phase == nil || phase == .finished,
                 "第 \(iteration) 次：不得停在 \(String(describing: phase))"
             )
-            if await sse.isOpened() {
+            if after > 0 {
                 await assertEventually { await sse.isTerminated() }
             }
             let calls = await poller.callCount()
@@ -456,7 +520,12 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         }
     }
 
+    /// 同一降级动作不得重复发起轮询。
+    ///
+    /// 用极大 `pollInterval` 把「合法节拍轮询」排除出观测窗，口径只针对「并发 tick/坏事件导致的
+    /// 重复降级」——避免把跨过 5s 节拍的合法第二次轮询误判为重复（Minor-1）。
     func testDegradeIsIdempotentUnderConcurrentTickAndMalformedFrame() async throws {
+        let isolatedPolicy = OneStepDegradationPolicy(pollInterval: 1000)
         for iteration in 0..<100 {
             let clock = VirtualClock(yields: 8)
             let sse = FakeSSEStreamingTransport()
@@ -464,7 +533,7 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
             await poller.enqueue(try planCards())
             await poller.enqueue(try planCards())
             await poller.enqueue(try planCards())
-            let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+            let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller, policy: isolatedPolicy)
             await sse.waitUntilOpened()
 
             await sse.send("event: text\ndata: ###\n\n")
@@ -480,7 +549,7 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
             for _ in 0..<300 { await Task.yield() }
             let calls = await poller.callCount()
             let phase = await harness.coordinator.currentPhase()
-            XCTAssertEqual(calls, 1, "第 \(iteration) 次：降级只能发起一次轮询")
+            XCTAssertEqual(calls, 1, "第 \(iteration) 次：同一次降级只能发起一次轮询")
             XCTAssertEqual(phase, .polling, "第 \(iteration) 次")
             _ = await harness.collector.snapshot()
 
@@ -571,6 +640,38 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         XCTAssertEqual(phase, .finished)
         let calls = await gate.callCount()
         XCTAssertEqual(calls, 1, "不得重复降级/重复轮询")
+        await awaitConsumer(consumer)
+    }
+
+    /// Minor-2：慢回包（耗时远超 5s 节拍）完成后不得立即背靠背补发下一次轮询。
+    func testSlowPollResponseDoesNotTriggerBackToBackPoll() async throws {
+        let clock = VirtualClock()
+        let sse = FakeSSEStreamingTransport()
+        let gate = GatedPlanPoller(response: try planCards())
+        let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: gate)
+        let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
+        let collector = FrameCollector()
+        let completed = CompletionFlag()
+        let consumer = Task {
+            for await frame in stream { await collector.append(frame) }
+            await completed.mark()
+        }
+
+        await sse.waitUntilOpened()
+        await advanceUntil(clock) { await gate.callCount() == 1 }   // 降级首轮，回包被闸门拦住
+
+        // 时间跳跃远超 5s（回包仍未返回）。
+        await clock.advance(by: 100)
+        await gate.releaseOne()
+        for _ in 0..<300 { await Task.yield() }
+        let callsAfterSlowResponse = await gate.callCount()
+        XCTAssertEqual(callsAfterSlowResponse, 1, "慢回包完成后不得立即背靠背补发")
+
+        // 完成时刻起算 5s 后才允许下一拍。
+        await clock.advance(by: 5)
+        await advanceUntil(clock) { await gate.callCount() == 2 }
+
+        await coordinator.cancel()
         await awaitConsumer(consumer)
     }
 }

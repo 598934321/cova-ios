@@ -145,11 +145,11 @@ final class OneStepStreamMachineTests: XCTestCase {
             return XCTFail("应为计划卡动作")
         }
         XCTAssertEqual(emitted.count, 2)
-        // 节拍自「发起轮询」起算（lastPollAt=0）→ 下一次唤醒 5s。
-        XCTAssertEqual(machine.nextDeadline(), 5)
+        // 节拍自「本次轮询完成」起算（lastPollAt=1）→ 下一次唤醒 6s（Minor-2）。
+        XCTAssertEqual(machine.nextDeadline(), 6)
 
-        XCTAssertTrue(machine.deadlineReached(at: 4.999).isEmpty)
-        XCTAssertEqual(machine.deadlineReached(at: 5), [.pollNow])
+        XCTAssertTrue(machine.deadlineReached(at: 5.999).isEmpty)
+        XCTAssertEqual(machine.deadlineReached(at: 6), [.pollNow])
         // awaitingPoll 期间不重复触发。
         XCTAssertTrue(machine.deadlineReached(at: 100).isEmpty)
     }

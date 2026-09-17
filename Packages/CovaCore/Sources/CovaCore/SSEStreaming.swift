@@ -58,6 +58,8 @@ public struct URLSessionSSETransport: SSEStreamingTransport {
         guard CovaEnvironment.isProductionOrigin(request.url) else {
             throw CovaAPIError.invalidRequestURL
         }
+        // 已被取消：不得创建 URLSession 任务（纵深防御，M-1）。
+        try Task.checkCancellation()
         let urlRequest = URLSessionTransport.makeURLRequest(request, timeoutInterval: Self.idleTimeout)
         let session = self.session
         return AsyncThrowingStream { continuation in

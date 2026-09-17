@@ -184,6 +184,8 @@ public struct OneStepStreamMachine: Sendable {
         guard phase == .polling else { return [] }
         awaitingPoll = false
         lastActivityAt = now
+        // 节拍从「本次轮询完成」起算：慢回包 / 时间跳跃后不会因 nextDeadline 已过期而背靠背立即补发（Minor-2）。
+        lastPollAt = now
         let fresh = cards.filter { emittedCardSignatures.insert(Self.signature(of: $0)).inserted }
         return fresh.isEmpty ? [] : [.emitPlanCards(fresh)]
     }
@@ -341,6 +343,9 @@ public actor OneStepStreamCoordinator {
     }
 
     private func consume(_ request: HTTPRequest) async {
+        // M-1：已取消的 Task 仍会执行闭包体，若不在此处拦截就会在 `cancel()` 返回后仍发起一次传输。
+        // 此检查在调用传输**之前**、且与 `transport.stream` 之间无 await，故 cancel 返回后绝不发起传输。
+        guard !Task.isCancelled else { return }
         do {
             let chunks = try await transport.stream(request)
             var parser = SSEFrameParser()

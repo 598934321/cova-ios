@@ -56,14 +56,71 @@ actor VirtualClock: CovaClock {
     func pendingWaiterCount() -> Int { waiters.count }
 }
 
+/// 首次 `now()` 阻塞直到放行；用于**确定性**构造「`start` 的 `await` 窗口内 cancel」。
+/// 其余时间行为与 `VirtualClock` 一致（`sleep` 由 `advance` 放行）。
+actor GatedNowClock: CovaClock {
+    private var current: TimeInterval = 0
+    private var nowCallCount = 0
+    private var nowGate: CheckedContinuation<Void, Never>?
+    private var waiters: [UUID: (deadline: TimeInterval, continuation: CheckedContinuation<Void, Error>)] = [:]
+
+    func now() async -> TimeInterval {
+        nowCallCount += 1
+        if nowCallCount == 1 {
+            await withCheckedContinuation { nowGate = $0 }
+        }
+        return current
+    }
+
+    func isNowBlocked() -> Bool { nowGate != nil }
+
+    func openNowGate() {
+        nowGate?.resume()
+        nowGate = nil
+    }
+
+    func sleep(seconds: TimeInterval) async throws {
+        if seconds <= 0 { return }
+        let id = UUID()
+        let deadline = current + seconds
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    waiters[id] = (deadline, continuation)
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let waiter = waiters.removeValue(forKey: id) else { return }
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    func advance(by seconds: TimeInterval) {
+        current += seconds
+        let due = waiters.filter { $0.value.deadline <= current }
+        for (id, waiter) in due {
+            waiters[id] = nil
+            waiter.continuation.resume()
+        }
+    }
+}
+
 /// 可注入的假 SSE 流（零真实网络）。
 actor FakeSSEStreamingTransport: SSEStreamingTransport {
     private var continuation: AsyncThrowingStream<Data, Error>.Continuation?
     private var openWaiters: [CheckedContinuation<Void, Never>] = []
     private var opened = false
     private var terminated = false
+    private var streamCallTotal = 0
 
     func stream(_ request: HTTPRequest) async throws -> AsyncThrowingStream<Data, Error> {
+        streamCallTotal += 1
         let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
         self.continuation = continuation
         continuation.onTermination = { [weak self] _ in
@@ -88,6 +145,8 @@ actor FakeSSEStreamingTransport: SSEStreamingTransport {
     func failStream(_ error: Error) { continuation?.finish(throwing: error) }
     func isTerminated() -> Bool { terminated }
     func isOpened() -> Bool { opened }
+    /// `stream()` 被调用的次数（M-1 契约：cancel 返回后不得再增加）。
+    func streamCalls() -> Int { streamCallTotal }
 }
 
 /// 可注入的假计划卡轮询（零真实网络）。
@@ -115,11 +174,11 @@ actor FakePlanPoller: OneStepPlanPolling {
     func sessionIds() -> [String] { requestedSessionIds }
 }
 
-/// 带闸门的计划卡轮询：回包停在闸门处，供测试制造「回包 ∥ 取消」竞态（Minor-2）。
+/// 带闸门的计划卡轮询：回包停在闸门处，供测试制造「回包 ∥ 取消」与「慢回包」场景。
 actor GatedPlanPoller: OneStepPlanPolling {
     private let response: [OneStepPlanCardDto]
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var released = false
+    private var pending: [CheckedContinuation<Void, Never>] = []
+    private var autoRelease = false
     private var calls = 0
 
     init(response: [OneStepPlanCardDto]) {
@@ -128,16 +187,27 @@ actor GatedPlanPoller: OneStepPlanPolling {
 
     func pollPlans(sessionId: String) async throws -> [OneStepPlanCardDto] {
         calls += 1
-        if !released {
-            await withCheckedContinuation { continuation = $0 }
+        if !autoRelease {
+            await withCheckedContinuation { pending.append($0) }
         }
         return response
     }
 
+    /// 放行一次在途回包；若当前无在途则令后续调用不再阻塞。
+    func releaseOne() {
+        if pending.isEmpty {
+            autoRelease = true
+        } else {
+            pending.removeFirst().resume()
+        }
+    }
+
+    /// 放行全部在途回包并令后续调用不再阻塞。
     func release() {
-        released = true
-        continuation?.resume()
-        continuation = nil
+        autoRelease = true
+        let waiters = pending
+        pending = []
+        for waiter in waiters { waiter.resume() }
     }
 
     func callCount() -> Int { calls }
