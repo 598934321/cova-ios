@@ -151,6 +151,65 @@ final class LibraryDTOTests: XCTestCase {
         }
     }
 
+    // MARK: - similarTo 列表（similar 投影，专属封套）
+
+    func testDecodesSimilarToPageWithSimilarProjection() throws {
+        let page = try Fixture.decode(SimilarTrackPageDto.self, "tracks-similar-to")
+        XCTAssertEqual(page.tracks.count, 5)
+        XCTAssertEqual(page.total, 5)
+        XCTAssertEqual(page.page, 1)
+        XCTAssertEqual(page.pageSize, 5)
+        XCTAssertEqual(page.totalPages, 1)
+        XCTAssertEqual(page.similarTo, "library-9749cdc210a624de9d0da02e")
+
+        let first = page.tracks[0]
+        XCTAssertEqual(first.id, "library-5d8e91cab645b44c8ab12169")
+        XCTAssertEqual(first.featured, 0)
+        XCTAssertEqual(first.isFeatured, false)
+        XCTAssertEqual(first.previewStart, 161.25)
+        XCTAssertEqual(first.previewEnd, 182.01)
+        XCTAssertEqual(first.similarityScore, 111)
+        XCTAssertEqual(first.playCount, 0)
+        XCTAssertEqual(first.createdAt?.isEmpty, false)
+        XCTAssertEqual(first.waveformPeaks.count, 8)
+        XCTAssertEqual(first.tags.first?.dimension, "instrument")
+        XCTAssertNil(first.tags.first?.trackId)
+        XCTAssertEqual(first.artist.id, "A07")
+        XCTAssertNil(first.artist.country)
+        // 同一响应内 similarityScore 混用 int / float
+        XCTAssertEqual(page.tracks[1].similarityScore, 110.25)
+    }
+
+    /// 真实投影守卫：similarTo 的 `tracks[]` 必须保持 similar 投影特征。
+    func testSimilarToFixtureKeepsRealProjectionShape() throws {
+        let raw = try Fixture.value("tracks-similar-to") as? [String: Any]
+        XCTAssertEqual(raw?["similarTo"] as? String, "library-9749cdc210a624de9d0da02e")
+        let tracks = try XCTUnwrap(raw?["tracks"] as? [[String: Any]])
+        XCTAssertEqual(tracks.count, 5)
+        for track in tracks {
+            XCTAssertNotNil(track["preview_start"], "similarTo 投影应为 snake_case preview_start")
+            XCTAssertNil(track["previewStart"], "similarTo 投影不应有 camelCase previewStart")
+            XCTAssertNil(track["playCount"])
+            XCTAssertNil(track["createdAt"])
+            XCTAssertNotNil(track["similarityScore"])
+            let featured = try XCTUnwrap(track["featured"])
+            let encoded = try JSONSerialization.data(withJSONObject: ["v": featured])
+            XCTAssertEqual(String(data: encoded, encoding: .utf8), #"{"v":0}"#, "similarTo.featured 必须是数字")
+        }
+    }
+
+    /// 两套投影必须保持可区分：similarTo 载荷**不得**被宽松成普通列表 DTO。
+    /// 若把 `TrackPageDto` 放宽（容忍数字 featured / 可选化 preview*），本条会失败 —— 这是刻意守卫。
+    func testSimilarToPayloadIsNotDecodableAsNormalTrackPage() throws {
+        let data = try Fixture.data("tracks-similar-to")
+        XCTAssertThrowsError(try JSONDecoder().decode(TrackPageDto.self, from: data)) { error in
+            guard let decoding = error as? DecodingError else { return XCTFail("应为 DecodingError") }
+            XCTAssertEqual(CovaAPIError.classify(decoding: decoding), .decoding(field: "featured"))
+        }
+        // 反向：普通列表载荷仍必须能解成 TrackPageDto（未弱化）
+        XCTAssertNoThrow(try Fixture.decode(TrackPageDto.self, "track-page"))
+    }
+
     func testDecodesTrackPreviewUrl() throws {
         let preview = try Fixture.decode(TrackPreviewUrlDto.self, "track-preview-url")
         XCTAssertEqual(preview.url.hasPrefix("https://"), true)

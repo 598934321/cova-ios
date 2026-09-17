@@ -85,9 +85,10 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
 
     func testLoginRequestIsConstructibleFromOutsideModule() throws {
         let request = CovaLoginRequestDto(email: "tester@example.invalid", password: "placeholder")
-        let text = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
-        XCTAssertTrue(text.contains(#""email":"tester@example.invalid""#))
-        XCTAssertTrue(text.contains(#""password":"placeholder""#))
+        try XCTAssertEncodedJSONEqual(
+            JSONEncoder().encode(request),
+            fixture: "requests/login-request"
+        )
     }
 
     // MARK: - 其余对外可构造的公共类型

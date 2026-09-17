@@ -300,6 +300,31 @@ public struct TrackPreviewUrlDto: Codable, Equatable, Sendable {
     }
 }
 
+/// `GET /api/tracks?similarTo=<trackId>` 的分页封套。
+///
+/// **该筛选返回的是 similar 投影，不是普通列表投影**（2026-09-17 实测：
+/// `featured` 为数字、只有 snake_case `preview_start/preview_end/play_count/created_at/audio_duration`、
+/// 多出 `similarityScore` 与一批 snake 重复键；封套额外回显 `similarTo`）。
+/// 普通筛选（`search / sort / energy / vocalType / scene / key / …`）仍走 `TrackPageDto`。
+public struct SimilarTrackPageDto: Codable, Equatable, Sendable {
+    public let tracks: [SimilarTrackDto]
+    public let total: Int?
+    public let page: Int?
+    public let pageSize: Int?
+    public let totalPages: Int?
+    /// 回显的 `similarTo` 参数（seed 曲目 id）。
+    public let similarTo: String?
+
+    enum CodingKeys: String, CodingKey {
+        case tracks
+        case total
+        case page
+        case pageSize
+        case totalPages
+        case similarTo
+    }
+}
+
 /// `GET /api/tracks` 分页封套（真实响应：`{tracks, total, page, pageSize, totalPages}`）。
 public struct TrackPageDto: Codable, Equatable, Sendable {
     public let tracks: [TrackDto]

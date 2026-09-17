@@ -79,11 +79,11 @@ final class AuthDTOTests: XCTestCase {
     }
 
     func testLoginRequestEncodesContractKeys() throws {
-        let request = CovaLoginRequestDto(email: "tester@example.invalid", password: "secret")
-        let data = try JSONEncoder().encode(request)
-        let text = String(data: data, encoding: .utf8) ?? ""
-        XCTAssertTrue(text.contains("\"email\""))
-        XCTAssertTrue(text.contains("\"password\""))
+        let request = CovaLoginRequestDto(email: "tester@example.invalid", password: "placeholder")
+        try XCTAssertEncodedJSONEqual(
+            JSONEncoder().encode(request),
+            fixture: "requests/login-request"
+        )
     }
 
     func testDecodesRefreshAndLogoutResponses() throws {

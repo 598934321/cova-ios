@@ -22,7 +22,7 @@
 
 | 端点 | 说明 |
 |---|---|
-| `GET /api/tracks` | 多维筛选：`scene / mood / style / artistId / instrument / attribute / energy / vocalType / bpm / duration / search / sort / page / similarTo` |
+| `GET /api/tracks` | 多维筛选：`scene / mood / style / artistId / instrument / attribute / energy / vocalType / bpm / duration / search / sort / page / similarTo`。⚠️ **`similarTo` 是唯一的例外**：它返回 **similar 投影**（见下方警告），响应须用 `SimilarTrackPageDto` 解码；其余筛选（`search / sort / energy / vocalType / scene / key / createdAfter / preciseTag / category / durationMin` …）返回普通列表投影 → `TrackPageDto` |
 | `GET /api/tracks/:id` | 详情 + 相似曲目（`{track, similar[]}`） |
 | `GET /api/tracks/:id/preview-url` | 试听 URL + preview 区间（匿名可访问，2026-09-17 实测：`{url, previewStart, previewEnd, duration}`） |
 | `GET /api/library/taxonomy` | 词表（genre→subgenre→三级延伸；scene/mood/instrument/type/energy 维度） |
@@ -31,15 +31,19 @@
 | `GET/POST/DELETE /api/favorites` | 曲目收藏（需登录）。`GET → {tracks[]}`；`POST/DELETE` body `{trackId}` → `{message, favoriteCount}`。⚠️ `GET` 会混入「生成音乐收藏」条目（`source:"note"`/`noteId`，字段集不同，NEEDS #11） |
 | `POST /api/tracks/play` | 播放上报，`source: "app-ios"`（NEEDS-2），幂等键 |
 
-**TrackDto 关键字段**：`id / title / titleCn / artist{…} / cover / duration / bpm / audioUrl /
-scenes[] / moods[] / tags[] / displayLabels[] / highlightStart-End / waveformPeaks[] / lyrics /
-vocalType / energy / variants[]（A/B 变体）/ favoriteCount / previewStart-End`
+**TrackDto 关键字段（普通列表投影）**：`id / title / titleCn / artist{…} / cover / duration / bpm /
+audioUrl / scenes[] / moods[] / tags[] / displayLabels[] / highlightStart-End / waveformPeaks[] /
+lyrics / vocalType / energy / variants[]（A/B 变体）/ favoriteCount / previewStart-End`
 
-> ⚠️ **投影不一致（2026-09-17 实测，NEEDS #10）**：`GET /api/tracks` 的 `tracks[]` 用 camelCase
-> `previewStart/End`、`featured` 为 Bool；而 `GET /api/tracks/:id` 的 `similar[]` 用 snake_case
-> `preview_start/end`（无 camel 别名）、`featured` 为数字 0/1、`play_count/created_at/audio_duration`
-> 仅 snake_case、`artist`/`tags` 为裁剪结构、另有 `similarityScore`（int 或 float）。
-> iOS 端据此建独立 `SimilarTrackDto`；**不要把 `similar[]` 当作 `TrackDto`**。
+> ⚠️ **投影不一致（2026-09-17 实测，NEEDS #10 / #12）**：同一「曲目」资源存在**两套序列化**：
+> - **普通列表投影**（`GET /api/tracks` 的其余筛选、`GET /api/playlists/:id` 的 `tracks[]`）：
+>   camelCase `previewStart/End`，`featured` 为 **Bool** → `TrackDto` / `TrackPageDto`。
+> - **similar 投影**（`GET /api/tracks/:id` 的 `similar[]` **以及 `GET /api/tracks?similarTo=` 的 `tracks[]`**）：
+>   只有 snake_case `preview_start/end / play_count / created_at / audio_duration`，
+>   `featured` 为**数字 0/1**，`artist`/`tags` 为裁剪结构，另有 `similarityScore`（int 或 float）；
+>   `similarTo` 响应的封套还会**回显 `similarTo` 参数** → `SimilarTrackDto` / `SimilarTrackPageDto`。
+>
+> **客户端不得把 similar 投影当作 `TrackDto`**（会 `typeMismatch: featured` / `keyNotFound: previewStart`）。
 > 另：`GET /api/tracks/:id` 的 `track` 无 variant 字段族（NEEDS #8）。
 
 **PlaylistDto 关键字段**：`id / title / titleCn / cover + coverMedia（fit/focal 焦点）/

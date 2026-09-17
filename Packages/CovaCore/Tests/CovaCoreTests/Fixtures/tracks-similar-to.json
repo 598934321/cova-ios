@@ -1,0 +1,504 @@
+{
+  "tracks": [
+    {
+      "id": "library-5d8e91cab645b44c8ab12169",
+      "category": "music",
+      "title": "Mellow Echo Mirrors the Canyon",
+      "title_cn": "Mellow Echo Mirrors the Canyon",
+      "artist_id": "A07",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D015/COVA-20260917-D015-B.jpeg",
+      "duration": 204.36,
+      "bpm": 76,
+      "key": "Em",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-16T17:21:02.758Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D015/COVA-20260917-D015-B.mp3",
+      "audio_duration": null,
+      "preview_start": 161.25,
+      "preview_end": 182.01,
+      "status": "published",
+      "segment_colors": "0-45.41s#746F73;45.41-170.3s#7E4650",
+      "waveform_peaks": "[0.1337, 0.209, 0.1597, 0.1103, 0.2393, 0.3483, 0.3171, 0.2191]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Elise Moreau",
+      "artist_name_cn": "艾丽丝·莫罗",
+      "artist_avatar": "/assets/artists/artist-07-elise-moreau.webp",
+      "titleCn": "Mellow Echo Mirrors the Canyon",
+      "artistId": "A07",
+      "artist": {
+        "id": "A07",
+        "name": "Elise Moreau",
+        "nameCn": "艾丽丝·莫罗",
+        "avatar": "/assets/artists/artist-07-elise-moreau.webp"
+      },
+      "artistName": "Elise Moreau",
+      "artistNameCn": "艾丽丝·莫罗",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "悬疑惊悚"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "悬疑惊悚",
+        "民谣",
+        "氛围",
+        "合成器"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D015/COVA-20260917-D015-B.mp3",
+      "highlightStart": 161.25,
+      "highlightEnd": 182.01,
+      "waveformPeaks": [
+        0.1337,
+        0.209,
+        0.1597,
+        0.1103,
+        0.2393,
+        0.3483,
+        0.3171,
+        0.2191
+      ],
+      "cocreate": false,
+      "segmentColors": "0-45.41s#746F73;45.41-170.3s#7E4650",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "dimension": "instrument",
+          "value": "大提琴"
+        },
+        {
+          "dimension": "instrument",
+          "value": "弦乐"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 111
+    },
+    {
+      "id": "library-0e027fe66829f34506252baf",
+      "category": "music",
+      "title": "Carousel Amplifies the Stairwell",
+      "title_cn": "Carousel Amplifies the Stairwell",
+      "artist_id": "A07",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D015/COVA-20260913-D015-A.jpeg",
+      "duration": 179.976,
+      "bpm": 73,
+      "key": "Gm",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-13T07:08:26.047Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D015/COVA-20260913-D015-A.mp3",
+      "audio_duration": null,
+      "preview_start": 140.61,
+      "preview_end": 160.29,
+      "status": "published",
+      "segment_colors": "0-12s#8D9298;12-24s#746F73",
+      "waveform_peaks": "[0.113, 0.1904, 0.2095, 0.2377, 0.2131, 0.1503, 0.1867, 0.1703]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Elise Moreau",
+      "artist_name_cn": "艾丽丝·莫罗",
+      "artist_avatar": "/assets/artists/artist-07-elise-moreau.webp",
+      "titleCn": "Carousel Amplifies the Stairwell",
+      "artistId": "A07",
+      "artist": {
+        "id": "A07",
+        "name": "Elise Moreau",
+        "nameCn": "艾丽丝·莫罗",
+        "avatar": "/assets/artists/artist-07-elise-moreau.webp"
+      },
+      "artistName": "Elise Moreau",
+      "artistNameCn": "艾丽丝·莫罗",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "悬疑惊悚"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "悬疑惊悚",
+        "民谣",
+        "氛围",
+        "合成器"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D015/COVA-20260913-D015-A.mp3",
+      "highlightStart": 140.61,
+      "highlightEnd": 160.29,
+      "waveformPeaks": [
+        0.113,
+        0.1904,
+        0.2095,
+        0.2377,
+        0.2131,
+        0.1503,
+        0.1867,
+        0.1703
+      ],
+      "cocreate": false,
+      "segmentColors": "0-12s#8D9298;12-24s#746F73",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "dimension": "instrument",
+          "value": "大提琴"
+        },
+        {
+          "dimension": "instrument",
+          "value": "弦乐"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 110.25
+    },
+    {
+      "id": "library-d44881578fb9ca86c4d2a97f",
+      "category": "music",
+      "title": "Rooftop and Attic",
+      "title_cn": "Rooftop and Attic",
+      "artist_id": "A07",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D015/COVA-20260913-D015-B.jpeg",
+      "duration": 183.192,
+      "bpm": 73,
+      "key": "Bb",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-13T07:08:24.049Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D015/COVA-20260913-D015-B.mp3",
+      "audio_duration": null,
+      "preview_start": 111.63,
+      "preview_end": 131.67,
+      "status": "published",
+      "segment_colors": "0-11.45s#746F73;11.45-137.39s#7E4650",
+      "waveform_peaks": "[0.1151, 0.21, 0.2129, 0.2327, 0.1815, 0.1807, 0.2134, 0.2372]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Elise Moreau",
+      "artist_name_cn": "艾丽丝·莫罗",
+      "artist_avatar": "/assets/artists/artist-07-elise-moreau.webp",
+      "titleCn": "Rooftop and Attic",
+      "artistId": "A07",
+      "artist": {
+        "id": "A07",
+        "name": "Elise Moreau",
+        "nameCn": "艾丽丝·莫罗",
+        "avatar": "/assets/artists/artist-07-elise-moreau.webp"
+      },
+      "artistName": "Elise Moreau",
+      "artistNameCn": "艾丽丝·莫罗",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "悬疑惊悚"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "悬疑惊悚",
+        "民谣",
+        "氛围",
+        "合成器"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D015/COVA-20260913-D015-B.mp3",
+      "highlightStart": 111.63,
+      "highlightEnd": 131.67,
+      "waveformPeaks": [
+        0.1151,
+        0.21,
+        0.2129,
+        0.2327,
+        0.1815,
+        0.1807,
+        0.2134,
+        0.2372
+      ],
+      "cocreate": false,
+      "segmentColors": "0-11.45s#746F73;11.45-137.39s#7E4650",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "dimension": "instrument",
+          "value": "大提琴"
+        },
+        {
+          "dimension": "instrument",
+          "value": "弦乐"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 110.25
+    },
+    {
+      "id": "library-0cde069e597cddedc07f545e",
+      "category": "music",
+      "title": "Drifting Museum Chases the Circuit",
+      "title_cn": "Drifting Museum Chases the Circuit",
+      "artist_id": "A07",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B033/COVA-20260911-B033-B.jpeg",
+      "duration": 193.632,
+      "bpm": 72,
+      "key": "Cm",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-11T04:04:07.918Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B033/COVA-20260911-B033-B.mp3",
+      "audio_duration": null,
+      "preview_start": 161.86,
+      "preview_end": 181.53,
+      "status": "published",
+      "segment_colors": "0-11.39s#746F73;11.39-148.07s#7E4650",
+      "waveform_peaks": "[0.1259, 0.1165, 0.1461, 0.1059, 0.2482, 0.2859, 0.3261, 0.3676]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Elise Moreau",
+      "artist_name_cn": "艾丽丝·莫罗",
+      "artist_avatar": "/assets/artists/artist-07-elise-moreau.webp",
+      "titleCn": "Drifting Museum Chases the Circuit",
+      "artistId": "A07",
+      "artist": {
+        "id": "A07",
+        "name": "Elise Moreau",
+        "nameCn": "艾丽丝·莫罗",
+        "avatar": "/assets/artists/artist-07-elise-moreau.webp"
+      },
+      "artistName": "Elise Moreau",
+      "artistNameCn": "艾丽丝·莫罗",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "悬疑惊悚"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "悬疑惊悚",
+        "民谣",
+        "氛围",
+        "合成器"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B033/COVA-20260911-B033-B.mp3",
+      "highlightStart": 161.86,
+      "highlightEnd": 181.53,
+      "waveformPeaks": [
+        0.1259,
+        0.1165,
+        0.1461,
+        0.1059,
+        0.2482,
+        0.2859,
+        0.3261,
+        0.3676
+      ],
+      "cocreate": false,
+      "segmentColors": "0-11.39s#746F73;11.39-148.07s#7E4650",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "dimension": "instrument",
+          "value": "大提琴"
+        },
+        {
+          "dimension": "instrument",
+          "value": "弦乐"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 110
+    },
+    {
+      "id": "library-39baede4d2df5289f6419fc5",
+      "category": "music",
+      "title": "Jukebox Follows the Tide",
+      "title_cn": "Jukebox Follows the Tide",
+      "artist_id": "A07",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B198/COVA-20260911-B198-A.jpeg",
+      "duration": 179.904,
+      "bpm": 72,
+      "key": "Am",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-11T05:38:00.226Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B198/COVA-20260911-B198-A.mp3",
+      "audio_duration": null,
+      "preview_start": 111.03,
+      "preview_end": 130.71,
+      "status": "published",
+      "segment_colors": "0-11.99s#746F73;11.99-107.94s#7E4650",
+      "waveform_peaks": "[0.087, 0.2142, 0.2758, 0.144, 0.2835, 0.2941, 0.1505, 0.4397]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Elise Moreau",
+      "artist_name_cn": "艾丽丝·莫罗",
+      "artist_avatar": "/assets/artists/artist-07-elise-moreau.webp",
+      "titleCn": "Jukebox Follows the Tide",
+      "artistId": "A07",
+      "artist": {
+        "id": "A07",
+        "name": "Elise Moreau",
+        "nameCn": "艾丽丝·莫罗",
+        "avatar": "/assets/artists/artist-07-elise-moreau.webp"
+      },
+      "artistName": "Elise Moreau",
+      "artistNameCn": "艾丽丝·莫罗",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "悬疑惊悚"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "悬疑惊悚",
+        "民谣",
+        "氛围",
+        "合成器"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B198/COVA-20260911-B198-A.mp3",
+      "highlightStart": 111.03,
+      "highlightEnd": 130.71,
+      "waveformPeaks": [
+        0.087,
+        0.2142,
+        0.2758,
+        0.144,
+        0.2835,
+        0.2941,
+        0.1505,
+        0.4397
+      ],
+      "cocreate": false,
+      "segmentColors": "0-11.99s#746F73;11.99-107.94s#7E4650",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "dimension": "instrument",
+          "value": "大提琴"
+        },
+        {
+          "dimension": "instrument",
+          "value": "弦乐"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 110
+    }
+  ],
+  "total": 5,
+  "page": 1,
+  "pageSize": 5,
+  "totalPages": 1,
+  "similarTo": "library-9749cdc210a624de9d0da02e"
+}

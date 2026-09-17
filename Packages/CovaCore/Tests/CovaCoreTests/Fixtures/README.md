@@ -9,6 +9,7 @@
 | fixture | 来源 | 说明 |
 |---|---|---|
 | `track-page.json` | `GET /api/tracks?page=1` | 取前 3 条；`featured` 为 Bool、`previewStart/End` 为 camelCase（列表投影） |
+| `tracks-similar-to.json` | `GET /api/tracks?similarTo=<id>&pageSize=5` | **真实 similarTo 响应**：`tracks[]` 走 similar 投影（`featured` 数字、仅 snake_case `preview_start/end/play_count/created_at/audio_duration`、`similarityScore` int/float、封套回显 `similarTo`）；配 `SimilarTrackPageDto` |
 | `track-detail-real-1.json` / `track-detail-real-2.json` | `GET /api/tracks/:id` | **真实详情**：`track` 无 variant 字段族；`similar[]` 为 snake_case 专属 + `featured` 数字 + 裁剪 `artist`/`tags` |
 | `track-preview-url.json` | `GET /api/tracks/:id/preview-url` | 匿名 200，camelCase `previewStart/End` |
 | `playlists.json` | `GET /api/playlists` | 取前 2 条；含真实长句 `disabledReason`、`coverMedia.alt` |
@@ -51,6 +52,7 @@
 | `requests/favorite-mutation-request.json` | `POST/DELETE /api/favorites` | 契约 §2 |
 | `requests/saved-playlist-mutation-request.json` | `POST/DELETE /api/saved-playlists` | 契约 §2 |
 | `requests/play-report-request.json` | `POST /api/tracks/play`（`source:"app-ios"`） | 契约 §2 + **NEEDS-2** |
+| `requests/login-request.json` | `POST /api/auth/login`（password 为占位符，非真实凭据） | 契约 §1 + **NEEDS-1** |
 | `requests/checkout-request.json` | `POST /api/downloads/checkout`（幂等键） | 契约 §3 + D8 |
 | `requests/one-step-plan-start-request.json` | `POST /api/studio/one-step/plans/start`（幂等键） | 契约 §4 + D8 |
 | `requests/create-session-request.json` | `POST /api/find-my-song/sessions` | 契约 §4 |
