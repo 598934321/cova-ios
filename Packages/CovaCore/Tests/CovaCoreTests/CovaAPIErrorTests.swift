@@ -30,12 +30,21 @@ final class CovaAPIErrorTests: XCTestCase {
     }
 
     func testClassifyBodyExtractsBusinessCode() throws {
-        let body = try Fixture.data("error-envelope")
+        let withCode = try Fixture.data("error-envelope-code")
         XCTAssertEqual(
-            CovaAPIError.classify(httpStatus: 402, body: body),
+            CovaAPIError.classify(httpStatus: 402, body: withCode),
             .httpStatus(code: 402, apiCode: "INSUFFICIENT_CREDITS")
         )
-        XCTAssertNil(CovaAPIError.classify(httpStatus: 200, body: body))
+        XCTAssertNil(CovaAPIError.classify(httpStatus: 200, body: withCode))
+    }
+
+    func testClassifyBodyToleratesRealErrorWithoutCode() throws {
+        // 真实公共错误响应（404）只有 {error}，没有 code
+        let real = try Fixture.data("error-envelope")
+        XCTAssertEqual(
+            CovaAPIError.classify(httpStatus: 404, body: real),
+            .httpStatus(code: 404, apiCode: nil)
+        )
     }
 
     func testClassifyBodyToleratesNonEnvelopePayloads() {
@@ -147,9 +156,13 @@ final class CovaAPIErrorTests: XCTestCase {
     }
 
     func testErrorEnvelopeDecoding() throws {
-        let envelope = try Fixture.decode(CovaAPIErrorEnvelope.self, "error-envelope")
+        let envelope = try Fixture.decode(CovaAPIErrorEnvelope.self, "error-envelope-code")
         XCTAssertEqual(envelope.code, "INSUFFICIENT_CREDITS")
         XCTAssertEqual(envelope.error, "积分不足")
+
+        let real = try Fixture.decode(CovaAPIErrorEnvelope.self, "error-envelope")
+        XCTAssertEqual(real.error, "曲目未找到")
+        XCTAssertNil(real.code)
 
         let minimal = try JSONDecoder().decode(CovaAPIErrorEnvelope.self, from: Data("{}".utf8))
         XCTAssertNil(minimal.error)

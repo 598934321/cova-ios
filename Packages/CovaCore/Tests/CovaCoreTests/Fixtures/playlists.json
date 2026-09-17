@@ -1,12 +1,12 @@
 {
   "playlists": [
     {
-      "id": "PL-test-01",
+      "id": "PL-20260917-09",
       "title": "Daily Bright",
-      "titleCn": "明亮氛围感歌单",
-      "description": "Bright instrumental picks",
-      "descriptionCn": "明亮情绪纯音乐每日精选。",
-      "cover": "https://cdn.invalid/covers/pl01.jpeg",
+      "titleCn": "明亮氛围感歌单｜前奏 3 秒就沉浸的 10 首",
+      "description": "Bright instrumental picks, refreshed 2026-09-17.",
+      "descriptionCn": "明亮情绪纯音乐每日精选，全部可商用授权，2026-09-17 更新。",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
       "coverDefault": null,
       "coverMode": "fallback",
       "coverAlt": null,
@@ -17,11 +17,11 @@
       "scene": null,
       "curator": "Cova 编辑部",
       "createdAt": "2026-09-17T01:08:00.000Z",
-      "coverUrl": "https://cdn.invalid/covers/pl01.jpeg",
+      "coverUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
       "coverMedia": {
-        "imageUrl": "https://cdn.invalid/covers/pl01.jpeg",
-        "fallbackUrl": "https://cdn.invalid/covers/pl01.jpeg",
-        "alt": "明亮氛围感歌单",
+        "imageUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
+        "fallbackUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
+        "alt": "明亮氛围感歌单｜前奏 3 秒就沉浸的 10 首",
         "fit": "cover",
         "focalX": 50,
         "focalY": 50,
@@ -30,7 +30,7 @@
       },
       "isSaved": false,
       "writable": false,
-      "disabledReason": "官方歌单使用收藏",
+      "disabledReason": "官方歌单使用收藏，不会复制为个人歌单；加入歌曲请选择个人或项目歌单",
       "saveAction": {
         "kind": "bookmark",
         "icon": "bookmark",
@@ -40,8 +40,49 @@
         "removeMethod": "DELETE"
       },
       "trackCount": 10,
-      "totalDuration": 1480.56,
-      "futureUnknownField": 1
+      "totalDuration": 1480.5600000000002
+    },
+    {
+      "id": "PL-20260917-08",
+      "title": "Hopeful Moods",
+      "titleCn": "今日希望补给｜10 首纯音乐，听完心情就对了",
+      "description": "Hopeful instrumental picks, refreshed 2026-09-17.",
+      "descriptionCn": "希望情绪纯音乐每日精选，全部可商用授权，2026-09-17 更新。",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9459/COVA-20260911-B9459-B.jpeg",
+      "coverDefault": null,
+      "coverMode": "fallback",
+      "coverAlt": null,
+      "coverFit": "cover",
+      "coverFocalX": 50,
+      "coverFocalY": 50,
+      "coverUpdatedAt": null,
+      "scene": null,
+      "curator": "Cova 编辑部",
+      "createdAt": "2026-09-17T01:07:00.000Z",
+      "coverUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9459/COVA-20260911-B9459-B.jpeg",
+      "coverMedia": {
+        "imageUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9459/COVA-20260911-B9459-B.jpeg",
+        "fallbackUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9459/COVA-20260911-B9459-B.jpeg",
+        "alt": "今日希望补给｜10 首纯音乐，听完心情就对了",
+        "fit": "cover",
+        "focalX": 50,
+        "focalY": 50,
+        "mode": "fallback",
+        "updatedAt": null
+      },
+      "isSaved": false,
+      "writable": false,
+      "disabledReason": "官方歌单使用收藏，不会复制为个人歌单；加入歌曲请选择个人或项目歌单",
+      "saveAction": {
+        "kind": "bookmark",
+        "icon": "bookmark",
+        "saved": false,
+        "endpoint": "/api/saved-playlists",
+        "addMethod": "POST",
+        "removeMethod": "DELETE"
+      },
+      "trackCount": 10,
+      "totalDuration": 1479.0479999999998
     }
   ]
 }

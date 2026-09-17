@@ -1,0 +1,498 @@
+{
+  "track": {
+    "id": "library-203506629c0d69e0b198b42e",
+    "category": "music",
+    "title": "Painted Crossing Frames the Lighthouse",
+    "titleCn": "Painted Crossing Frames the Lighthouse",
+    "artistId": "A06",
+    "cover": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D010/COVA-20260917-D010-A.jpeg",
+    "duration": 151.872,
+    "bpm": 120,
+    "key": "Cm",
+    "style": "民谣",
+    "styleCn": "民谣",
+    "description": null,
+    "descriptionCn": null,
+    "copyright": "commercial_allowed",
+    "featured": false,
+    "playCount": 0,
+    "favoriteCount": 0,
+    "createdAt": "2026-09-16T17:11:39.516Z",
+    "audioUrl": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D010/COVA-20260917-D010-A.mp3",
+    "audioDuration": null,
+    "previewStart": 37.97,
+    "previewEnd": 58.14,
+    "status": "published",
+    "segmentColors": "0-11.68s#746F73;11.68-23.36s#7E4650",
+    "waveformPeaks": [
+      0.2707,
+      0.2875,
+      0.2951,
+      0.2554,
+      0.407,
+      0.3846,
+      0.5489,
+      0.4235
+    ],
+    "lyrics": null,
+    "vocalType": "instrumental",
+    "energy": "中",
+    "artist": {
+      "id": "A06",
+      "name": "Amara Okafor",
+      "nameCn": "阿玛拉·奥卡福",
+      "country": "Nigeria",
+      "countryFlag": "🇳🇬",
+      "style": "Rhythm Pop",
+      "styleCn": "律动节奏",
+      "personality": "运动、时尚与活力品牌配乐师，擅长快剪、健身和年轻品牌广告。",
+      "coreInstruments": "[\"非洲鼓\", \"电贝斯\", \"铜管\"]",
+      "colorPalette": "[\"#FF6B35\", \"#F7C948\", \"#2D6A4F\"]",
+      "avatar": "/assets/artists/artist-06-amara-okafor.webp",
+      "sceneResponsibility": "[\"运动\", \"广告\", \"电商\"]",
+      "stylePrompt": "Upbeat rhythmic commercial pop driven by drums and bass groove first, with claps, light percussion and modern synths, BPM 110-132. Energetic, confident and stylish for sports, fitness, fashion and fast-cut social ads; pop-electronic and fashion sound design welcome. Avoid tribal cliches, cheap dance and nightclub pastiche.",
+      "lyricsPrompt": "默认纯音乐。若需人声，用英文短促有力的 chant 或 hook，主题围绕自信、胜利、行动与庆祝，口吻热烈直接，避免刻板民族元素堆砌。",
+      "userId": "qa-partner-musician-a06"
+    },
+    "artistName": "Amara Okafor",
+    "artistNameCn": "阿玛拉·奥卡福",
+    "lyricistName": null,
+    "lyricistNameCn": null,
+    "scenes": [
+      "婚礼"
+    ],
+    "moods": [
+      "氛围"
+    ],
+    "displayLabels": [
+      "婚礼",
+      "民谣",
+      "氛围",
+      "合成器"
+    ],
+    "highlightStart": 37.97,
+    "highlightEnd": 58.14,
+    "cocreate": false,
+    "downloadCount": 0,
+    "tags": [
+      {
+        "trackId": "library-203506629c0d69e0b198b42e",
+        "dimension": "instrument",
+        "value": "合成器"
+      },
+      {
+        "trackId": "library-203506629c0d69e0b198b42e",
+        "dimension": "instrument",
+        "value": "打击乐"
+      },
+      {
+        "trackId": "library-203506629c0d69e0b198b42e",
+        "dimension": "instrument",
+        "value": "贝斯"
+      },
+      {
+        "trackId": "library-203506629c0d69e0b198b42e",
+        "dimension": "mainGenre",
+        "value": "民谣"
+      }
+    ]
+  },
+  "similar": [
+    {
+      "id": "library-d0af74d83c9b7cc578043024",
+      "category": "music",
+      "title": "Lucid Courtyard",
+      "title_cn": "Lucid Courtyard",
+      "artist_id": "A06",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D010/COVA-20260917-D010-B.jpeg",
+      "duration": 239.592,
+      "bpm": 120,
+      "key": "Em",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-16T17:09:12.701Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D010/COVA-20260917-D010-B.mp3",
+      "audio_duration": null,
+      "preview_start": 207.77,
+      "preview_end": 228.36,
+      "status": "published",
+      "segment_colors": "0-83.86s#7E4650;83.86-95.84s#992C3E",
+      "waveform_peaks": "[0.6477, 0.5347, 0.6681, 0.6761, 0.7136, 0.744, 0.7016, 0.7733]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Amara Okafor",
+      "artist_name_cn": "阿玛拉·奥卡福",
+      "artist_avatar": "/assets/artists/artist-06-amara-okafor.webp",
+      "titleCn": "Lucid Courtyard",
+      "artistId": "A06",
+      "artist": {
+        "id": "A06",
+        "name": "Amara Okafor",
+        "nameCn": "阿玛拉·奥卡福",
+        "avatar": "/assets/artists/artist-06-amara-okafor.webp"
+      },
+      "artistName": "Amara Okafor",
+      "artistNameCn": "阿玛拉·奥卡福",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "婚礼"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "婚礼",
+        "民谣",
+        "氛围",
+        "合成器"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D010/COVA-20260917-D010-B.mp3",
+      "highlightStart": 207.77,
+      "highlightEnd": 228.36,
+      "waveformPeaks": [
+        0.6477,
+        0.5347,
+        0.6681,
+        0.6761,
+        0.7136,
+        0.744,
+        0.7016,
+        0.7733
+      ],
+      "cocreate": false,
+      "segmentColors": "0-83.86s#7E4650;83.86-95.84s#992C3E",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "dimension": "instrument",
+          "value": "打击乐"
+        },
+        {
+          "dimension": "instrument",
+          "value": "贝斯"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 111
+    },
+    {
+      "id": "library-a65cf4d9e3c331cd23dc78c1",
+      "category": "music",
+      "title": "Secret Ignites the Mirror",
+      "title_cn": "Secret Ignites the Mirror",
+      "artist_id": "A06",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D010/COVA-20260913-D010-B.jpeg",
+      "duration": 96.384,
+      "bpm": 121,
+      "key": "Am",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-13T06:47:49.137Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D010/COVA-20260913-D010-B.mp3",
+      "audio_duration": null,
+      "preview_start": 3.01,
+      "preview_end": 23.34,
+      "status": "published",
+      "segment_colors": "0-21.42s#992C3E;21.42-42.84s#7E4650",
+      "waveform_peaks": "[0.8047, 0.6832, 0.8349, 0.6182, 0.8425, 0.7632, 0.7448, 0.9573]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Amara Okafor",
+      "artist_name_cn": "阿玛拉·奥卡福",
+      "artist_avatar": "/assets/artists/artist-06-amara-okafor.webp",
+      "titleCn": "Secret Ignites the Mirror",
+      "artistId": "A06",
+      "artist": {
+        "id": "A06",
+        "name": "Amara Okafor",
+        "nameCn": "阿玛拉·奥卡福",
+        "avatar": "/assets/artists/artist-06-amara-okafor.webp"
+      },
+      "artistName": "Amara Okafor",
+      "artistNameCn": "阿玛拉·奥卡福",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "婚礼"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "婚礼",
+        "民谣",
+        "氛围",
+        "合成器"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D010/COVA-20260913-D010-B.mp3",
+      "highlightStart": 3.01,
+      "highlightEnd": 23.34,
+      "waveformPeaks": [
+        0.8047,
+        0.6832,
+        0.8349,
+        0.6182,
+        0.8425,
+        0.7632,
+        0.7448,
+        0.9573
+      ],
+      "cocreate": false,
+      "segmentColors": "0-21.42s#992C3E;21.42-42.84s#7E4650",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "dimension": "instrument",
+          "value": "打击乐"
+        },
+        {
+          "dimension": "instrument",
+          "value": "贝斯"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 110.75
+    },
+    {
+      "id": "library-e2e88995f4a4ca8327708273",
+      "category": "music",
+      "title": "Starlit Doorway",
+      "title_cn": "Starlit Doorway",
+      "artist_id": "A06",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D010/COVA-20260913-D010-A.jpeg",
+      "duration": 150.168,
+      "bpm": 121,
+      "key": "F#m",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-13T06:48:03.469Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D010/COVA-20260913-D010-A.mp3",
+      "audio_duration": null,
+      "preview_start": 43.41,
+      "preview_end": 63.35,
+      "status": "published",
+      "segment_colors": "0-150.17s#7E4650",
+      "waveform_peaks": "[0.7498, 0.6774, 0.6447, 0.7895, 0.7488, 0.786, 0.8799, 0.7567]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Amara Okafor",
+      "artist_name_cn": "阿玛拉·奥卡福",
+      "artist_avatar": "/assets/artists/artist-06-amara-okafor.webp",
+      "titleCn": "Starlit Doorway",
+      "artistId": "A06",
+      "artist": {
+        "id": "A06",
+        "name": "Amara Okafor",
+        "nameCn": "阿玛拉·奥卡福",
+        "avatar": "/assets/artists/artist-06-amara-okafor.webp"
+      },
+      "artistName": "Amara Okafor",
+      "artistNameCn": "阿玛拉·奥卡福",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "婚礼"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "婚礼",
+        "民谣",
+        "氛围",
+        "合成器"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D010/COVA-20260913-D010-A.mp3",
+      "highlightStart": 43.41,
+      "highlightEnd": 63.35,
+      "waveformPeaks": [
+        0.7498,
+        0.6774,
+        0.6447,
+        0.7895,
+        0.7488,
+        0.786,
+        0.8799,
+        0.7567
+      ],
+      "cocreate": false,
+      "segmentColors": "0-150.17s#7E4650",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "dimension": "instrument",
+          "value": "打击乐"
+        },
+        {
+          "dimension": "instrument",
+          "value": "贝斯"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 110.75
+    },
+    {
+      "id": "library-1ec89d94ee3b68313267613d",
+      "category": "music",
+      "title": "Ivory Cedar Faces the Market",
+      "title_cn": "Ivory Cedar Faces the Market",
+      "artist_id": "A06",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260912-DAILY/COVA-20260912-D010/COVA-20260912-D010-A.jpeg",
+      "duration": 179.904,
+      "bpm": 120,
+      "key": "G",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-11T17:53:41.203Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260912-DAILY/COVA-20260912-D010/COVA-20260912-D010-A.mp3",
+      "audio_duration": null,
+      "preview_start": 60.44,
+      "preview_end": 80.11,
+      "status": "published",
+      "segment_colors": "0-179.9s#7E4650",
+      "waveform_peaks": "[0.4636, 0.5124, 0.5211, 0.656, 0.6302, 0.595, 0.6241, 0.6823]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Amara Okafor",
+      "artist_name_cn": "阿玛拉·奥卡福",
+      "artist_avatar": "/assets/artists/artist-06-amara-okafor.webp",
+      "titleCn": "Ivory Cedar Faces the Market",
+      "artistId": "A06",
+      "artist": {
+        "id": "A06",
+        "name": "Amara Okafor",
+        "nameCn": "阿玛拉·奥卡福",
+        "avatar": "/assets/artists/artist-06-amara-okafor.webp"
+      },
+      "artistName": "Amara Okafor",
+      "artistNameCn": "阿玛拉·奥卡福",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "婚礼"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "婚礼",
+        "民谣",
+        "氛围",
+        "合成器"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260912-DAILY/COVA-20260912-D010/COVA-20260912-D010-A.mp3",
+      "highlightStart": 60.44,
+      "highlightEnd": 80.11,
+      "waveformPeaks": [
+        0.4636,
+        0.5124,
+        0.5211,
+        0.656,
+        0.6302,
+        0.595,
+        0.6241,
+        0.6823
+      ],
+      "cocreate": false,
+      "segmentColors": "0-179.9s#7E4650",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "dimension": "instrument",
+          "value": "打击乐"
+        },
+        {
+          "dimension": "instrument",
+          "value": "拍手"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 105
+    }
+  ]
+}

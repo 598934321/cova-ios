@@ -1,0 +1,498 @@
+{
+  "track": {
+    "id": "library-27a2004cae8ce163524aa880",
+    "category": "music",
+    "title": "Open Spectrum",
+    "titleCn": "Open Spectrum",
+    "artistId": "A04",
+    "cover": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D014/COVA-20260917-D014-A.jpeg",
+    "duration": 133.224,
+    "bpm": 103,
+    "key": "Em",
+    "style": "民谣",
+    "styleCn": "民谣",
+    "description": null,
+    "descriptionCn": null,
+    "copyright": "commercial_allowed",
+    "featured": false,
+    "playCount": 0,
+    "favoriteCount": 0,
+    "createdAt": "2026-09-16T17:21:02.759Z",
+    "audioUrl": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D014/COVA-20260917-D014-A.mp3",
+    "audioDuration": null,
+    "previewStart": 92.63,
+    "previewEnd": 112.41,
+    "status": "published",
+    "segmentColors": "0-11.1s#746F73;11.1-133.22s#7E4650",
+    "waveformPeaks": [
+      0.0195,
+      0.3458,
+      0.2726,
+      0.2751,
+      0.5163,
+      0.4705,
+      0.2983,
+      0.4309
+    ],
+    "lyrics": null,
+    "vocalType": "instrumental",
+    "energy": "中",
+    "artist": {
+      "id": "A04",
+      "name": "Sofia Alvarez",
+      "nameCn": "索菲亚·阿尔瓦雷斯",
+      "country": "Spain",
+      "countryFlag": "🇪🇸",
+      "style": "Mediterranean Acoustic",
+      "styleCn": "地中海原声",
+      "personality": "旅行、美食与阳光生活配乐师，擅长酒店、餐饮、咖啡和生活方式广告。",
+      "coreInstruments": "[\"古典吉他\", \"卡宏鼓\", \"手风琴\"]",
+      "colorPalette": "[\"#F7CE68\", \"#FBAB7E\", \"#E8CBC0\"]",
+      "avatar": "/assets/artists/artist-04-sofia-alvarez.webp",
+      "sceneResponsibility": "[\"旅行\", \"生活方式\", \"婚礼\"]",
+      "stylePrompt": "Warm acoustic Mediterranean lifestyle music led by nylon guitar, hand percussion, soft piano and claps, BPM 92-116. Sunny, relaxed and romantic for travel, food, coffee and hotel content; light Latin grooves as seasoning only. Avoid carnival cliches and souvenir-shop folk.",
+      "lyricsPrompt": "默认纯音乐。若需人声，可用西班牙语或英文浅吟，主题围绕阳光、海岸、餐桌与慢生活，口吻热情松弛、感性自然，避免过度节庆化。",
+      "userId": "qa-partner-musician-a04"
+    },
+    "artistName": "Sofia Alvarez",
+    "artistNameCn": "索菲亚·阿尔瓦雷斯",
+    "lyricistName": null,
+    "lyricistNameCn": null,
+    "scenes": [
+      "悬疑惊悚"
+    ],
+    "moods": [
+      "氛围"
+    ],
+    "displayLabels": [
+      "悬疑惊悚",
+      "民谣",
+      "氛围",
+      "尼龙吉他"
+    ],
+    "highlightStart": 92.63,
+    "highlightEnd": 112.41,
+    "cocreate": false,
+    "downloadCount": 0,
+    "tags": [
+      {
+        "trackId": "library-27a2004cae8ce163524aa880",
+        "dimension": "instrument",
+        "value": "尼龙吉他"
+      },
+      {
+        "trackId": "library-27a2004cae8ce163524aa880",
+        "dimension": "instrument",
+        "value": "打击乐"
+      },
+      {
+        "trackId": "library-27a2004cae8ce163524aa880",
+        "dimension": "instrument",
+        "value": "贝斯"
+      },
+      {
+        "trackId": "library-27a2004cae8ce163524aa880",
+        "dimension": "mainGenre",
+        "value": "民谣"
+      }
+    ]
+  },
+  "similar": [
+    {
+      "id": "library-7d2dcda5e186b600a8738f9a",
+      "category": "music",
+      "title": "Lucid Memory Chases the Wind",
+      "title_cn": "Lucid Memory Chases the Wind",
+      "artist_id": "A04",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D014/COVA-20260913-D014-A.jpeg",
+      "duration": 112.56,
+      "bpm": 103,
+      "key": "Em",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-13T07:00:46.475Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D014/COVA-20260913-D014-A.mp3",
+      "audio_duration": null,
+      "preview_start": 83.54,
+      "preview_end": 103.77,
+      "status": "published",
+      "segment_colors": "0-90.05s#7E4650;90.05-101.3s#992C3E",
+      "waveform_peaks": "[0.8689, 0.5106, 0.3742, 0.3483, 0.7546, 0.6569, 0.6074, 0.6461]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Sofia Alvarez",
+      "artist_name_cn": "索菲亚·阿尔瓦雷斯",
+      "artist_avatar": "/assets/artists/artist-04-sofia-alvarez.webp",
+      "titleCn": "Lucid Memory Chases the Wind",
+      "artistId": "A04",
+      "artist": {
+        "id": "A04",
+        "name": "Sofia Alvarez",
+        "nameCn": "索菲亚·阿尔瓦雷斯",
+        "avatar": "/assets/artists/artist-04-sofia-alvarez.webp"
+      },
+      "artistName": "Sofia Alvarez",
+      "artistNameCn": "索菲亚·阿尔瓦雷斯",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "悬疑惊悚"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "悬疑惊悚",
+        "民谣",
+        "氛围",
+        "尼龙吉他"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D014/COVA-20260913-D014-A.mp3",
+      "highlightStart": 83.54,
+      "highlightEnd": 103.77,
+      "waveformPeaks": [
+        0.8689,
+        0.5106,
+        0.3742,
+        0.3483,
+        0.7546,
+        0.6569,
+        0.6074,
+        0.6461
+      ],
+      "cocreate": false,
+      "segmentColors": "0-90.05s#7E4650;90.05-101.3s#992C3E",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "尼龙吉他"
+        },
+        {
+          "dimension": "instrument",
+          "value": "打击乐"
+        },
+        {
+          "dimension": "instrument",
+          "value": "贝斯"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 111
+    },
+    {
+      "id": "library-9f7586bfc4024dddceb4a2ee",
+      "category": "music",
+      "title": "Alpine Clocktower",
+      "title_cn": "Alpine Clocktower",
+      "artist_id": "A04",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D014/COVA-20260913-D014-B.jpeg",
+      "duration": 299.808,
+      "bpm": 103,
+      "key": "Em",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-13T07:00:32.291Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D014/COVA-20260913-D014-B.mp3",
+      "audio_duration": null,
+      "preview_start": 245.94,
+      "preview_end": 267.02,
+      "status": "published",
+      "segment_colors": "0-11.99s#746F73;11.99-155.9s#7E4650",
+      "waveform_peaks": "[0.4392, 0.2641, 0.4149, 0.5958, 0.3544, 0.2638, 0.7608, 0.3683]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Sofia Alvarez",
+      "artist_name_cn": "索菲亚·阿尔瓦雷斯",
+      "artist_avatar": "/assets/artists/artist-04-sofia-alvarez.webp",
+      "titleCn": "Alpine Clocktower",
+      "artistId": "A04",
+      "artist": {
+        "id": "A04",
+        "name": "Sofia Alvarez",
+        "nameCn": "索菲亚·阿尔瓦雷斯",
+        "avatar": "/assets/artists/artist-04-sofia-alvarez.webp"
+      },
+      "artistName": "Sofia Alvarez",
+      "artistNameCn": "索菲亚·阿尔瓦雷斯",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "悬疑惊悚"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "悬疑惊悚",
+        "民谣",
+        "氛围",
+        "尼龙吉他"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260913-DAILY/COVA-20260913-D014/COVA-20260913-D014-B.mp3",
+      "highlightStart": 245.94,
+      "highlightEnd": 267.02,
+      "waveformPeaks": [
+        0.4392,
+        0.2641,
+        0.4149,
+        0.5958,
+        0.3544,
+        0.2638,
+        0.7608,
+        0.3683
+      ],
+      "cocreate": false,
+      "segmentColors": "0-11.99s#746F73;11.99-155.9s#7E4650",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "尼龙吉他"
+        },
+        {
+          "dimension": "instrument",
+          "value": "打击乐"
+        },
+        {
+          "dimension": "instrument",
+          "value": "贝斯"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 111
+    },
+    {
+      "id": "library-d4b3a1e6836d24cda8f3d853",
+      "category": "music",
+      "title": "Silhouette Reaches the Forest",
+      "title_cn": "Silhouette Reaches the Forest",
+      "artist_id": "A04",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D014/COVA-20260917-D014-B.jpeg",
+      "duration": 179.832,
+      "bpm": 103,
+      "key": "Em",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-16T17:18:17.427Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D014/COVA-20260917-D014-B.mp3",
+      "audio_duration": null,
+      "preview_start": 144.71,
+      "preview_end": 164.38,
+      "status": "published",
+      "segment_colors": "0-167.84s#7E4650;167.84-179.83s#746F73",
+      "waveform_peaks": "[0.2923, 0.2603, 0.3386, 0.601, 0.5572, 0.6988, 0.5838, 0.6104]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Sofia Alvarez",
+      "artist_name_cn": "索菲亚·阿尔瓦雷斯",
+      "artist_avatar": "/assets/artists/artist-04-sofia-alvarez.webp",
+      "titleCn": "Silhouette Reaches the Forest",
+      "artistId": "A04",
+      "artist": {
+        "id": "A04",
+        "name": "Sofia Alvarez",
+        "nameCn": "索菲亚·阿尔瓦雷斯",
+        "avatar": "/assets/artists/artist-04-sofia-alvarez.webp"
+      },
+      "artistName": "Sofia Alvarez",
+      "artistNameCn": "索菲亚·阿尔瓦雷斯",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "悬疑惊悚"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "悬疑惊悚",
+        "民谣",
+        "氛围",
+        "尼龙吉他"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D014/COVA-20260917-D014-B.mp3",
+      "highlightStart": 144.71,
+      "highlightEnd": 164.38,
+      "waveformPeaks": [
+        0.2923,
+        0.2603,
+        0.3386,
+        0.601,
+        0.5572,
+        0.6988,
+        0.5838,
+        0.6104
+      ],
+      "cocreate": false,
+      "segmentColors": "0-167.84s#7E4650;167.84-179.83s#746F73",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "尼龙吉他"
+        },
+        {
+          "dimension": "instrument",
+          "value": "打击乐"
+        },
+        {
+          "dimension": "instrument",
+          "value": "贝斯"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 111
+    },
+    {
+      "id": "library-013e0f3e59edc3e2ac3038fd",
+      "category": "music",
+      "title": "Endless Garden Scatters the Mirror",
+      "title_cn": "Endless Garden Scatters the Mirror",
+      "artist_id": "A04",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B258/COVA-20260911-B258-A.jpeg",
+      "duration": 149.712,
+      "bpm": 105,
+      "key": "Dm",
+      "style": "民谣",
+      "style_cn": "民谣",
+      "description": null,
+      "description_cn": null,
+      "copyright": "commercial_allowed",
+      "featured": 0,
+      "play_count": 0,
+      "favorite_count": 0,
+      "created_at": "2026-09-11T05:59:28.978Z",
+      "audio_url": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B258/COVA-20260911-B258-A.mp3",
+      "audio_duration": null,
+      "preview_start": 114.62,
+      "preview_end": 134.51,
+      "status": "published",
+      "segment_colors": "0-149.71s#7E4650",
+      "waveform_peaks": "[0.6281, 0.6457, 0.5657, 0.7472, 0.7492, 0.6338, 0.5135, 0.7684]",
+      "lyrics": null,
+      "vocal_type": "instrumental",
+      "energy": "中",
+      "artist_name": "Sofia Alvarez",
+      "artist_name_cn": "索菲亚·阿尔瓦雷斯",
+      "artist_avatar": "/assets/artists/artist-04-sofia-alvarez.webp",
+      "titleCn": "Endless Garden Scatters the Mirror",
+      "artistId": "A04",
+      "artist": {
+        "id": "A04",
+        "name": "Sofia Alvarez",
+        "nameCn": "索菲亚·阿尔瓦雷斯",
+        "avatar": "/assets/artists/artist-04-sofia-alvarez.webp"
+      },
+      "artistName": "Sofia Alvarez",
+      "artistNameCn": "索菲亚·阿尔瓦雷斯",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "悬疑惊悚"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "悬疑惊悚",
+        "民谣",
+        "氛围",
+        "尼龙吉他"
+      ],
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B258/COVA-20260911-B258-A.mp3",
+      "highlightStart": 114.62,
+      "highlightEnd": 134.51,
+      "waveformPeaks": [
+        0.6281,
+        0.6457,
+        0.5657,
+        0.7472,
+        0.7492,
+        0.6338,
+        0.5135,
+        0.7684
+      ],
+      "cocreate": false,
+      "segmentColors": "0-149.71s#7E4650",
+      "downloadCount": 0,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "tags": [
+        {
+          "dimension": "instrument",
+          "value": "尼龙吉他"
+        },
+        {
+          "dimension": "instrument",
+          "value": "打击乐"
+        },
+        {
+          "dimension": "instrument",
+          "value": "贝斯"
+        },
+        {
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "styleCn": "民谣",
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": [],
+      "similarityScore": 110.5
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "user": {
+    "id": "user-0001",
+    "covaId": "COVA-0001",
+    "email": "tester@example.invalid",
+    "phone": null,
+    "name": "测试用户",
+    "role": "user",
+    "isArtist": false,
+    "isPartner": false,
+    "createdAt": "2026-01-01T00:00:00.000Z"
+  },
+  "token": "ACCESS_TOKEN_PLACEHOLDER",
+  "refreshToken": "REFRESH_TOKEN_PLACEHOLDER",
+  "expiresIn": 7200
+}

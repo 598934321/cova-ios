@@ -2,78 +2,145 @@
 import XCTest
 
 final class LibraryDTOTests: XCTestCase {
-    func testDecodesTrackPage() throws {
+    func testDecodesTrackPageRealListProjection() throws {
         let page = try Fixture.decode(TrackPageDto.self, "track-page")
-        XCTAssertEqual(page.tracks.count, 2)
+        XCTAssertEqual(page.tracks.count, 3)
         XCTAssertEqual(page.total, 19562)
         XCTAssertEqual(page.page, 1)
         XCTAssertEqual(page.pageSize, 20)
         XCTAssertEqual(page.totalPages, 979)
 
-        let full = page.tracks[0]
-        XCTAssertEqual(full.id, "library-test-0001")
-        XCTAssertEqual(full.titleCn, "金色灯塔")
-        XCTAssertEqual(full.bpm, 76)
-        XCTAssertEqual(full.duration, 209.592)
-        XCTAssertEqual(full.favoriteCount, 3)
-        XCTAssertEqual(full.scenes, ["悬疑惊悚"])
-        XCTAssertEqual(full.moods, ["氛围"])
-        XCTAssertEqual(full.displayLabels.count, 4)
-        XCTAssertEqual(full.waveformPeaks, [0.17, 0.368, 0.5])
-        XCTAssertEqual(full.previewStart, 167.02)
-        XCTAssertEqual(full.previewEnd, 186.67)
-        XCTAssertEqual(full.highlightStart, 167.02)
-        XCTAssertEqual(full.highlightEnd, 186.67)
-        XCTAssertEqual(full.vocalType, "instrumental")
-        XCTAssertEqual(full.energy, "中")
-        XCTAssertNil(full.lyrics)
-        XCTAssertNil(full.description)
-        XCTAssertNil(full.audioDuration)
-        XCTAssertNil(full.lyricistName)
-        XCTAssertEqual(full.variantCount, 0)
-        XCTAssertEqual(full.variants?.count, 0)
-        XCTAssertEqual(full.tags.count, 2)
-        XCTAssertEqual(full.tags[0].dimension, "instrument")
-        XCTAssertEqual(full.tags[0].value, "合成器")
-        XCTAssertEqual(full.tags[0].trackId, "library-test-0001")
+        let track = page.tracks[0]
+        XCTAssertEqual(track.id, "library-9749cdc210a624de9d0da02e")
+        XCTAssertEqual(track.featured, false)
+        XCTAssertEqual(track.previewStart, 167.02)
+        XCTAssertEqual(track.previewEnd, 186.67)
+        XCTAssertEqual(track.bpm, 76)
+        XCTAssertEqual(track.style, "民谣")
+        XCTAssertEqual(track.styleCn, "民谣")
+        XCTAssertEqual(track.artist.countryFlag, "🇫🇷")
+        XCTAssertEqual(track.artist.coreInstruments, "[\"钢琴\", \"大提琴\", \"弦乐四重奏\"]")
+        XCTAssertNil(track.lyrics)
+        XCTAssertNil(track.description)
+        XCTAssertNil(track.audioDuration)
+        XCTAssertNil(track.lyricistName)
+        XCTAssertEqual(track.variantCount, 0)
+        XCTAssertEqual(track.variants?.count, 0)
+        XCTAssertEqual(track.waveformPeaks.count, 8)
+        XCTAssertEqual(track.scenes, ["悬疑惊悚"])
+        XCTAssertEqual(track.energy, "中")
+        XCTAssertFalse(track.tags.isEmpty)
     }
 
-    func testDecodesArtistSubObjectWithJsonEncodedFields() throws {
-        let page = try Fixture.decode(TrackPageDto.self, "track-page")
-        let artist = page.tracks[0].artist
-        XCTAssertEqual(artist.id, "A07")
-        XCTAssertEqual(artist.name, "Elise Moreau")
-        XCTAssertEqual(artist.nameCn, "艾丽丝·莫罗")
-        XCTAssertEqual(artist.country, "France")
-        XCTAssertEqual(artist.userId, "user-artist-07")
-        XCTAssertEqual(artist.coreInstruments, "[\"钢琴\",\"大提琴\"]")
+    func testListProjectionUsesCamelCasePreviewAndBoolFeatured() throws {
+        // 与 similar 投影的差异在此固化：列表是 camelCase preview + Bool featured
+        let raw = try Fixture.value("track-page") as? [String: Any]
+        let tracks = try XCTUnwrap(raw?["tracks"] as? [[String: Any]])
+        for track in tracks {
+            XCTAssertNotNil(track["previewStart"], "列表投影应有 camelCase previewStart")
+            XCTAssertNotNil(track["previewEnd"], "列表投影应有 camelCase previewEnd")
+            XCTAssertTrue(track["featured"] is Bool, "列表投影 featured 应为 Bool")
+        }
     }
 
-    func testToleratesMissingOptionalFieldsAndVariantFamily() throws {
-        let page = try Fixture.decode(TrackPageDto.self, "track-page")
-        let sparse = page.tracks[1]
-        XCTAssertNil(sparse.titleCn)
-        XCTAssertNil(sparse.key)
-        XCTAssertNil(sparse.style)
-        XCTAssertNil(sparse.lyrics)
-        XCTAssertNil(sparse.description)
-        XCTAssertEqual(sparse.vocalType, "vocal")
-        XCTAssertEqual(sparse.variantGroupId, "group-01")
-        XCTAssertEqual(sparse.variantRole, "A")
-        XCTAssertEqual(sparse.variantCount, 2)
-        XCTAssertEqual(sparse.variants?.count, 2)
-        XCTAssertEqual(sparse.variants?[1].variantRole, "B")
-        XCTAssertEqual(sparse.variants?[1].audioUrl, "https://cdn.invalid/audio/0002b.mp3")
-    }
-
-    func testTrackDetailOmitsVariantFamilyAndStillDecodes() throws {
-        let detail = try Fixture.decode(TrackDetailDto.self, "track-detail")
-        XCTAssertEqual(detail.track.id, "library-test-0001")
-        XCTAssertNil(detail.track.variantGroupId)
-        XCTAssertNil(detail.track.variantCount)
+    func testDecodesRealTrackDetailWithSimilarProjection() throws {
+        let detail = try Fixture.decode(TrackDetailDto.self, "track-detail-real-1")
+        XCTAssertEqual(detail.track.id, "library-203506629c0d69e0b198b42e")
+        XCTAssertEqual(detail.track.featured, false)
+        // 详情 track 无 variant 字段族（真实形态，NEEDS #8）
         XCTAssertNil(detail.track.variants)
-        XCTAssertEqual(detail.similar?.count, 1)
-        XCTAssertEqual(detail.similar?[0].id, "library-test-0004")
+        XCTAssertNil(detail.track.variantCount)
+
+        let similar = try XCTUnwrap(detail.similar)
+        XCTAssertEqual(similar.count, 4)
+        let first = try XCTUnwrap(similar.first)
+        XCTAssertEqual(first.id, "library-d0af74d83c9b7cc578043024")
+        XCTAssertEqual(first.title.isEmpty, false)
+        XCTAssertEqual(first.cover.hasPrefix("https://"), true)
+        XCTAssertEqual(first.duration > 0, true)
+        XCTAssertEqual(first.bpm > 0, true)
+        XCTAssertEqual(first.audioUrl.hasPrefix("https://"), true)
+        XCTAssertEqual(first.waveformPeaks.count, 8)
+        XCTAssertEqual(first.previewStart, 207.77)
+        XCTAssertEqual(first.previewEnd > first.previewStart, true)
+        XCTAssertEqual(first.playCount, 0)
+        XCTAssertEqual(first.createdAt?.isEmpty, false)
+        XCTAssertEqual(first.artist.name, "Amara Okafor")
+        XCTAssertEqual(first.artist.nameCn, "阿玛拉·奥卡福")
+        XCTAssertEqual(first.artist.id, "A06")
+        XCTAssertNil(first.artist.country)
+        XCTAssertEqual(first.similarityScore, 111)
+        // 真实响应里相似度分既有 int 也有 float（110.75），必须都能解码
+        XCTAssertEqual(similar[1].similarityScore, 110.75)
+        XCTAssertEqual(first.tags.first?.dimension, "instrument")
+        XCTAssertEqual(first.tags.first?.value, "合成器")
+        XCTAssertNil(first.tags.first?.trackId, "similar 的 tags 元素无 trackId")
+        XCTAssertEqual(first.isFeatured, false)
+    }
+
+    func testBothRealTrackDetailsDecodeWithNonEmptySimilar() throws {
+        for name in ["track-detail-real-1", "track-detail-real-2"] {
+            let detail = try Fixture.decode(TrackDetailDto.self, name)
+            XCTAssertFalse(detail.track.id.isEmpty, name)
+            let similar = try XCTUnwrap(detail.similar, name)
+            XCTAssertFalse(similar.isEmpty, "\(name) 的 similar 不应为空")
+            for item in similar {
+                XCTAssertFalse(item.id.isEmpty)
+                XCTAssertFalse(item.title.isEmpty)
+                XCTAssertFalse(item.audioUrl.isEmpty)
+                XCTAssertFalse(item.waveformPeaks.isEmpty)
+                XCTAssertFalse(item.displayLabels.isEmpty)
+                XCTAssertFalse(item.artist.id.isEmpty)
+            }
+        }
+    }
+
+    /// 回归守卫（M-1）：真实投影的特征必须留在 fixture 里。
+    /// 若有人再把 fixture 改写成「贴合自己模型的示例」，本条会失败。
+    func testSimilarFixtureKeepsRealProjectionShape() throws {
+        let raw = try Fixture.value("track-detail-real-1") as? [String: Any]
+        let similar = try XCTUnwrap(raw?["similar"] as? [[String: Any]])
+        XCTAssertFalse(similar.isEmpty)
+        for item in similar {
+            XCTAssertNotNil(item["preview_start"], "similar 必须保留 snake_case preview_start")
+            XCTAssertNotNil(item["preview_end"], "similar 必须保留 snake_case preview_end")
+            XCTAssertNil(item["previewStart"], "similar 不应有 camelCase previewStart（真实投影无）")
+            XCTAssertNil(item["previewEnd"], "similar 不应有 camelCase previewEnd（真实投影无）")
+            XCTAssertNil(item["playCount"], "similar 不应有 camelCase playCount")
+            XCTAssertNotNil(item["play_count"])
+            XCTAssertNil(item["createdAt"], "similar 不应有 camelCase createdAt")
+            XCTAssertNotNil(item["created_at"])
+            let featured = try XCTUnwrap(item["featured"])
+            let encoded = try JSONSerialization.data(withJSONObject: ["v": featured])
+            XCTAssertEqual(
+                String(data: encoded, encoding: .utf8),
+                #"{"v":0}"#,
+                "similar.featured 必须是数字 0/1，而非布尔"
+            )
+        }
+    }
+
+    func testSimilarFeaturedAcceptsNonZeroNumber() throws {
+        let json = try Fixture.data("track-detail-real-1")
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: Any])
+        var similar = try XCTUnwrap(root["similar"] as? [[String: Any]])
+        similar[0]["featured"] = 1
+        root["similar"] = similar
+        let mutated = try JSONSerialization.data(withJSONObject: root)
+        let detail = try JSONDecoder().decode(TrackDetailDto.self, from: mutated)
+        XCTAssertEqual(detail.similar?.first?.featured, 1)
+        XCTAssertEqual(detail.similar?.first?.isFeatured, true)
+    }
+
+    func testSyntheticTrackWithVariantsDecodesAndIgnoresUnknownFields() throws {
+        let page = try Fixture.decode(TrackPageDto.self, "synthetic/track-with-variants")
+        XCTAssertEqual(page.tracks.count, 1)
+        let track = page.tracks[0]
+        XCTAssertEqual(track.id, "library-synthetic-0001")
+        XCTAssertEqual(track.variantGroupId, "group-synthetic")
+        XCTAssertEqual(track.variantCount, 2)
+        XCTAssertEqual(track.variants?.count, 2)
+        XCTAssertEqual(track.variants?[1].variantRole, "B")
     }
 
     func testMissingRequiredTrackFieldFailsDecoding() {
@@ -84,66 +151,85 @@ final class LibraryDTOTests: XCTestCase {
         }
     }
 
+    func testDecodesTrackPreviewUrl() throws {
+        let preview = try Fixture.decode(TrackPreviewUrlDto.self, "track-preview-url")
+        XCTAssertEqual(preview.url.hasPrefix("https://"), true)
+        XCTAssertEqual(preview.previewStart, 167.02)
+        XCTAssertEqual(preview.previewEnd, 186.67)
+        XCTAssertEqual(preview.duration, 209.592)
+    }
+
+    func testTrackPreviewUrlToleratesMissingDuration() throws {
+        let json = Data(#"{"url":"https://cdn.invalid/a.mp3","previewStart":1.0,"previewEnd":2.0}"#.utf8)
+        let preview = try JSONDecoder().decode(TrackPreviewUrlDto.self, from: json)
+        XCTAssertNil(preview.duration)
+        XCTAssertEqual(preview.previewStart, 1.0)
+    }
+
     func testDecodesPlaylistListWithSaveState() throws {
         let list = try Fixture.decode(PlaylistListDto.self, "playlists")
-        XCTAssertEqual(list.playlists.count, 1)
+        XCTAssertEqual(list.playlists.count, 2)
         let playlist = list.playlists[0]
-        XCTAssertEqual(playlist.id, "PL-test-01")
-        XCTAssertEqual(playlist.titleCn, "明亮氛围感歌单")
+        XCTAssertEqual(playlist.id, "PL-20260917-09")
         XCTAssertEqual(playlist.trackCount, 10)
-        XCTAssertEqual(playlist.totalDuration, 1480.56)
         XCTAssertEqual(playlist.isSaved, false)
         XCTAssertEqual(playlist.writable, false)
-        XCTAssertEqual(playlist.disabledReason, "官方歌单使用收藏")
+        XCTAssertEqual(
+            playlist.disabledReason,
+            "官方歌单使用收藏，不会复制为个人歌单；加入歌曲请选择个人或项目歌单"
+        )
+        XCTAssertEqual(playlist.coverMode, "fallback")
+        XCTAssertNil(playlist.coverDefault)
+        XCTAssertNil(playlist.coverAlt)
+        XCTAssertNil(playlist.scene)
+        XCTAssertNil(playlist.savedAt, "列表响应不含 savedAt")
+        XCTAssertEqual(playlist.coverMedia?.alt, playlist.titleCn)
+        XCTAssertEqual(playlist.coverMedia?.fit, "cover")
+        XCTAssertEqual(playlist.coverMedia?.focalX, 50)
+        XCTAssertEqual(playlist.coverMedia?.focalY, 50)
+        XCTAssertEqual(playlist.coverMedia?.mode, "fallback")
+        XCTAssertNil(playlist.coverMedia?.updatedAt)
         XCTAssertEqual(playlist.saveAction?.kind, "bookmark")
+        XCTAssertEqual(playlist.saveAction?.saved, false)
         XCTAssertEqual(playlist.saveAction?.endpoint, "/api/saved-playlists")
         XCTAssertEqual(playlist.saveAction?.addMethod, "POST")
         XCTAssertEqual(playlist.saveAction?.removeMethod, "DELETE")
-        XCTAssertEqual(playlist.saveAction?.saved, false)
-        XCTAssertEqual(playlist.coverMedia?.imageUrl, "https://cdn.invalid/covers/pl01.jpeg")
-        XCTAssertEqual(playlist.coverMedia?.fit, "cover")
-        XCTAssertEqual(playlist.coverMedia?.focalX, 50)
-        XCTAssertEqual(playlist.coverMedia?.mode, "fallback")
-        XCTAssertNil(playlist.coverMedia?.updatedAt)
-        XCTAssertNil(playlist.coverDefault)
-        XCTAssertNil(playlist.coverAlt)
-        XCTAssertNil(playlist.coverUpdatedAt)
-        XCTAssertNil(playlist.scene)
+        XCTAssertEqual(playlist.cover?.hasPrefix("https://cdn.invalid/"), true)
     }
 
     func testPlaylistDetailOmitsSaveStateAndStillDecodes() throws {
         let detail = try Fixture.decode(PlaylistDetailDto.self, "playlist-detail")
-        XCTAssertEqual(detail.playlist.id, "PL-test-01")
+        XCTAssertEqual(detail.playlist.id, "PL-20260917-09")
         XCTAssertNil(detail.playlist.isSaved)
         XCTAssertNil(detail.playlist.writable)
         XCTAssertNil(detail.playlist.disabledReason)
         XCTAssertNil(detail.playlist.saveAction)
-        XCTAssertEqual(detail.tracks?.count, 1)
-        XCTAssertEqual(detail.tracks?[0].id, "library-test-0001")
+        XCTAssertEqual(detail.tracks?.count, 2)
+        XCTAssertEqual(detail.tracks?[0].id, "library-8140d670bee74e9e061ab5be")
     }
 
     func testDecodesTaxonomyTwelveDimensions() throws {
         let taxonomy = try Fixture.decode(TaxonomyDto.self, "taxonomy")
         let dims = taxonomy.taxonomy
-        XCTAssertEqual(dims.scene?.count, 1)
-        XCTAssertEqual(dims.mood?.count, 1)
-        XCTAssertEqual(dims.genre?.count, 1)
-        XCTAssertEqual(dims.subgenre?.count, 1)
-        XCTAssertEqual(dims.style?.count, 1)
-        XCTAssertEqual(dims.instrument?.count, 1)
-        XCTAssertEqual(dims.attribute?.count, 1)
-        XCTAssertEqual(dims.energy?.count, 1)
-        XCTAssertEqual(dims.tag?.count, 1)
-        XCTAssertEqual(dims.vocalType?.count, 1)
-        XCTAssertEqual(dims.type?.count, 1)
-        XCTAssertEqual(dims.musicalKey?.count, 1)
+        XCTAssertEqual(dims.scene?.count, 2)
+        XCTAssertEqual(dims.mood?.count, 2)
+        XCTAssertEqual(dims.genre?.count, 2)
+        XCTAssertEqual(dims.subgenre?.count, 2)
+        XCTAssertEqual(dims.style?.count, 2)
+        XCTAssertEqual(dims.instrument?.count, 2)
+        XCTAssertEqual(dims.attribute?.count, 2)
+        XCTAssertEqual(dims.energy?.count, 2)
+        XCTAssertEqual(dims.tag?.count, 2)
+        XCTAssertEqual(dims.vocalType?.count, 2)
+        XCTAssertEqual(dims.type?.count, 2)
+        XCTAssertEqual(dims.musicalKey?.count, 2)
 
-        let term = try XCTUnwrap(dims.subgenre?.first)
-        XCTAssertEqual(term.id, "Neo Soul")
-        XCTAssertEqual(term.label, "Neo Soul")
-        XCTAssertEqual(term.aliases, ["parent:R&B"])
+        let term = try XCTUnwrap(dims.scene?.first)
+        XCTAssertEqual(term.id, "短视频/Vlog")
+        XCTAssertEqual(term.label, "短视频/Vlog")
+        XCTAssertEqual(term.aliases, ["短视频", "Vlog", "片头"])
         XCTAssertEqual(term.active, true)
-        XCTAssertEqual(term.source, "genre-vocab-v3")
+        XCTAssertEqual(term.source, "taxonomy-v3-20260806")
         XCTAssertEqual(term.sortOrder, 0)
         XCTAssertEqual(term.version, 1)
     }

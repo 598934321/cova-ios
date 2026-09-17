@@ -1,0 +1,106 @@
+{
+  "tracks": [
+    {
+      "id": "library-9749cdc210a624de9d0da02e",
+      "category": "music",
+      "title": "Golden Beacon Crosses the Lighthouse",
+      "titleCn": "Golden Beacon Crosses the Lighthouse",
+      "artistId": "A07",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D015/COVA-20260917-D015-A.jpeg",
+      "duration": 209.592,
+      "bpm": 76,
+      "key": "Gm",
+      "style": "民谣",
+      "styleCn": "民谣",
+      "description": null,
+      "descriptionCn": null,
+      "copyright": "commercial_allowed",
+      "featured": false,
+      "playCount": 0,
+      "favoriteCount": 0,
+      "createdAt": "2026-09-16T17:23:03.505Z",
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260917-DAILY/COVA-20260917-D015/COVA-20260917-D015-A.mp3",
+      "audioDuration": null,
+      "previewStart": 167.02,
+      "previewEnd": 186.67,
+      "status": "published",
+      "segmentColors": "0-23.29s#746F73;23.29-104.8s#7E4650",
+      "waveformPeaks": [
+        0.17,
+        0.368,
+        0.2841,
+        0.1123,
+        0.3769,
+        0.3936,
+        0.3346,
+        0.4851
+      ],
+      "lyrics": null,
+      "vocalType": "instrumental",
+      "energy": "中",
+      "artist": {
+        "id": "A07",
+        "name": "Elise Moreau",
+        "nameCn": "艾丽丝·莫罗",
+        "country": "France",
+        "countryFlag": "🇫🇷",
+        "style": "Emotional Piano",
+        "styleCn": "情感钢琴",
+        "personality": "人物故事、纪录片与情绪配乐师，擅长公益、访谈和品牌叙事。",
+        "coreInstruments": "[\"钢琴\", \"大提琴\", \"弦乐四重奏\"]",
+        "colorPalette": "[\"#D4A5A5\", \"#C9B1FF\", \"#E8D5B7\"]",
+        "avatar": "/assets/artists/artist-07-elise-moreau.webp",
+        "sceneResponsibility": "[\"婚礼\", \"情感\", \"公益\"]",
+        "stylePrompt": "Warm piano-led score with restrained documentary strings, cello and ambient textures, BPM 62-88. Sincere, tender and narrative-driven for human stories, charity films, interviews and voiceover beds; subtle ambient electronic textures may be fused. Avoid melodrama and template sad piano.",
+        "lyricsPrompt": "默认纯音乐。若需人声，用法语或英文气声低吟，主题围绕回忆、告别、希望与平凡人的故事，口吻内省克制、留白多，避免直白煽情。",
+        "userId": "qa-partner-musician-a07"
+      },
+      "artistName": "Elise Moreau",
+      "artistNameCn": "艾丽丝·莫罗",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "悬疑惊悚"
+      ],
+      "moods": [
+        "氛围"
+      ],
+      "displayLabels": [
+        "悬疑惊悚",
+        "民谣",
+        "氛围",
+        "合成器"
+      ],
+      "highlightStart": 167.02,
+      "highlightEnd": 186.67,
+      "cocreate": false,
+      "downloadCount": 1,
+      "tags": [
+        {
+          "trackId": "library-9749cdc210a624de9d0da02e",
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "trackId": "library-9749cdc210a624de9d0da02e",
+          "dimension": "instrument",
+          "value": "大提琴"
+        },
+        {
+          "trackId": "library-9749cdc210a624de9d0da02e",
+          "dimension": "instrument",
+          "value": "弦乐"
+        },
+        {
+          "trackId": "library-9749cdc210a624de9d0da02e",
+          "dimension": "mainGenre",
+          "value": "民谣"
+        }
+      ],
+      "variantGroupId": null,
+      "variantRole": null,
+      "variantCount": 0,
+      "variants": []
+    }
+  ]
+}

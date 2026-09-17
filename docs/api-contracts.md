@@ -8,7 +8,7 @@
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/auth/login` | `{email, password}` → 期望 `{user, token, refreshToken, expiresIn}`（**NEEDS-1 阻塞**） |
+| `POST /api/auth/login` | `{email, password}` → 期望 `{user, token, refreshToken, expiresIn}`（**NEEDS-1 阻塞**；2026-09-17 只读核对：token 三项已符合，但 `user` 仅 `{id,email,name,role}`，缺 `covaId/phone/isArtist/isPartner`） |
 | `POST /api/auth/refresh` | refresh token 旋转（single-flight） |
 | `POST /api/auth/logout` | 登出 |
 | `GET /api/auth/me` | → `{user, entitlements}` |
@@ -23,17 +23,24 @@
 | 端点 | 说明 |
 |---|---|
 | `GET /api/tracks` | 多维筛选：`scene / mood / style / artistId / instrument / attribute / energy / vocalType / bpm / duration / search / sort / page / similarTo` |
-| `GET /api/tracks/:id` | 详情 + 相似曲目 |
-| `GET /api/tracks/:id/preview-url` | 试听 URL + preview 区间 |
+| `GET /api/tracks/:id` | 详情 + 相似曲目（`{track, similar[]}`） |
+| `GET /api/tracks/:id/preview-url` | 试听 URL + preview 区间（匿名可访问，2026-09-17 实测：`{url, previewStart, previewEnd, duration}`） |
 | `GET /api/library/taxonomy` | 词表（genre→subgenre→三级延伸；scene/mood/instrument/type/energy 维度） |
 | `GET /api/playlists` / `GET /api/playlists/:id` | 官方歌单 |
 | `GET/POST/DELETE /api/saved-playlists` | 歌单收藏（需登录） |
-| `GET/POST/DELETE /api/favorites` | 曲目收藏（需登录） |
+| `GET/POST/DELETE /api/favorites` | 曲目收藏（需登录）。`GET → {tracks[]}`；`POST/DELETE` body `{trackId}` → `{message, favoriteCount}`。⚠️ `GET` 会混入「生成音乐收藏」条目（`source:"note"`/`noteId`，字段集不同，NEEDS #11） |
 | `POST /api/tracks/play` | 播放上报，`source: "app-ios"`（NEEDS-2），幂等键 |
 
 **TrackDto 关键字段**：`id / title / titleCn / artist{…} / cover / duration / bpm / audioUrl /
 scenes[] / moods[] / tags[] / displayLabels[] / highlightStart-End / waveformPeaks[] / lyrics /
 vocalType / energy / variants[]（A/B 变体）/ favoriteCount / previewStart-End`
+
+> ⚠️ **投影不一致（2026-09-17 实测，NEEDS #10）**：`GET /api/tracks` 的 `tracks[]` 用 camelCase
+> `previewStart/End`、`featured` 为 Bool；而 `GET /api/tracks/:id` 的 `similar[]` 用 snake_case
+> `preview_start/end`（无 camel 别名）、`featured` 为数字 0/1、`play_count/created_at/audio_duration`
+> 仅 snake_case、`artist`/`tags` 为裁剪结构、另有 `similarityScore`（int 或 float）。
+> iOS 端据此建独立 `SimilarTrackDto`；**不要把 `similar[]` 当作 `TrackDto`**。
+> 另：`GET /api/tracks/:id` 的 `track` 无 variant 字段族（NEEDS #8）。
 
 **PlaylistDto 关键字段**：`id / title / titleCn / cover + coverMedia（fit/focal 焦点）/
 trackCount / totalDuration / scene / curator / isSaved / saveAction`

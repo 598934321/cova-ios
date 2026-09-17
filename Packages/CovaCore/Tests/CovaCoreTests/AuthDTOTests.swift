@@ -66,4 +66,48 @@ final class AuthDTOTests: XCTestCase {
         )
         XCTAssertThrowsError(try JSONDecoder().decode(CovaMeResponse.self, from: json))
     }
+
+    // MARK: - 登录 / 刷新 / 登出（契约目标形态，NEEDS-1）
+
+    func testDecodesLoginResponseContractTargetShape() throws {
+        let response = try Fixture.decode(CovaLoginResponseDto.self, "auth-login")
+        XCTAssertEqual(response.user.id, "user-0001")
+        XCTAssertEqual(response.user.name, "测试用户")
+        XCTAssertEqual(response.token, "ACCESS_TOKEN_PLACEHOLDER")
+        XCTAssertEqual(response.refreshToken, "REFRESH_TOKEN_PLACEHOLDER")
+        XCTAssertEqual(response.expiresIn, 7200)
+    }
+
+    func testLoginRequestEncodesContractKeys() throws {
+        let request = CovaLoginRequestDto(email: "tester@example.invalid", password: "secret")
+        let data = try JSONEncoder().encode(request)
+        let text = String(data: data, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains("\"email\""))
+        XCTAssertTrue(text.contains("\"password\""))
+    }
+
+    func testDecodesRefreshAndLogoutResponses() throws {
+        let refresh = try Fixture.decode(CovaRefreshResponseDto.self, "auth-refresh")
+        XCTAssertEqual(refresh.token.isEmpty, false)
+        XCTAssertEqual(refresh.refreshToken.isEmpty, false)
+        XCTAssertEqual(refresh.expiresIn, 7200)
+
+        let logout = try Fixture.decode(CovaLogoutResponseDto.self, "auth-logout")
+        XCTAssertEqual(logout.message, "已退出登录")
+
+        let empty = try JSONDecoder().decode(CovaLogoutResponseDto.self, from: Data("{}".utf8))
+        XCTAssertNil(empty.message)
+    }
+
+    func testLoginResponseRequiresFullAuthUserContract() {
+        // 记录：真实 login 响应当前只给 {id,email,name,role}，无法满足契约的完整 AuthUser
+        // （见 docs/NEEDS.md AUTH-LOGIN-TOKENS）。此处固化「契约要求」这一侧。
+        let partial = Data(
+            #"{"user":{"id":"u1","email":"a@b.c","name":"n","role":"user"},"token":"t","refreshToken":"r","expiresIn":1}"#.utf8
+        )
+        XCTAssertThrowsError(try JSONDecoder().decode(CovaLoginResponseDto.self, from: partial)) { error in
+            guard let decoding = error as? DecodingError else { return XCTFail("应为 DecodingError") }
+            XCTAssertEqual(CovaAPIError.classify(decoding: decoding), .decoding(field: "isArtist"))
+        }
+    }
 }

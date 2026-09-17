@@ -169,6 +169,137 @@ public struct TrackDto: Codable, Equatable, Sendable {
     }
 }
 
+/// `GET /api/tracks/:id` 的 `similar[]` 元素。
+///
+/// **与 `TrackDto` 不是同一投影**（2026-09-17 实测 10 份详情 / 40 个元素）：
+/// - `featured` 为 **数字 0/1**（列表与详情 `track` 为 Bool）；
+/// - 预告区间只有 snake_case `preview_start` / `preview_end`（**无** `previewStart`/`previewEnd`）；
+/// - `play_count` / `created_at` / `audio_duration` 只有 snake_case；
+/// - `artist` 为裁剪版 `{id,name,nameCn,avatar}`，`tags[]` 元素无 `trackId`。
+///
+/// 因此本模型按**真实投影**逐键建模，不复用 `TrackDto`（复用会必然解码失败）。
+public struct SimilarTrackDto: Codable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let cover: String
+    public let duration: Double
+    public let bpm: Int
+    public let audioUrl: String
+    public let artist: ArtistDto
+    public let scenes: [String]
+    public let moods: [String]
+    public let tags: [TrackTagDto]
+    public let displayLabels: [String]
+    public let waveformPeaks: [Double]
+    public let previewStart: Double
+    public let previewEnd: Double
+    public let highlightStart: Double
+    public let highlightEnd: Double
+    public let favoriteCount: Int
+    public let vocalType: String
+    public let energy: String
+    /// 0/1 数字（真实投影）。
+    public let featured: Int
+
+    public let titleCn: String?
+    public let category: String?
+    public let artistId: String?
+    public let key: String?
+    public let style: String?
+    public let styleCn: String?
+    public let description: String?
+    public let descriptionCn: String?
+    public let copyright: String?
+    public let playCount: Int?
+    public let createdAt: String?
+    public let audioDuration: Double?
+    public let status: String?
+    public let segmentColors: String?
+    public let lyrics: String?
+    public let artistName: String?
+    public let artistNameCn: String?
+    public let lyricistName: String?
+    public let lyricistNameCn: String?
+    public let cocreate: Bool?
+    public let downloadCount: Int?
+    public let variantGroupId: String?
+    public let variantRole: String?
+    public let variantCount: Int?
+    public let variants: [TrackVariantDto]?
+    /// 相似度分：真实响应为 int **或** float（如 `111` / `110.75`），故用 `Double`。
+    public let similarityScore: Double?
+
+    /// 数字 `featured` 的布尔视图。
+    public var isFeatured: Bool { featured != 0 }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case titleCn
+        case category
+        case artistId
+        case cover
+        case duration
+        case bpm
+        case key
+        case style
+        case styleCn
+        case description
+        case descriptionCn
+        case copyright
+        case featured
+        case favoriteCount
+        case audioUrl
+        case waveformPeaks
+        case lyrics
+        case vocalType
+        case energy
+        case status
+        case artist
+        case artistName
+        case artistNameCn
+        case lyricistName
+        case lyricistNameCn
+        case scenes
+        case moods
+        case displayLabels
+        case highlightStart
+        case highlightEnd
+        case cocreate
+        case downloadCount
+        case tags
+        case variantGroupId
+        case variantRole
+        case variantCount
+        case variants
+        case similarityScore
+        // snake_case 专属键（真实投影无 camel 别名）
+        case previewStart = "preview_start"
+        case previewEnd = "preview_end"
+        case playCount = "play_count"
+        case createdAt = "created_at"
+        case audioDuration = "audio_duration"
+        case segmentColors = "segment_colors"
+    }
+}
+
+/// `GET /api/tracks/:id/preview-url` 响应（真实响应：`{url, previewStart, previewEnd, duration}`）。
+///
+/// `url` 为可直接试听的音频地址；不含签名时也不得写入持久化索引（AGENTS 硬边界 3）。
+public struct TrackPreviewUrlDto: Codable, Equatable, Sendable {
+    public let url: String
+    public let previewStart: Double
+    public let previewEnd: Double
+    public let duration: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case url
+        case previewStart
+        case previewEnd
+        case duration
+    }
+}
+
 /// `GET /api/tracks` 分页封套（真实响应：`{tracks, total, page, pageSize, totalPages}`）。
 public struct TrackPageDto: Codable, Equatable, Sendable {
     public let tracks: [TrackDto]
@@ -187,9 +318,11 @@ public struct TrackPageDto: Codable, Equatable, Sendable {
 }
 
 /// `GET /api/tracks/:id` 响应：详情 + 相似曲目。
+///
+/// `similar` 元素用独立模型 `SimilarTrackDto`（真实投影与列表不同，见其文档）。
 public struct TrackDetailDto: Codable, Equatable, Sendable {
     public let track: TrackDto
-    public let similar: [TrackDto]?
+    public let similar: [SimilarTrackDto]?
 
     enum CodingKeys: String, CodingKey {
         case track
@@ -265,6 +398,8 @@ public struct PlaylistDto: Codable, Equatable, Sendable {
     public let writable: Bool?
     public let disabledReason: String?
     public let saveAction: PlaylistSaveActionDto?
+    /// 收藏时间（仅 `GET /api/saved-playlists` 的序列化带出）。
+    public let savedAt: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -291,6 +426,7 @@ public struct PlaylistDto: Codable, Equatable, Sendable {
         case writable
         case disabledReason
         case saveAction
+        case savedAt
     }
 }
 

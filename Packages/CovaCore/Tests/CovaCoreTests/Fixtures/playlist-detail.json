@@ -1,48 +1,232 @@
 {
   "playlist": {
-    "id": "PL-test-01",
+    "id": "PL-20260917-09",
     "title": "Daily Bright",
-    "titleCn": "明亮氛围感歌单",
-    "description": "Bright instrumental picks",
-    "descriptionCn": "明亮情绪纯音乐每日精选。",
-    "cover": "https://cdn.invalid/covers/pl01.jpeg",
+    "titleCn": "明亮氛围感歌单｜前奏 3 秒就沉浸的 10 首",
+    "description": "Bright instrumental picks, refreshed 2026-09-17.",
+    "descriptionCn": "明亮情绪纯音乐每日精选，全部可商用授权，2026-09-17 更新。",
+    "cover": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
+    "coverDefault": null,
     "coverMode": "fallback",
+    "coverAlt": null,
     "coverFit": "cover",
     "coverFocalX": 50,
     "coverFocalY": 50,
+    "coverUpdatedAt": null,
+    "scene": null,
     "curator": "Cova 编辑部",
     "createdAt": "2026-09-17T01:08:00.000Z",
-    "coverUrl": "https://cdn.invalid/covers/pl01.jpeg",
+    "coverUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
     "coverMedia": {
-      "imageUrl": "https://cdn.invalid/covers/pl01.jpeg",
+      "imageUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
+      "fallbackUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
+      "alt": "明亮氛围感歌单｜前奏 3 秒就沉浸的 10 首",
       "fit": "cover",
       "focalX": 50,
-      "focalY": 50
+      "focalY": 50,
+      "mode": "fallback",
+      "updatedAt": null
     },
-    "trackCount": 1,
-    "totalDuration": 209.592
+    "trackCount": 10,
+    "totalDuration": 1480.5600000000002
   },
   "tracks": [
     {
-      "id": "library-test-0001",
-      "title": "Golden Beacon",
-      "cover": "https://cdn.invalid/covers/0001.jpeg",
-      "duration": 209.592,
-      "bpm": 76,
-      "audioUrl": "https://cdn.invalid/audio/0001.mp3",
-      "waveformPeaks": [0.17],
-      "previewStart": 167.02,
-      "previewEnd": 186.67,
-      "highlightStart": 167.02,
-      "highlightEnd": 186.67,
+      "id": "library-8140d670bee74e9e061ab5be",
+      "category": "music",
+      "title": "Wave and Prism",
+      "titleCn": "Wave and Prism",
+      "artistId": "A11",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
+      "duration": 299.016,
+      "bpm": 120,
+      "key": "Em",
+      "style": "Techno",
+      "styleCn": "Techno",
+      "description": null,
+      "descriptionCn": null,
+      "copyright": "commercial_allowed",
+      "featured": false,
+      "playCount": 0,
       "favoriteCount": 0,
+      "createdAt": "2026-09-15T05:23:13.809Z",
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.mp3",
+      "audioDuration": null,
+      "previewStart": 51.39,
+      "previewEnd": 72.42,
+      "status": "published",
+      "segmentColors": "0-11.96s#746F73;11.96-143.53s#7E4650",
+      "waveformPeaks": [
+        0.2309,
+        0.3958,
+        0.374,
+        0.4384,
+        0.4516,
+        0.466,
+        0.4949,
+        0.7321
+      ],
+      "lyrics": null,
       "vocalType": "instrumental",
-      "energy": "中",
-      "artist": { "id": "A07", "name": "Elise Moreau" },
-      "scenes": [],
-      "moods": [],
-      "tags": [],
-      "displayLabels": []
+      "energy": "中高",
+      "artist": {
+        "id": "A11",
+        "name": "Minji Park",
+        "nameCn": "朴敏智",
+        "country": "Korea",
+        "countryFlag": "🇰🇷",
+        "style": "Fashion Electronic",
+        "styleCn": "时尚电子",
+        "personality": "美妆、电商与时尚社媒配乐师，擅长产品短片、潮流广告和社媒快剪。",
+        "coreInstruments": "[\"电子合成器\", \"Trap鼓组\", \"Auto-Tune FX\"]",
+        "colorPalette": "[\"#FF69B4\", \"#9B59B6\", \"#3498DB\"]",
+        "avatar": "/assets/artists/artist-11-minji-park.webp",
+        "sceneResponsibility": "[\"美妆\", \"时尚\", \"电商\"]",
+        "stylePrompt": "Stylish electronic commercial pop built on a tight rhythmic hook, synth bass, plucks, claps and short vocal-chop textures, BPM 110-130. Polished, confident and trend-aware for beauty, e-commerce and fashion social ads; hooks stay simple and short-video friendly. Avoid copying K-pop idol styles and cheap neon EDM.",
+        "lyricsPrompt": "默认纯音乐。若需人声，用韩语或英文短 hook 切片，主题围绕自信、美丽与都市夜生活，口吻精致酷感、极简重复，避免偶像式甜腻唱法。",
+        "userId": "qa-partner-musician-a11"
+      },
+      "artistName": "Minji Park",
+      "artistNameCn": "朴敏智",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "活动"
+      ],
+      "moods": [
+        "明亮",
+        "活力"
+      ],
+      "displayLabels": [
+        "活动",
+        "Techno",
+        "明亮",
+        "活力"
+      ],
+      "highlightStart": 51.39,
+      "highlightEnd": 72.42,
+      "cocreate": false,
+      "downloadCount": 0,
+      "tags": [
+        {
+          "trackId": "library-8140d670bee74e9e061ab5be",
+          "dimension": "instrument",
+          "value": "合成器"
+        },
+        {
+          "trackId": "library-8140d670bee74e9e061ab5be",
+          "dimension": "instrument",
+          "value": "拍手"
+        },
+        {
+          "trackId": "library-8140d670bee74e9e061ab5be",
+          "dimension": "instrument",
+          "value": "鼓"
+        },
+        {
+          "trackId": "library-8140d670bee74e9e061ab5be",
+          "dimension": "mainGenre",
+          "value": "Techno"
+        }
+      ]
+    },
+    {
+      "id": "library-b226222b7cdeca2e1e1a1a0f",
+      "category": "music",
+      "title": "Rising Current Gathers the Stars",
+      "titleCn": "Rising Current Gathers the Stars",
+      "artistId": "A03",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9662/COVA-20260911-B9662-B.jpeg",
+      "duration": 56.52,
+      "bpm": 102,
+      "key": "Em",
+      "style": "House",
+      "styleCn": "House",
+      "description": null,
+      "descriptionCn": null,
+      "copyright": "commercial_allowed",
+      "featured": false,
+      "playCount": 0,
+      "favoriteCount": 0,
+      "createdAt": "2026-09-15T04:38:26.416Z",
+      "audioUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9662/COVA-20260911-B9662-B.mp3",
+      "audioDuration": null,
+      "previewStart": 34,
+      "previewEnd": 53.87,
+      "status": "published",
+      "segmentColors": "0-56.52s#7E4650",
+      "waveformPeaks": [
+        0.7331,
+        0.762,
+        0.858,
+        0.2346,
+        0.6676,
+        0.7596,
+        0.7102,
+        0.4082
+      ],
+      "lyrics": null,
+      "vocalType": "instrumental",
+      "energy": "中高",
+      "artist": {
+        "id": "A03",
+        "name": "Noah Klein",
+        "nameCn": "诺亚·克莱因",
+        "country": "Germany",
+        "countryFlag": "🇩🇪",
+        "style": "Tech Electronic",
+        "styleCn": "科技电子",
+        "personality": "科技产品与未来商业配乐师，擅长产品发布、汽车、工业设计和金融科技。",
+        "coreInstruments": "[\"合成器\", \"电子鼓\", \"数字音效\"]",
+        "colorPalette": "[\"#00D2FF\", \"#3A7BD5\", \"#0F2027\"]",
+        "avatar": "/assets/artists/artist-03-noah-klein.webp",
+        "sceneResponsibility": "[\"科技发布\", \"金融\", \"企业宣传\"]",
+        "stylePrompt": "Clean futuristic electronic commercial music: precise synth pulses, deep bass, electronic percussion and digital textures, BPM 92-118. Minimal, product-focused and premium, suited for tech launches, automotive and fintech; cinematic low end and modern orchestral layers may be fused in. Avoid club EDM, cheap cyberpunk and over-hyped drops.",
+        "lyricsPrompt": "默认纯音乐。若需人声，使用英文短句或 vocoder 式冷调念白，主题围绕创新、未来、精准与信任，口吻冷静专业，避免情绪化与口号式嘶喊。",
+        "userId": "qa-partner-musician-a03"
+      },
+      "artistName": "Noah Klein",
+      "artistNameCn": "诺亚·克莱因",
+      "lyricistName": null,
+      "lyricistNameCn": null,
+      "scenes": [
+        "广告营销"
+      ],
+      "moods": [
+        "明亮"
+      ],
+      "displayLabels": [
+        "广告营销",
+        "House",
+        "明亮",
+        "打击乐"
+      ],
+      "highlightStart": 34,
+      "highlightEnd": 53.87,
+      "cocreate": false,
+      "downloadCount": 0,
+      "tags": [
+        {
+          "trackId": "library-b226222b7cdeca2e1e1a1a0f",
+          "dimension": "instrument",
+          "value": "打击乐"
+        },
+        {
+          "trackId": "library-b226222b7cdeca2e1e1a1a0f",
+          "dimension": "instrument",
+          "value": "贝斯"
+        },
+        {
+          "trackId": "library-b226222b7cdeca2e1e1a1a0f",
+          "dimension": "mainGenre",
+          "value": "House"
+        },
+        {
+          "trackId": "library-b226222b7cdeca2e1e1a1a0f",
+          "dimension": "vocalType",
+          "value": "instrumental"
+        }
+      ]
     }
   ]
 }

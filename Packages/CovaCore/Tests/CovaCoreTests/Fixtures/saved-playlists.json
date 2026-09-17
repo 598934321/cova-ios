@@ -1,0 +1,47 @@
+{
+  "playlists": [
+    {
+      "id": "PL-20260917-09",
+      "title": "Daily Bright",
+      "titleCn": "明亮氛围感歌单｜前奏 3 秒就沉浸的 10 首",
+      "description": "Bright instrumental picks, refreshed 2026-09-17.",
+      "descriptionCn": "明亮情绪纯音乐每日精选，全部可商用授权，2026-09-17 更新。",
+      "cover": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
+      "coverDefault": null,
+      "coverMode": "fallback",
+      "coverAlt": null,
+      "coverFit": "cover",
+      "coverFocalX": 50,
+      "coverFocalY": 50,
+      "coverUpdatedAt": null,
+      "scene": null,
+      "curator": "Cova 编辑部",
+      "createdAt": "2026-09-17T01:08:00.000Z",
+      "coverUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
+      "coverMedia": {
+        "imageUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
+        "fallbackUrl": "https://cdn.invalid/review/daily/COVA-20260911-BOOST/COVA-20260911-B9891/COVA-20260911-B9891-A.jpeg",
+        "alt": "明亮氛围感歌单｜前奏 3 秒就沉浸的 10 首",
+        "fit": "cover",
+        "focalX": 50,
+        "focalY": 50,
+        "mode": "fallback",
+        "updatedAt": null
+      },
+      "isSaved": false,
+      "writable": false,
+      "disabledReason": "收藏的官方歌单不可直接修改，请创建个人歌单后再加入",
+      "saveAction": {
+        "kind": "bookmark",
+        "icon": "bookmark",
+        "saved": true,
+        "endpoint": "/api/saved-playlists",
+        "addMethod": "POST",
+        "removeMethod": "DELETE"
+      },
+      "trackCount": 10,
+      "totalDuration": 1480.5600000000002,
+      "savedAt": "2026-09-17T03:00:00.000Z"
+    }
+  ]
+}

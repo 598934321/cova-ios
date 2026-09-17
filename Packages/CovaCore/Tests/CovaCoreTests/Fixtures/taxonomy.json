@@ -1,40 +1,273 @@
 {
   "taxonomy": {
     "scene": [
-      { "id": "短视频/Vlog", "label": "短视频/Vlog", "aliases": ["短视频", "片头"], "active": true, "source": "taxonomy-v3", "sortOrder": 0, "version": 1 }
+      {
+        "id": "短视频/Vlog",
+        "label": "短视频/Vlog",
+        "aliases": [
+          "短视频",
+          "Vlog",
+          "片头"
+        ],
+        "active": true,
+        "source": "taxonomy-v3-20260806",
+        "sortOrder": 0,
+        "version": 1
+      },
+      {
+        "id": "广告营销",
+        "label": "广告营销",
+        "aliases": [
+          "广告",
+          "产品视频",
+          "电商"
+        ],
+        "active": true,
+        "source": "taxonomy-v3-20260806",
+        "sortOrder": 1,
+        "version": 1
+      }
     ],
     "mood": [
-      { "id": "希望", "label": "希望", "aliases": [], "active": true, "source": "plan", "sortOrder": 0, "version": 3 }
+      {
+        "id": "希望",
+        "label": "希望",
+        "aliases": [],
+        "active": true,
+        "source": "plan",
+        "sortOrder": 0,
+        "version": 3
+      },
+      {
+        "id": "温暖",
+        "label": "温暖",
+        "aliases": [],
+        "active": true,
+        "source": "plan",
+        "sortOrder": 1,
+        "version": 3
+      }
     ],
     "genre": [
-      { "id": "R&B", "label": "R&B", "aliases": [], "active": true, "source": "genre-vocab", "sortOrder": 100, "version": 1 }
+      {
+        "id": "R&B",
+        "label": "R&B",
+        "aliases": [],
+        "active": true,
+        "source": "genre-vocab-20260805",
+        "sortOrder": 100,
+        "version": 1
+      },
+      {
+        "id": "Funk",
+        "label": "Funk",
+        "aliases": [],
+        "active": true,
+        "source": "genre-vocab-20260805",
+        "sortOrder": 101,
+        "version": 1
+      }
     ],
     "subgenre": [
-      { "id": "Neo Soul", "label": "Neo Soul", "aliases": ["parent:R&B"], "active": true, "source": "genre-vocab-v3", "sortOrder": 0, "version": 1 }
+      {
+        "id": "Neo Soul",
+        "label": "Neo Soul",
+        "aliases": [
+          "parent:R&B"
+        ],
+        "active": true,
+        "source": "genre-vocab-v3-20260806",
+        "sortOrder": 0,
+        "version": 1
+      },
+      {
+        "id": "Contemporary R&B",
+        "label": "Contemporary R&B",
+        "aliases": [
+          "parent:R&B"
+        ],
+        "active": true,
+        "source": "genre-vocab-v3-20260806",
+        "sortOrder": 1,
+        "version": 1
+      }
     ],
     "style": [
-      { "id": "chinese-style-genre", "label": "中国风", "aliases": ["新中式"], "active": true, "source": "style-split", "sortOrder": 0, "version": 1 }
+      {
+        "id": "chinese-style-genre",
+        "label": "中国风",
+        "aliases": [
+          "新中式",
+          "新中式纪录片配乐",
+          "中式国风流行",
+          "chinese-style"
+        ],
+        "active": true,
+        "source": "style-split-20260805",
+        "sortOrder": 0,
+        "version": 1
+      },
+      {
+        "id": "轻快流行",
+        "label": "轻快流行",
+        "aliases": [],
+        "active": true,
+        "source": "style-split-20260805",
+        "sortOrder": 1,
+        "version": 1
+      }
     ],
     "instrument": [
-      { "id": "钢琴", "label": "钢琴", "aliases": [], "active": true, "source": "product-extension", "sortOrder": 0, "version": 1 }
+      {
+        "id": "钢琴",
+        "label": "钢琴",
+        "aliases": [],
+        "active": true,
+        "source": "product-extension",
+        "sortOrder": 0,
+        "version": 1
+      },
+      {
+        "id": "弦乐",
+        "label": "弦乐",
+        "aliases": [],
+        "active": true,
+        "source": "product-extension",
+        "sortOrder": 1,
+        "version": 1
+      }
     ],
     "attribute": [
-      { "id": "温润律动", "label": "温润律动", "aliases": [], "active": true, "source": "product-extension", "sortOrder": 0, "version": 3 }
+      {
+        "id": "温润律动",
+        "label": "温润律动",
+        "aliases": [],
+        "active": true,
+        "source": "product-extension",
+        "sortOrder": 0,
+        "version": 3
+      },
+      {
+        "id": "旁白友好",
+        "label": "旁白友好",
+        "aliases": [],
+        "active": true,
+        "source": "product-extension",
+        "sortOrder": 1,
+        "version": 1
+      }
     ],
     "energy": [
-      { "id": "low-energy", "label": "低", "aliases": ["低能量"], "active": true, "source": "plan", "sortOrder": 0, "version": 1 }
+      {
+        "id": "low-energy",
+        "label": "低",
+        "aliases": [
+          "低能量"
+        ],
+        "active": true,
+        "source": "plan",
+        "sortOrder": 0,
+        "version": 1
+      },
+      {
+        "id": "low-mid-energy",
+        "label": "低中",
+        "aliases": [
+          "低中能量"
+        ],
+        "active": true,
+        "source": "plan",
+        "sortOrder": 1,
+        "version": 1
+      }
     ],
     "tag": [
-      { "id": "character-story", "label": "人物故事", "aliases": [], "active": true, "source": "product-extension", "sortOrder": 0, "version": 1 }
+      {
+        "id": "character-story",
+        "label": "人物故事",
+        "aliases": [],
+        "active": true,
+        "source": "product-extension",
+        "sortOrder": 0,
+        "version": 1
+      },
+      {
+        "id": "history-humanities",
+        "label": "历史人文",
+        "aliases": [],
+        "active": true,
+        "source": "product-extension",
+        "sortOrder": 1,
+        "version": 1
+      }
     ],
     "vocalType": [
-      { "id": "instrumental", "label": "instrumental", "aliases": ["纯音乐"], "active": true, "source": "plan", "sortOrder": 0, "version": 2 }
+      {
+        "id": "instrumental",
+        "label": "instrumental",
+        "aliases": [
+          "纯音乐"
+        ],
+        "active": true,
+        "source": "plan",
+        "sortOrder": 0,
+        "version": 2
+      },
+      {
+        "id": "vocal",
+        "label": "vocal",
+        "aliases": [
+          "带唱音乐"
+        ],
+        "active": true,
+        "source": "plan",
+        "sortOrder": 1,
+        "version": 2
+      }
     ],
     "type": [
-      { "id": "流行", "label": "现代流行", "aliases": ["流行"], "active": true, "source": "taxonomy-v2", "sortOrder": 0, "version": 2 }
+      {
+        "id": "流行",
+        "label": "现代流行",
+        "aliases": [
+          "流行"
+        ],
+        "active": true,
+        "source": "taxonomy-v2-20260805",
+        "sortOrder": 0,
+        "version": 2
+      },
+      {
+        "id": "电子",
+        "label": "DJ电音",
+        "aliases": [
+          "电子"
+        ],
+        "active": true,
+        "source": "taxonomy-v2-20260805",
+        "sortOrder": 1,
+        "version": 2
+      }
     ],
     "musicalKey": [
-      { "id": "C", "label": "C", "aliases": [], "active": true, "source": "plan", "sortOrder": 0, "version": 1 }
+      {
+        "id": "C",
+        "label": "C",
+        "aliases": [],
+        "active": true,
+        "source": "plan",
+        "sortOrder": 0,
+        "version": 1
+      },
+      {
+        "id": "C#",
+        "label": "C#",
+        "aliases": [],
+        "active": true,
+        "source": "plan",
+        "sortOrder": 1,
+        "version": 1
+      }
     ]
   }
 }

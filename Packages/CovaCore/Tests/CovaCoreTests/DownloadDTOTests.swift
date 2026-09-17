@@ -2,18 +2,19 @@
 import XCTest
 
 final class DownloadDTOTests: XCTestCase {
-    func testDecodesCheckoutInfo() throws {
+    func testDecodesCheckoutInfoRealAnonymousPayload() throws {
         let info = try Fixture.decode(DownloadCheckoutInfoDto.self, "checkout-info")
         XCTAssertEqual(info.downloadCredits, 10)
-        XCTAssertEqual(info.balance, 120)
         XCTAssertEqual(info.enabled, true)
         XCTAssertEqual(info.format, "mp3")
+        // 匿名访问时后端返回 balance: null
+        XCTAssertNil(info.balance)
     }
 
-    func testCheckoutInfoToleratesAnonymousNullBalance() throws {
-        let json = Data(#"{"downloadCredits":10,"enabled":true,"balance":null,"format":"mp3"}"#.utf8)
+    func testCheckoutInfoDecodesSignedInBalance() throws {
+        let json = Data(#"{"downloadCredits":10,"enabled":true,"balance":120,"format":"mp3"}"#.utf8)
         let info = try JSONDecoder().decode(DownloadCheckoutInfoDto.self, from: json)
-        XCTAssertNil(info.balance)
+        XCTAssertEqual(info.balance, 120)
     }
 
     func testDecodesCheckoutResponseWithDownloadsAndItems() throws {
