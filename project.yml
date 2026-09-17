@@ -66,8 +66,9 @@ targets:
         # → 0.2.18/29 G3-d 五审修复（M-1 轮询入口取消守卫 / Minor-1 SSE 生产分支测试 / Minor-2 死代码清理）
         # → 0.2.19/30 G3-d 取消语义有界化（D16：周期停止/在途取消；TD-34 测试注入点）
         # → 0.2.20/31 G3-d 六审修复（M-1 去 flake 断言 / Minor-1 死守卫清理 / Minor-2 覆盖补齐 / Minor-3 TD-34）
-        CFBundleShortVersionString: "0.2.20"
-        CFBundleVersion: "31"
+        # → 0.2.21/32 G3-d 七审：全仓清扫轮询/传输取消竞态断言 + StubURLProtocol 静态状态加锁
+        CFBundleShortVersionString: "0.2.21"
+        CFBundleVersion: "32"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

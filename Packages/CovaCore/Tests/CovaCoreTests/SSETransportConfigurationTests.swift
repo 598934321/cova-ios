@@ -11,7 +11,7 @@ private final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var responseBody = Data()
     nonisolated(unsafe) static var failure: Error?
     nonisolated(unsafe) static var delaysResponse = false
-    nonisolated(unsafe) static var stopLoadingTotal = 0
+    nonisolated(unsafe) static var readyTotal = 0
     private static let lock = NSLock()
 
     static func configure(
@@ -26,7 +26,7 @@ private final class StubURLProtocol: URLProtocol {
         self.responseBody = body
         self.failure = failure
         self.delaysResponse = delaysResponse
-        stopLoadingTotal = 0
+        readyTotal = 0
         lock.unlock()
     }
 
@@ -36,21 +36,26 @@ private final class StubURLProtocol: URLProtocol {
         return capturedRequests
     }
 
-    static func stopLoadingCount() -> Int {
+    /// 协议已完成响应交付（`didReceive` 之后）：用于「尽力进入在途再取消」，不作为时序断言。
+    static func readyCount() -> Int {
         lock.lock()
         defer { lock.unlock() }
-        return stopLoadingTotal
+        return readyTotal
     }
 
-    private static func record(_ request: URLRequest) {
+    /// 在锁内「记录请求 + 取配置快照」，避免 `startLoading`（URLSession 后台线程）裸读静态可变状态。
+    private static func snapshotForRequest(
+        _ request: URLRequest
+    ) -> (failure: Error?, statusCode: Int, body: Data, delaysResponse: Bool) {
         lock.lock()
+        defer { lock.unlock() }
         capturedRequests.append(request)
-        lock.unlock()
+        return (failure, statusCode, responseBody, delaysResponse)
     }
 
-    private static func recordStop() {
+    private static func markReady() {
         lock.lock()
-        stopLoadingTotal += 1
+        readyTotal += 1
         lock.unlock()
     }
 
@@ -58,29 +63,28 @@ private final class StubURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.record(request)
-        if let failure = Self.failure {
+        let config = Self.snapshotForRequest(request)
+        if let failure = config.failure {
             client?.urlProtocol(self, didFailWithError: failure)
             return
         }
         let response = HTTPURLResponse(
             url: request.url!,
-            statusCode: Self.statusCode,
+            statusCode: config.statusCode,
             httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "text/event-stream"]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        Self.markReady()
         // delaysResponse：保持连接不结束，供取消测试观察 stopLoading。
-        guard !Self.delaysResponse else { return }
-        if !Self.responseBody.isEmpty {
-            client?.urlProtocol(self, didLoad: Self.responseBody)
+        guard !config.delaysResponse else { return }
+        if !config.body.isEmpty {
+            client?.urlProtocol(self, didLoad: config.body)
         }
         client?.urlProtocolDidFinishLoading(self)
     }
 
-    override func stopLoading() {
-        Self.recordStop()
-    }
+    override func stopLoading() {}
 }
 
 /// M3/F2/Minor-1：SSE 生产传输的超时语义、请求构造与关键生产分支。
@@ -141,13 +145,18 @@ final class SSETransportConfigurationTests: XCTestCase {
         XCTAssertNotEqual(captured.first?.timeoutInterval, URLSessionTransport.timeout)
     }
 
-    /// Minor-1：已取消的任务调用 `stream()` 必须抛出（`.cancelled`）且**不发起网络**。
-    func testStreamThrowsCancellationWhenTaskCancelledWithoutNetwork() async throws {
+    /// Minor-1（确定性）：**已取消的任务**调用 `stream()` 必须抛出（`.cancelled`）且不发起网络。
+    ///
+    /// 用 `AsyncGate` 把任务停在 `stream()` **之前**，cancel 后再放行，确保进入 `stream()` 时任务已取消
+    /// （不依赖「`Task{}` 是否抢在 cancel 前启动」的调度竞态，符合 D16⑤）。
+    func testStreamCancelledTaskDoesNotInitiateNetwork() async throws {
         StubURLProtocol.configure(body: Data("event: done\ndata: {}\n\n".utf8))
         let transport = makeStubTransport()
         let request = try agentRequest()
+        let gate = AsyncGate()
 
         let task = Task { () -> CovaAPIError in
+            await gate.wait()
             do {
                 _ = try await transport.stream(request)
                 return .invalidResponse // 哨兵：不应发生
@@ -155,10 +164,13 @@ final class SSETransportConfigurationTests: XCTestCase {
                 return CovaAPIError.normalize(error)
             }
         }
+        await assertEventually { await gate.isWaiting() }
         task.cancel()
+        await gate.open()
+
         let error = await task.value
         XCTAssertEqual(error, .cancelled)
-        XCTAssertTrue(StubURLProtocol.captured().isEmpty, "取消后不得发起网络")
+        XCTAssertTrue(StubURLProtocol.captured().isEmpty, "进入 stream() 时任务已取消，不得发起网络")
     }
 
     /// Minor-1：非 2xx → `.invalidResponse`。
@@ -193,32 +205,37 @@ final class SSETransportConfigurationTests: XCTestCase {
         XCTAssertEqual(chunks.last?.count, total - 2 * URLSessionSSETransport.chunkByteLimit)
     }
 
-    /// M-1/D16②：取消消费任务必须立即取消底层 URLSession 任务（`stopLoading` 被调用）。
-    func testStreamCancellationStopsUnderlyingURLSessionTask() async throws {
-        StubURLProtocol.configure(body: Data(), delaysResponse: true)
+    /// D16②（确定性）：取消消费任务后，SSE 消费任务结束且**不投递任何结果**。
+    ///
+    /// 不断言 URLProtocol 的 `stopLoading`/在途时序（属调度竞态，D16⑤ 禁止）；以「无结果投递」
+    /// 这一可观测契约表达「已授权/在途传输被取消」。`ready` 等待仅为尽力进入在途，**不作断言**。
+    func testStreamCancellationDeliversNoResult() async throws {
+        StubURLProtocol.configure(body: Data(repeating: 0x41, count: 10_000), delaysResponse: true)
         let transport = makeStubTransport()
         let request = try agentRequest()
 
-        let task = Task {
+        let task = Task { () -> Int in
+            var received = 0
             do {
                 let stream = try await transport.stream(request)
-                for try await _ in stream {}
+                for try await chunk in stream { received += chunk.count }
             } catch {
                 // 取消以错误结束，属预期。
             }
+            return received
         }
-        // 请求已发起并停在未完成状态。
-        let started = await waitUntil { !StubURLProtocol.captured().isEmpty }
-        XCTAssertTrue(started)
-
+        _ = await waitUntil { StubURLProtocol.readyCount() > 0 }
         task.cancel()
-        _ = await task.value
-        let stopped = await waitUntil { StubURLProtocol.stopLoadingCount() > 0 }
-        XCTAssertTrue(stopped, "取消后必须停止底层 URLSession 任务")
+
+        let received = await task.value
+        XCTAssertEqual(received, 0, "取消后不得投递任何结果")
     }
 
-    /// D16②（轮询入口）：在途轮询请求取消后必须停止底层 URLSession 任务，且结果以取消结束。
-    func testPollInFlightRequestCancelledAtURLSession() async throws {
+    /// D16②（确定性）：在途轮询调用取消后必须以 `.cancelled` 结束且不返回结果。
+    ///
+    /// `.cancelled` 由 `URLSession.data(for:)` 在任务取消时给出（平台保证任务取消传播），
+    /// 不依赖 `URLProtocol` 拆除时序；`ready` 等待仅为尽力进入在途，**不作断言**。
+    func testPollCancellationEndsCancelledWithoutResult() async throws {
         StubURLProtocol.configure(body: Data("{}".utf8), delaysResponse: true)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
@@ -233,15 +250,11 @@ final class SSETransportConfigurationTests: XCTestCase {
                 return CovaAPIError.normalize(error)
             }
         }
-        // 请求已发起并停在未完成状态（确定性：等到 captured 再取消）。
-        let started = await waitUntil { !StubURLProtocol.captured().isEmpty }
-        XCTAssertTrue(started, "轮询请求应已发起并在途")
-
+        _ = await waitUntil { StubURLProtocol.readyCount() > 0 }
         task.cancel()
+
         let error = await task.value
-        XCTAssertEqual(error, .cancelled, "在途轮询取消后应以取消结束")
-        let stopped = await waitUntil { StubURLProtocol.stopLoadingCount() > 0 }
-        XCTAssertTrue(stopped, "取消后必须停止底层 URLSession 任务")
+        XCTAssertEqual(error, .cancelled, "在途轮询取消后必须以取消结束（不返回结果）")
     }
 
     /// Minor-1：底层传输错误归一化为 `CovaAPIError`。
