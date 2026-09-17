@@ -48,9 +48,10 @@ targets:
       base:
         PRODUCT_NAME: Cova
         PRODUCT_BUNDLE_IDENTIFIER: cn.covalink.ios
-        # 版本基线 0.1.0 / 1（AGENTS.md：每次 commit 递增，小迭代 +0.0.1 / 大迭代 +0.1）
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        # 版本（AGENTS.md：每次 commit 递增，小迭代 +0.0.1 / 大迭代 +0.1）
+        # 0.1.0 / 1 → 0.1.1 / 2：补齐评审 C1/M1/M2/M3 门禁缺陷
+        CFBundleShortVersionString: "0.1.1"
+        CFBundleVersion: "2"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -71,6 +72,8 @@ targets:
     dependencies:
       - target: Cova
       - package: CovaCore
+      - package: CovaPlayer
+      - package: CovaUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cn.covalink.ios.tests
@@ -88,7 +91,7 @@ schemes:
       config: Debug
     test:
       config: Debug
-      gatherCoverageData: false
+      gatherCoverageData: true
       targets:
         - CovaTests
     profile:
