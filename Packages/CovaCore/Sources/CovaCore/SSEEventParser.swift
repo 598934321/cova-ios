@@ -1,0 +1,162 @@
+import Foundation
+
+/// SSE 增量解析器（纯逻辑，逐字节/逐块喂入）。
+///
+/// 支持面（api-contracts §4 的 `text/event-stream`）：
+/// - 字段：`event:` / `data:` / `id:` / `retry:`；`:` 开头为注释行（丢弃）；未知字段忽略；
+/// - 空行分帧；多行 `data:` 以 `\n` 拼接；
+/// - 行终止符 CR / LF / CRLF（含 CRLF 被块边界切断的情形）；
+/// - 任意切分点（含多字节 UTF-8 被切断——按字节缓冲整行后才解码）；
+/// - 流首 BOM（`EF BB BF`，可被块边界切断）剥离。
+///
+/// **坏事件计数**：帧载荷不是合法 JSON 时标记 `isMalformed` 并累加
+/// `malformedEventCount`（D6「3 个坏事件」降级的依据）。事件名未知/`run_*` 不算坏事件
+/// （前向兼容，见 `CovaSSEEventType`）。EOF 处未以空行收尾的残帧不派发，计一个坏事件。
+///
+/// 本类型不抛错、不阻塞、不做 I/O；线程语义由调用方（actor）保证。
+public struct SSEFrameParser: Sendable {
+    private static let bom: [UInt8] = [0xEF, 0xBB, 0xBF]
+
+    /// 流首 BOM 判别中尚未定论的字节。
+    private var bomCandidate: [UInt8] = []
+    private var inspectingBOM = true
+
+    /// 当前行累积的字节（未遇到行终止符前）。
+    private var lineBuffer: [UInt8] = []
+    /// 上一个字节是 CR：紧随的 LF 视作同一行终止符。
+    private var pendingLineFeed = false
+
+    /// 当前帧累积的事件名与数据行。
+    private var eventName = ""
+    private var dataLines: [String] = []
+
+    /// 格式错误（载荷非法 JSON / EOF 残帧）事件累计数。
+    public private(set) var malformedEventCount = 0
+
+    public init() {}
+
+    /// 喂入一段字节，返回本次可派发的完整帧（可能 0..n 个）。
+    public mutating func consume<Bytes: Sequence>(_ bytes: Bytes) -> [CovaSSEFrame]
+    where Bytes.Element == UInt8 {
+        var frames: [CovaSSEFrame] = []
+        for byte in bytes {
+            feed(byte, into: &frames)
+        }
+        return frames
+    }
+
+    /// 流正常结束（EOF）：冲刷末尾无终止符的行；未收尾的残帧不派发并计坏事件。
+    public mutating func finish() -> [CovaSSEFrame] {
+        var frames: [CovaSSEFrame] = []
+        if inspectingBOM, !bomCandidate.isEmpty {
+            let pending = bomCandidate
+            bomCandidate.removeAll()
+            inspectingBOM = false
+            for byte in pending { feedLineByte(byte, into: &frames) }
+        }
+        if !lineBuffer.isEmpty {
+            finishLine(into: &frames)
+        }
+        if !dataLines.isEmpty {
+            malformedEventCount += 1
+        }
+        eventName = ""
+        dataLines.removeAll(keepingCapacity: true)
+        pendingLineFeed = false
+        return frames
+    }
+
+    // MARK: - 内部
+
+    private mutating func feed(_ byte: UInt8, into frames: inout [CovaSSEFrame]) {
+        if inspectingBOM {
+            bomCandidate.append(byte)
+            let index = bomCandidate.count - 1
+            if bomCandidate[index] != Self.bom[index] {
+                let pending = bomCandidate
+                bomCandidate.removeAll(keepingCapacity: true)
+                inspectingBOM = false
+                for pendingByte in pending { feedLineByte(pendingByte, into: &frames) }
+                return
+            }
+            if bomCandidate.count == Self.bom.count {
+                bomCandidate.removeAll(keepingCapacity: true)
+                inspectingBOM = false
+            }
+            return
+        }
+        feedLineByte(byte, into: &frames)
+    }
+
+    private mutating func feedLineByte(_ byte: UInt8, into frames: inout [CovaSSEFrame]) {
+        if pendingLineFeed {
+            pendingLineFeed = false
+            if byte == 0x0A { return }
+        }
+        switch byte {
+        case 0x0D: // CR
+            finishLine(into: &frames)
+            pendingLineFeed = true
+        case 0x0A: // LF
+            finishLine(into: &frames)
+        default:
+            lineBuffer.append(byte)
+        }
+    }
+
+    private mutating func finishLine(into frames: inout [CovaSSEFrame]) {
+        // 整行字节齐备后才解码：多字节 UTF-8 不会跨行（行终止符均为 ASCII）。
+        let line = String(decoding: lineBuffer, as: UTF8.self)
+        lineBuffer.removeAll(keepingCapacity: true)
+        process(line: line, into: &frames)
+    }
+
+    private mutating func process(line: String, into frames: inout [CovaSSEFrame]) {
+        if line.isEmpty {
+            dispatch(into: &frames)
+            return
+        }
+        if line.hasPrefix(":") { return }
+        let (field, value) = Self.splitField(line)
+        switch field {
+        case "event":
+            eventName = value
+        case "data":
+            dataLines.append(value)
+        case "id", "retry":
+            break
+        default:
+            break
+        }
+    }
+
+    /// `field: value` → (field, value)；行内无冒号时 value 为空串；
+    /// value 仅去掉**一个**前导空格（SSE 规范）。
+    static func splitField(_ line: String) -> (field: String, value: String) {
+        guard let colon = line.firstIndex(of: ":") else { return (line, "") }
+        let field = String(line[line.startIndex..<colon])
+        var value = String(line[line.index(after: colon)...])
+        if value.hasPrefix(" ") { value.removeFirst() }
+        return (field, value)
+    }
+
+    private mutating func dispatch(into frames: inout [CovaSSEFrame]) {
+        defer {
+            eventName = ""
+            dataLines.removeAll(keepingCapacity: true)
+        }
+        guard !dataLines.isEmpty else { return }
+        let payload = Data(dataLines.joined(separator: "\n").utf8)
+        let malformed = !Self.isValidJSONPayload(payload)
+        if malformed { malformedEventCount += 1 }
+        frames.append(
+            CovaSSEFrame(rawEventName: eventName, payload: payload, isMalformed: malformed)
+        )
+    }
+
+    /// 载荷是否为合法 JSON（契约中 `data:` 恒为 JSON；顶层标量亦接受）。
+    static func isValidJSONPayload(_ data: Data) -> Bool {
+        guard !data.isEmpty else { return false }
+        return (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil
+    }
+}

@@ -7,12 +7,13 @@ enum APIRequestBuilder {
         path: String,
         queryItems: [URLQueryItem] = [],
         bearer: SecretString? = nil,
-        jsonBody: Data? = nil
+        jsonBody: Data? = nil,
+        accept: String = "application/json"
     ) throws -> HTTPRequest {
         guard let url = CovaEnvironment.makeAPIURL(path: path, queryItems: queryItems) else {
             throw CovaAPIError.invalidRequestURL
         }
-        var headers: [String: String] = ["Accept": "application/json"]
+        var headers: [String: String] = ["Accept": accept]
         if jsonBody != nil {
             headers["Content-Type"] = "application/json"
         }

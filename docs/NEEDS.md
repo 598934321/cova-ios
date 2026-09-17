@@ -17,6 +17,7 @@
 | 10 | TRACK-SIMILAR-PROJECTION-CONSISTENCY | `GET /api/tracks/:id` 的 `similar[]` 与 `GET /api/tracks` 的 `tracks[]` 是**两套不一致的序列化**（2026-09-17 实测 10 详情 / 40 元素）：`similar[]` 用 snake_case `preview_start/preview_end`（**无** camel 别名）、`featured` 为数字 0/1（列表为 Bool）、`play_count/created_at/audio_duration` 仅 snake_case、`artist`/`tags` 为裁剪结构；客户端已按真实投影建独立 `SimilarTrackDto` | M1（非阻塞） | 同一「曲目」资源在 列表 / 详情 / similar 三处使用一致键名与值类型（或提供版本化投影说明） |
 | 11 | FAVORITES-NOTE-ITEMS | `GET /api/favorites` 的 `{tracks}` 中混入「生成音乐收藏」条目（带 `source:"note"` / `noteId`，字段集与 `TrackDto` 不同），单一模型无法解码整个数组 | M1（非阻塞；客户端暂只建模库曲条目） | 提供类型判别字段与稳定条目模型，或拆为独立端点 |
 | 12 | TRACK-SIMILAR-TO-PROJECTION | `GET /api/tracks?similarTo=<id>` 的 `tracks[]` 返回 **similar 投影**（`featured` 数字、仅 snake_case `preview_start/end/play_count/created_at/audio_duration`、多出 `similarityScore`、封套回显 `similarTo`），与同一端点的其余筛选（普通列表投影）不一致（2026-09-17 实测：3 个 seed × 5 条，`featured` 全为 int、camel `preview*` 0 命中；`search/energy/sort/vocalType` 对照仍为普通投影）。客户端已建 `SimilarTrackPageDto` / `SimilarTrackDto` 分别承接 | M1（非阻塞） | 统一 `tracks[]` 投影（建议全部走普通列表投影，或提供版本化投影标识），使同一端点只有一种元素模型 |
+| 13 | SSE-AGENT-PAYLOAD-SCHEMA | `POST /api/studio/agent` 的**请求体字段**与 `thinking/text/error/done/plan_card/run_*` 各事件的**载荷 schema** 未在契约文档化；「坏事件」判定口径亦未定义（客户端暂按 web 源码与推断实现：`thinking/text/error`=`{text}`、`done`=`{}`、`plan_card`=卡投影；坏事件 = `data:` 载荷非合法 JSON，容忍未知/`run_*` 事件名） | M2（非阻塞，客户端已按推断实现并容忍未知字段） | 契约补齐 agent 请求体与各事件载荷 schema，并明确「坏事件」判定口径，使降级触发的「3 个坏事件」有据可依 |
 
 ## 已确认可用（无需等待，可并行开发）
 
