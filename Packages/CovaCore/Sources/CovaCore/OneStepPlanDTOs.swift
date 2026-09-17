@@ -200,20 +200,21 @@ public struct OneStepPlanCardsResponseDto: Codable, Equatable, Sendable {
 /// `POST /api/studio/one-step/plans/start` 请求体
 /// （契约：`{sessionId, planCardId, revision, snapshotHash, idempotencyKey}`）。
 ///
-/// D8：计划启动属扣费写操作，幂等键字段名与契约一致（`idempotencyKey`）。
+/// D8：计划启动属扣费写操作，幂等键字段名与契约一致（`idempotencyKey`）；
+/// 值为类型化的 `IdempotencyKey`（非法键无法进入请求体）。
 public struct OneStepPlanStartRequestDto: Codable, Equatable, Sendable {
     public let sessionId: String
     public let planCardId: String
     public let revision: Int
     public let snapshotHash: String
-    public let idempotencyKey: String
+    public let idempotencyKey: IdempotencyKey
 
     public init(
         sessionId: String,
         planCardId: String,
         revision: Int,
         snapshotHash: String,
-        idempotencyKey: String
+        idempotencyKey: IdempotencyKey
     ) {
         self.sessionId = sessionId
         self.planCardId = planCardId

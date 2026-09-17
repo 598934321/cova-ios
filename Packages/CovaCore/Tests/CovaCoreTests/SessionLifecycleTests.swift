@@ -6,20 +6,87 @@ private struct LibraryState: Codable, Equatable {
     var plays: Int
 }
 
+private struct CleanupProbeError: Error, Equatable {}
+
 private actor RecordingCleaner: LocalSessionStateClearing {
     private var playQueueClearCount = 0
     private var clearedMediaOwners: [PrincipalID] = []
+    private var tornDownOwners: [PrincipalID] = []
 
-    func snapshot() -> (playQueueClears: Int, mediaOwners: [PrincipalID]) {
-        (playQueueClearCount, clearedMediaOwners)
+    func snapshot() -> (playQueueClears: Int, mediaOwners: [PrincipalID], teardownOwners: [PrincipalID]) {
+        (playQueueClearCount, clearedMediaOwners, tornDownOwners)
     }
 
-    func clearPlayQueue() async {
+    func clearPlayQueue() async throws {
         playQueueClearCount += 1
     }
 
-    func clearPrivateMediaCache(owner: PrincipalID) async {
+    func clearPrivateMediaCache(owner: PrincipalID) async throws {
         clearedMediaOwners.append(owner)
+    }
+
+    func tearDownPlayback(owner: PrincipalID) async throws {
+        tornDownOwners.append(owner)
+    }
+}
+
+/// 按需让某些清理步骤失败，用于验证 best-effort 不短路（m5）。
+private actor FailingCleaner: LocalSessionStateClearing {
+    enum Step: Hashable, Sendable {
+        case playQueue
+        case privateMediaCache
+        case playbackTeardown
+    }
+
+    private let failingSteps: Set<Step>
+    private var executed: [Step] = []
+
+    init(failingSteps: Set<Step>) {
+        self.failingSteps = failingSteps
+    }
+
+    func executedSteps() -> [Step] {
+        executed
+    }
+
+    func clearPlayQueue() async throws {
+        executed.append(.playQueue)
+        if failingSteps.contains(.playQueue) { throw CleanupProbeError() }
+    }
+
+    func clearPrivateMediaCache(owner: PrincipalID) async throws {
+        executed.append(.privateMediaCache)
+        if failingSteps.contains(.privateMediaCache) { throw CleanupProbeError() }
+    }
+
+    func tearDownPlayback(owner: PrincipalID) async throws {
+        executed.append(.playbackTeardown)
+        if failingSteps.contains(.playbackTeardown) { throw CleanupProbeError() }
+    }
+}
+
+private struct FailingSecureStore: SecureStore {
+    func set(_ secret: SecretString, for item: SecureStoreItem) throws { throw CleanupProbeError() }
+    func secret(for item: SecureStoreItem) throws -> SecretString? { throw CleanupProbeError() }
+    func removeSecret(for item: SecureStoreItem) throws { throw CleanupProbeError() }
+    func removeAllSecrets(for principalId: PrincipalID) throws { throw CleanupProbeError() }
+}
+
+private struct FailingOwnerStore: OwnerScopedStoring {
+    func load<Value: Codable>(_ type: Value.Type, name: String, owner: PrincipalID) throws -> Value? {
+        throw CleanupProbeError()
+    }
+
+    func save<Value: Codable>(_ value: Value, name: String, owner: PrincipalID) throws {
+        throw CleanupProbeError()
+    }
+
+    func remove(name: String, owner: PrincipalID) throws {
+        throw CleanupProbeError()
+    }
+
+    func removeAll(owner: PrincipalID) throws {
+        throw CleanupProbeError()
     }
 }
 
@@ -83,9 +150,10 @@ final class SessionLifecycleTests: XCTestCase {
         )
         XCTAssertNil(try ownerStore.load(LibraryState.self, name: stateName, owner: ownerA))
         XCTAssertEqual(try ownerStore.load(LibraryState.self, name: stateName, owner: ownerB)?.plays, 2)
-        let cleanerSnapshot = await cleaner.snapshot()
-        XCTAssertEqual(cleanerSnapshot.playQueueClears, 1)
-        XCTAssertEqual(cleanerSnapshot.mediaOwners, [ownerA])
+        let snapshot = await cleaner.snapshot()
+        XCTAssertEqual(snapshot.playQueueClears, 1)
+        XCTAssertEqual(snapshot.mediaOwners, [ownerA])
+        XCTAssertEqual(snapshot.teardownOwners, [ownerA])
         let activeOwner = await lifecycle.currentOwner()
         XCTAssertNil(activeOwner)
     }
@@ -133,8 +201,9 @@ final class SessionLifecycleTests: XCTestCase {
         )
         XCTAssertNil(try ownerStore.load(LibraryState.self, name: stateName, owner: ownerA))
         XCTAssertEqual(try ownerStore.load(LibraryState.self, name: stateName, owner: ownerB)?.plays, 2)
-        let cleanerSnapshot = await cleaner.snapshot()
-        XCTAssertEqual(cleanerSnapshot.mediaOwners, [ownerA])
+        let snapshot = await cleaner.snapshot()
+        XCTAssertEqual(snapshot.mediaOwners, [ownerA])
+        XCTAssertEqual(snapshot.teardownOwners, [ownerA])
         let activeOwner = await lifecycle.currentOwner()
         XCTAssertEqual(activeOwner, ownerB)
         let staleStillCurrent = await lifecycle.isCurrent(inFlightGeneration)
@@ -161,5 +230,56 @@ final class SessionLifecycleTests: XCTestCase {
             try secureStore.secret(for: SecureStoreItem(principalId: ownerB, kind: .refreshToken)),
             SecretString("b-refresh")
         )
+    }
+
+    // MARK: - m5：best-effort，不短路，聚合上报
+
+    func testSignOutRunsAllCleanupStepsEvenWhenSomeFail() async throws {
+        let cleaner = FailingCleaner(failingSteps: [.playQueue, .playbackTeardown])
+        let lifecycle = SessionLifecycle(
+            secureStore: FailingSecureStore(),
+            ownerStore: FailingOwnerStore(),
+            cleaners: [cleaner]
+        )
+        _ = await lifecycle.beginSession(owner: ownerA)
+
+        do {
+            try await lifecycle.signOut(owner: ownerA)
+            XCTFail("应当聚合上报清理失败")
+        } catch let failure as SessionCleanupFailure {
+            XCTAssertEqual(
+                Set(failure.failedComponents),
+                [.credentials, .ownerData, .playQueue, .playbackTeardown]
+            )
+            XCTAssertFalse(failure.failedComponents.contains(.privateMediaCache))
+            XCTAssertTrue(failure.description.contains("credentials"))
+        }
+
+        let executed = await cleaner.executedSteps()
+        XCTAssertEqual(Set(executed), [.playQueue, .privateMediaCache, .playbackTeardown])
+
+        // 清理阶段失败不应阻止 generation 推进 / activeOwner 清空
+        let generation = await lifecycle.currentGeneration()
+        XCTAssertEqual(generation.value, 2)
+        let owner = await lifecycle.currentOwner()
+        XCTAssertNil(owner)
+    }
+
+    func testSwitchAccountStillSwitchesOwnerWhenCleanupFails() async throws {
+        let cleaner = FailingCleaner(failingSteps: [.privateMediaCache])
+        let lifecycle = SessionLifecycle(
+            secureStore: FailingSecureStore(),
+            ownerStore: FailingOwnerStore(),
+            cleaners: [cleaner]
+        )
+
+        do {
+            try await lifecycle.switchAccount(from: ownerA, to: ownerB)
+            XCTFail("应当聚合上报清理失败")
+        } catch let failure as SessionCleanupFailure {
+            XCTAssertEqual(Set(failure.failedComponents), [.credentials, .ownerData, .privateMediaCache])
+        }
+        let owner = await lifecycle.currentOwner()
+        XCTAssertEqual(owner, ownerB)
     }
 }

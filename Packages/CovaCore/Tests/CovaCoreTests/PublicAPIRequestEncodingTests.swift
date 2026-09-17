@@ -25,7 +25,10 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
     }
 
     func testPlayReportRequestIsConstructibleAndDefaultsToAppIOSSource() throws {
-        let request = PlayReportRequestDto(trackId: "library-1", idempotencyKey: "play-0001")
+        let request = PlayReportRequestDto(
+            trackId: "library-1",
+            idempotencyKey: try IdempotencyKey(validating: "play-0001")
+        )
         XCTAssertEqual(PlayReportRequestDto.appIOSSource, "app-ios")
         XCTAssertEqual(request.source, "app-ios")
         try XCTAssertEncodedJSONEqual(
@@ -37,7 +40,7 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
     func testDownloadCheckoutRequestIsConstructibleAndDefaultsToMp3() throws {
         let request = DownloadCheckoutRequestDto(
             trackIds: ["library-1", "library-2"],
-            idempotencyKey: "checkout-0001"
+            idempotencyKey: try IdempotencyKey(validating: "checkout-0001")
         )
         XCTAssertEqual(DownloadCheckoutRequestDto.mp3Format, "mp3")
         XCTAssertEqual(request.format, "mp3")
@@ -53,7 +56,7 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
             planCardId: "plan-1",
             revision: 4,
             snapshotHash: "snapshot-1",
-            idempotencyKey: "start-0001"
+            idempotencyKey: try IdempotencyKey(validating: "start-0001")
         )
         try XCTAssertEncodedJSONEqual(
             JSONEncoder().encode(request),

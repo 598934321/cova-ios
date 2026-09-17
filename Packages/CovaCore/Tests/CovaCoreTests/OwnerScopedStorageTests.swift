@@ -50,6 +50,23 @@ final class OwnerScopedStorageTests: XCTestCase {
         XCTAssertEqual(try store.load(SampleState.self, name: "state", owner: ownerB)?.plays, 2)
     }
 
+    /// m3：大小写不敏感卷（macOS 默认 APFS）下，仅大小写不同的 owner 也必须互不可见。
+    func testCaseOnlyDifferentOwnersStayIsolatedOnCaseInsensitiveFilesystem() throws {
+        let upper = PrincipalID(rawValue: "User")
+        let lower = PrincipalID(rawValue: "user")
+        XCTAssertNotEqual(OwnerNamespace.directoryName(for: upper), OwnerNamespace.directoryName(for: lower))
+
+        try store.save(SampleState(plays: 11, tags: []), name: "state", owner: upper)
+        try store.save(SampleState(plays: 22, tags: []), name: "state", owner: lower)
+
+        XCTAssertEqual(try store.load(SampleState.self, name: "state", owner: upper)?.plays, 11)
+        XCTAssertEqual(try store.load(SampleState.self, name: "state", owner: lower)?.plays, 22)
+
+        try store.removeAll(owner: upper)
+        XCTAssertNil(try store.load(SampleState.self, name: "state", owner: upper))
+        XCTAssertEqual(try store.load(SampleState.self, name: "state", owner: lower)?.plays, 22)
+    }
+
     func testRemoveAllOnlyAffectsTargetOwner() throws {
         try store.save(SampleState(plays: 1, tags: []), name: "state", owner: ownerA)
         try store.save(SampleState(plays: 1, tags: []), name: "other", owner: ownerA)
@@ -83,19 +100,25 @@ final class OwnerScopedStorageTests: XCTestCase {
 
     // MARK: - 命名空间安全
 
-    func testDirectoryNameEscapesUnsafePrincipalIds() {
-        let traversal = OwnerNamespace.directoryName(for: PrincipalID(rawValue: "../../evil"))
-        XCTAssertNotNil(traversal)
-        XCTAssertTrue(traversal?.hasPrefix("owner-") == true)
-        XCTAssertFalse(traversal?.contains("/") == true)
-        XCTAssertFalse(traversal?.contains("\\") == true)
+    func testDirectoryNameIsHexEscaped() {
+        let traversal = OwnerNamespace.directoryName(for: PrincipalID(rawValue: ".."))
+        XCTAssertEqual(traversal, "owner-2e2e")
+        XCTAssertFalse(traversal?.contains(".") == true)
 
-        let dotDot = OwnerNamespace.directoryName(for: PrincipalID(rawValue: ".."))
-        XCTAssertEqual(dotDot, "owner-..")
-
-        let unicode = OwnerNamespace.directoryName(for: PrincipalID(rawValue: "user 中文"))
+        let unicode = OwnerNamespace.directoryName(for: PrincipalID(rawValue: "用户"))
         XCTAssertTrue(unicode?.hasPrefix("owner-") == true)
         XCTAssertFalse(unicode?.contains("/") == true)
+        // 仅 hex 字符构成
+        XCTAssertTrue(unicode?.dropFirst(OwnerNamespace.directoryPrefix.count).allSatisfy(\.isHexDigit) == true)
+    }
+
+    func testPrincipalIdWithPathSeparatorsIsRejected() {
+        for raw in ["../../evil", "a/b", "a\\b", "a:b", "user\n1"] {
+            let owner = PrincipalID(rawValue: raw)
+            XCTAssertThrowsError(try store.save(SampleState(plays: 1, tags: []), name: "state", owner: owner)) { error in
+                XCTAssertEqual(error as? OwnerStoreError, .invalidOwner(.invalidCharacters), "owner=\(raw)")
+            }
+        }
     }
 
     func testEmptyPrincipalIdIsRejected() {
@@ -103,20 +126,44 @@ final class OwnerScopedStorageTests: XCTestCase {
         XCTAssertThrowsError(
             try store.save(SampleState(plays: 1, tags: []), name: "state", owner: PrincipalID(rawValue: ""))
         ) { error in
-            XCTAssertEqual(error as? OwnerStoreError, .invalidName)
+            XCTAssertEqual(error as? OwnerStoreError, .invalidOwner(.empty))
+        }
+        XCTAssertThrowsError(try store.removeAll(owner: PrincipalID(rawValue: ""))) { error in
+            XCTAssertEqual(error as? OwnerStoreError, .invalidOwner(.empty))
         }
     }
 
-    func testPathTraversalPrincipalStaysInsideBaseDirectory() throws {
-        let evil = PrincipalID(rawValue: "../../evil")
-        try store.save(SampleState(plays: 7, tags: []), name: "state", owner: evil)
-        XCTAssertEqual(try store.load(SampleState.self, name: "state", owner: evil)?.plays, 7)
+    /// m4：owner 超长必须在校验层被拒绝（而不是让文件系统抛未映射错误）。
+    func testOverlongPrincipalIdIsRejectedBeforeFilesystem() {
+        let tooLong = PrincipalID(rawValue: String(repeating: "a", count: OwnerIdentifier.maximumByteLength + 1))
+        XCTAssertThrowsError(try store.save(SampleState(plays: 1, tags: []), name: "state", owner: tooLong)) { error in
+            XCTAssertEqual(
+                error as? OwnerStoreError,
+                .invalidOwner(.tooLong(maximum: OwnerIdentifier.maximumByteLength))
+            )
+        }
+        XCTAssertThrowsError(try store.load(SampleState.self, name: "state", owner: tooLong)) { error in
+            XCTAssertEqual(
+                error as? OwnerStoreError,
+                .invalidOwner(.tooLong(maximum: OwnerIdentifier.maximumByteLength))
+            )
+        }
+    }
 
-        // 逃逸检查：baseDirectory 之外不应出现我们写入的内容。
-        let parentEscape = baseDirectory
-            .deletingLastPathComponent()
-            .appendingPathComponent("evil", isDirectory: true)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: parentEscape.path))
+    /// m4：底层文件系统错误必须映射为 `OwnerStoreError`（而非裸 `NSError`）。
+    func testFilesystemFailureIsMappedToOwnerStoreError() throws {
+        let blockingFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cova-core-blocker-\(UUID().uuidString)")
+        try Data("blocker".utf8).write(to: blockingFile)
+        defer { try? FileManager.default.removeItem(at: blockingFile) }
+
+        // baseDirectory 是一个普通文件 → 创建 owner 目录必然失败。
+        let brokenStore = OwnerScopedJSONStore(baseDirectory: blockingFile)
+        XCTAssertThrowsError(
+            try brokenStore.save(SampleState(plays: 1, tags: []), name: "state", owner: ownerA)
+        ) { error in
+            XCTAssertEqual(error as? OwnerStoreError, .ioFailure)
+        }
     }
 
     func testInvalidNamesAreRejectedForAllOperations() {
@@ -137,7 +184,8 @@ final class OwnerScopedStorageTests: XCTestCase {
     // MARK: - 损坏数据
 
     func testCorruptedJSONThrowsDecodingFailed() throws {
-        let directory = baseDirectory.appendingPathComponent("owner-user-a", isDirectory: true)
+        let namespace = try XCTUnwrap(OwnerNamespace.directoryName(for: ownerA))
+        let directory = baseDirectory.appendingPathComponent(namespace, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data("{ not json".utf8).write(to: directory.appendingPathComponent("state.json"))
 
@@ -151,9 +199,11 @@ final class OwnerScopedStorageTests: XCTestCase {
     }
 
     func testOwnerStoreErrorDescriptions() {
+        XCTAssertTrue(OwnerStoreError.invalidOwner(.empty).description.contains("owner"))
         XCTAssertTrue(OwnerStoreError.invalidName.description.contains("名称"))
         XCTAssertTrue(OwnerStoreError.encodingFailed.description.contains("编码"))
         XCTAssertTrue(OwnerStoreError.decodingFailed.description.contains("解码"))
+        XCTAssertTrue(OwnerStoreError.ioFailure.description.contains("读写"))
     }
 
     func testEncodingFailureIsMapped() {

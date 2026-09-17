@@ -71,17 +71,67 @@ final class SecureStoreTests: XCTestCase {
         XCTAssertEqual(secret.rawValue, plaintext)
     }
 
-    func testSecureStoreErrorDescriptionNeverExposesPlaintext() {
+    func testSecretStringMirrorDoesNotExposePlaintext() {
+        let plaintext = "mirror-secret-42"
+        let secret = SecretString(plaintext)
+        let reflected = Mirror(reflecting: secret)
+        let renderedChildren = reflected.children.map { String(describing: $0.value) }
+        XCTAssertFalse(renderedChildren.joined().contains(plaintext), "Mirror 泄漏 storage")
+        XCTAssertFalse(reflected.children.contains { ($0.value as? String) == plaintext })
+        XCTAssertTrue(renderedChildren.joined().contains("<redacted>"))
+    }
+
+    func testSecretStringDecodesFromJSONStringOnly() throws {
+        let decoded = try JSONDecoder().decode(SecretString.self, from: Data(#""decoded-token""#.utf8))
+        XCTAssertEqual(decoded.rawValue, "decoded-token")
+        XCTAssertEqual(String(reflecting: decoded), "<redacted>")
+    }
+
+    func testSecureStoreErrorDescriptionNeverExposesSecretValue() {
         let plaintext = "super-secret-refresh-token-1234"
-        let surfaces = [
-            String(describing: SecureStoreError.status(-25300)),
-            String(reflecting: SecureStoreError.status(-25300)),
-            String(describing: SecureStoreError.malformedSecret)
-        ]
-        for surface in surfaces {
-            XCTAssertFalse(surface.contains(plaintext))
+        let secret = SecretString(plaintext)
+        let error = SecureStoreError.status(-25300)
+        // 真实断言：把 secret 与 error 一起渲染，仍不得出现明文。
+        let rendered = "\(secret) \(error) \([secret]) \(String(reflecting: error)) \(error.description)"
+        XCTAssertFalse(rendered.contains(plaintext), "错误描述泄漏明文：\(rendered)")
+        XCTAssertTrue(error.description.contains("-25300"))
+    }
+
+    // MARK: - owner 绑定：空/非法 principalId 必须拒绝（M1）
+
+    func testInMemoryStoreRejectsEmptyAndInvalidPrincipal() {
+        let store = InMemorySecureStore()
+        let empty = SecureStoreItem(principalId: PrincipalID(rawValue: ""), kind: .accessToken)
+        XCTAssertThrowsError(try store.set(SecretString("x"), for: empty)) { error in
+            XCTAssertEqual(error as? SecureStoreError, .invalidPrincipal(.empty))
         }
-        XCTAssertTrue(SecureStoreError.status(-25300).description.contains("-25300"))
+
+        let tooLong = SecureStoreItem(
+            principalId: PrincipalID(rawValue: String(repeating: "a", count: OwnerIdentifier.maximumByteLength + 1)),
+            kind: .accessToken
+        )
+        XCTAssertThrowsError(try store.secret(for: tooLong)) { error in
+            XCTAssertEqual(
+                error as? SecureStoreError,
+                .invalidPrincipal(.tooLong(maximum: OwnerIdentifier.maximumByteLength))
+            )
+        }
+
+        let withControl = SecureStoreItem(principalId: PrincipalID(rawValue: "user\n1"), kind: .accessToken)
+        XCTAssertThrowsError(try store.removeSecret(for: withControl)) { error in
+            XCTAssertEqual(error as? SecureStoreError, .invalidPrincipal(.invalidCharacters))
+        }
+
+        let withSlash = SecureStoreItem(principalId: PrincipalID(rawValue: "a/b"), kind: .refreshToken)
+        XCTAssertThrowsError(try store.removeAllSecrets(for: withSlash.principalId)) { error in
+            XCTAssertEqual(error as? SecureStoreError, .invalidPrincipal(.invalidCharacters))
+        }
+    }
+
+    func testSecureStoreErrorInvalidPrincipalDescriptionContainsNoPlaintext() {
+        let error = SecureStoreError.invalidPrincipal(.empty)
+        XCTAssertTrue(error.description.contains("owner"))
+        XCTAssertEqual(error, .invalidPrincipal(.empty))
     }
 
     func testSecureStoreItemIdentityIncludesPrincipalAndKind() {

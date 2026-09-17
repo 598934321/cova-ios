@@ -73,9 +73,34 @@ final class AuthDTOTests: XCTestCase {
         let response = try Fixture.decode(CovaLoginResponseDto.self, "auth-login")
         XCTAssertEqual(response.user.id, "user-0001")
         XCTAssertEqual(response.user.name, "测试用户")
-        XCTAssertEqual(response.token, "ACCESS_TOKEN_PLACEHOLDER")
-        XCTAssertEqual(response.refreshToken, "REFRESH_TOKEN_PLACEHOLDER")
+        XCTAssertEqual(response.token.rawValue, "ACCESS_TOKEN_PLACEHOLDER")
+        XCTAssertEqual(response.refreshToken.rawValue, "REFRESH_TOKEN_PLACEHOLDER")
         XCTAssertEqual(response.expiresIn, 7200)
+    }
+
+    /// M2：承载 token 的响应 DTO 任何时候都不得把明文渲染出来（描述/反射/Mirror 三面）。
+    func testLoginResponseTokensNeverRenderPlaintext() throws {
+        let response = try Fixture.decode(CovaLoginResponseDto.self, "auth-login")
+        let access = response.token.rawValue
+        let refresh = response.refreshToken.rawValue
+        XCTAssertFalse(access.isEmpty)
+        XCTAssertFalse(refresh.isEmpty)
+
+        let surfaces = [
+            String(reflecting: response),
+            "\(response)",
+            String(describing: response.token),
+            String(reflecting: response.token),
+            String(describing: [response.token, response.refreshToken])
+        ]
+        for surface in surfaces {
+            XCTAssertFalse(surface.contains(access), "泄漏 access token：\(surface)")
+            XCTAssertFalse(surface.contains(refresh), "泄漏 refresh token：\(surface)")
+        }
+        for child in Mirror(reflecting: response).children {
+            XCTAssertFalse(String(describing: child.value).contains(access))
+            XCTAssertFalse(String(describing: child.value).contains(refresh))
+        }
     }
 
     func testLoginRequestEncodesContractKeys() throws {
@@ -88,9 +113,10 @@ final class AuthDTOTests: XCTestCase {
 
     func testDecodesRefreshAndLogoutResponses() throws {
         let refresh = try Fixture.decode(CovaRefreshResponseDto.self, "auth-refresh")
-        XCTAssertEqual(refresh.token.isEmpty, false)
-        XCTAssertEqual(refresh.refreshToken.isEmpty, false)
+        XCTAssertEqual(refresh.token.rawValue.isEmpty, false)
+        XCTAssertEqual(refresh.refreshToken.rawValue.isEmpty, false)
         XCTAssertEqual(refresh.expiresIn, 7200)
+        XCTAssertFalse(String(reflecting: refresh).contains(refresh.token.rawValue))
 
         let logout = try Fixture.decode(CovaLogoutResponseDto.self, "auth-logout")
         XCTAssertEqual(logout.message, "已退出登录")

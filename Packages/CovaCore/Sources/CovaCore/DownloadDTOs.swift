@@ -22,7 +22,8 @@ public struct DownloadItemDto: Codable, Equatable, Sendable {
 
 /// `POST /api/downloads/checkout` 请求体（api-contracts 3：`{trackIds[], format:'mp3', idempotencyKey}`）。
 ///
-/// D8：扣费写操作**必须带幂等键**，字段名与契约一致（`idempotencyKey`）。
+/// D8：扣费写操作**必须带幂等键**，字段名与契约一致（`idempotencyKey`）；
+/// 值为类型化的 `IdempotencyKey`（非法键无法进入请求体）。
 /// D12：v1.0 不开放扣费 UI 入口 —— 本类型只做契约建模，不代表已启用下载流程。
 public struct DownloadCheckoutRequestDto: Codable, Equatable, Sendable {
     /// 契约固定格式。
@@ -30,12 +31,12 @@ public struct DownloadCheckoutRequestDto: Codable, Equatable, Sendable {
 
     public let trackIds: [String]
     public let format: String
-    public let idempotencyKey: String
+    public let idempotencyKey: IdempotencyKey
 
     public init(
         trackIds: [String],
         format: String = DownloadCheckoutRequestDto.mp3Format,
-        idempotencyKey: String
+        idempotencyKey: IdempotencyKey
     ) {
         self.trackIds = trackIds
         self.format = format

@@ -90,7 +90,7 @@ public struct KeychainStore: SecureStore {
     }
 
     public func set(_ secret: SecretString, for item: SecureStoreItem) throws {
-        let query = KeychainItemQuery(item: item)
+        let query = try Self.validatedQuery(for: item)
         let data = Data(secret.rawValue.utf8)
         let status = operations.insert(query, value: data)
         switch status {
@@ -107,7 +107,7 @@ public struct KeychainStore: SecureStore {
     }
 
     public func secret(for item: SecureStoreItem) throws -> SecretString? {
-        let query = KeychainItemQuery(item: item)
+        let query = try Self.validatedQuery(for: item)
         let result = operations.read(query)
         switch result.status {
         case errSecSuccess:
@@ -123,15 +123,27 @@ public struct KeychainStore: SecureStore {
     }
 
     public func removeSecret(for item: SecureStoreItem) throws {
-        let status = operations.delete(KeychainItemQuery(item: item))
+        let query = try Self.validatedQuery(for: item)
+        let status = operations.delete(query)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw SecureStoreError.status(status)
         }
     }
 
     public func removeAllSecrets(for principalId: PrincipalID) throws {
+        if let error = OwnerIdentifier.validationError(principalId) {
+            throw SecureStoreError.invalidPrincipal(error)
+        }
         for kind in CredentialKind.allCases {
             try removeSecret(for: SecureStoreItem(principalId: principalId, kind: kind))
         }
+    }
+
+    /// 空/非法 owner 会让 account 退化为 `.access-token`（跨账号共享条目），必须拒绝。
+    static func validatedQuery(for item: SecureStoreItem) throws -> KeychainItemQuery {
+        if let error = OwnerIdentifier.validationError(item.principalId) {
+            throw SecureStoreError.invalidPrincipal(error)
+        }
+        return KeychainItemQuery(item: item)
     }
 }

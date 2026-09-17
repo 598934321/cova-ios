@@ -88,12 +88,14 @@ public struct CovaLoginRequestDto: Codable, Equatable, Sendable {
 /// **契约目标形态**：真实实现当前返回的 `user` 只有 `{id, email, name, role}`
 /// （缺 `covaId/phone/isArtist/isPartner`），无法解码为完整 `AuthUser` ——
 /// 已登记 `docs/NEEDS.md`（`AUTH-LOGIN-TOKENS` 补充项）。此处按契约建模，**不以非契约响应为基准**。
-public struct CovaLoginResponseDto: Codable, Equatable, Sendable {
+///
+/// token 字段为 `SecretString`（§5）：只读解码、描述/反射全脱敏、**不可编码**（编译期禁止误持久化）。
+public struct CovaLoginResponseDto: Decodable, Equatable, Sendable {
     public let user: AuthUser
     /// access token（Bearer）。禁止写日志/持久化索引（AGENTS 硬边界 3）。
-    public let token: String
+    public let token: SecretString
     /// refresh token（旋转）。
-    public let refreshToken: String
+    public let refreshToken: SecretString
     /// access token 有效期（秒）。
     public let expiresIn: Int
 
@@ -108,9 +110,10 @@ public struct CovaLoginResponseDto: Codable, Equatable, Sendable {
 /// `POST /api/auth/refresh` 响应（真实实现：`{token, refreshToken, expiresIn}`）。
 ///
 /// 请求侧不携带 body：真实实现从 `Authorization: Bearer <refreshToken>` 头（或 Web cookie）读取。
-public struct CovaRefreshResponseDto: Codable, Equatable, Sendable {
-    public let token: String
-    public let refreshToken: String
+/// token 字段同 `CovaLoginResponseDto` 使用 `SecretString`（只读、脱敏、不可编码）。
+public struct CovaRefreshResponseDto: Decodable, Equatable, Sendable {
+    public let token: SecretString
+    public let refreshToken: SecretString
     public let expiresIn: Int
 
     enum CodingKeys: String, CodingKey {

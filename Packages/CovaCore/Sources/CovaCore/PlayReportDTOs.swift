@@ -9,9 +9,9 @@ public struct PlayReportRequestDto: Codable, Equatable, Sendable {
 
     public let trackId: String
     public let source: String
-    public let idempotencyKey: String
+    public let idempotencyKey: IdempotencyKey
 
-    public init(trackId: String, source: String = PlayReportRequestDto.appIOSSource, idempotencyKey: String) {
+    public init(trackId: String, source: String = PlayReportRequestDto.appIOSSource, idempotencyKey: IdempotencyKey) {
         self.trackId = trackId
         self.source = source
         self.idempotencyKey = idempotencyKey

@@ -232,9 +232,52 @@ final class KeychainStoreTests: XCTestCase {
         }
     }
 
-    func testSystemOperatingLayerIsNeverInstantiatedInTests() {
-        // 自证：本测试文件只通过注入层构造 KeychainStore，未使用 `KeychainStore()`（真实 Keychain）。
-        let store = makeStore(FakeKeychainOperations())
+    func testRemoveAllSecretsOnEmptyStoreIsIdempotent() throws {
+        let operations = FakeKeychainOperations()
+        let store = makeStore(operations)
         XCTAssertNoThrow(try store.removeAllSecrets(for: owner))
+        XCTAssertNoThrow(try store.removeAllSecrets(for: owner))
+        XCTAssertEqual(Set(operations.deletedAccounts), ["user-1.access-token", "user-1.refresh-token"])
+    }
+
+    // MARK: - M1：空/非法 owner 必须拒绝（否则 account 退化为共享条目）
+
+    func testEmptyPrincipalIsRejectedWithoutTouchingKeychain() {
+        let operations = FakeKeychainOperations()
+        let store = makeStore(operations)
+        let empty = SecureStoreItem(principalId: PrincipalID(rawValue: ""), kind: .accessToken)
+
+        XCTAssertThrowsError(try store.set(SecretString("x"), for: empty)) { error in
+            XCTAssertEqual(error as? SecureStoreError, .invalidPrincipal(.empty))
+        }
+        XCTAssertThrowsError(try store.secret(for: empty)) { error in
+            XCTAssertEqual(error as? SecureStoreError, .invalidPrincipal(.empty))
+        }
+        XCTAssertThrowsError(try store.removeSecret(for: empty)) { error in
+            XCTAssertEqual(error as? SecureStoreError, .invalidPrincipal(.empty))
+        }
+        XCTAssertThrowsError(try store.removeAllSecrets(for: PrincipalID(rawValue: ""))) { error in
+            XCTAssertEqual(error as? SecureStoreError, .invalidPrincipal(.empty))
+        }
+        XCTAssertTrue(operations.insertedAccounts.isEmpty)
+        XCTAssertTrue(operations.deletedAccounts.isEmpty)
+    }
+
+    func testIllegalPrincipalIsRejectedConsistentlyWithOwnerStore() {
+        let store = makeStore(FakeKeychainOperations())
+        let tooLong = SecureStoreItem(
+            principalId: PrincipalID(rawValue: String(repeating: "b", count: OwnerIdentifier.maximumByteLength + 5)),
+            kind: .refreshToken
+        )
+        XCTAssertThrowsError(try store.set(SecretString("x"), for: tooLong)) { error in
+            XCTAssertEqual(
+                error as? SecureStoreError,
+                .invalidPrincipal(.tooLong(maximum: OwnerIdentifier.maximumByteLength))
+            )
+        }
+        let withSlash = SecureStoreItem(principalId: PrincipalID(rawValue: "user/1"), kind: .accessToken)
+        XCTAssertThrowsError(try store.secret(for: withSlash)) { error in
+            XCTAssertEqual(error as? SecureStoreError, .invalidPrincipal(.invalidCharacters))
+        }
     }
 }

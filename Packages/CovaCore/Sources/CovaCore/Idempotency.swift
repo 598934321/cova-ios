@@ -15,15 +15,67 @@ public enum IdempotentOperation: String, CaseIterable, Codable, Sendable {
     public var keyPrefix: String { "cova-\(rawValue)-" }
 }
 
+/// 幂等键校验错误（不携带键内容，避免把控制字符/注入串回显到日志）。
+public enum IdempotencyKeyError: Error, Equatable, Sendable, CustomStringConvertible {
+    case empty
+    case tooShort(minimum: Int)
+    case tooLong(maximum: Int)
+    case controlCharacters
+    case invalidCharacters
+    /// operation 与 key 前缀不匹配（如 operation=playReport 却用 checkout 的键）。
+    case operationMismatch
+
+    public var description: String {
+        switch self {
+        case .empty: return "幂等键为空"
+        case .tooShort(let minimum): return "幂等键过短（下限 \(minimum)）"
+        case .tooLong(let maximum): return "幂等键过长（上限 \(maximum)）"
+        case .controlCharacters: return "幂等键含控制字符"
+        case .invalidCharacters: return "幂等键含非法字符"
+        case .operationMismatch: return "幂等键与操作类型不匹配"
+        }
+    }
+}
+
 /// 幂等键值类型。
 ///
 /// 格式：`cova-<operation>-<32 位小写 hex>`（由 16 个密码学随机字节编码）。
 /// 键本身**不是**凭证，可安全出现在日志/持久化索引中（不含 token/签名 URL）。
-public struct IdempotencyKey: Hashable, Codable, Sendable, RawRepresentable, CustomStringConvertible {
+///
+/// 运行时校验（构造/解码均 fail-closed）：
+/// - 非空；UTF-8 字节数 `minimumLength...maximumLength`；
+/// - 仅允许 `[A-Za-z0-9_-]`；拒绝控制字符（含 CR/LF，防头部注入）与其它符号。
+public struct IdempotencyKey: Hashable, Sendable, CustomStringConvertible, Codable {
+    public static let minimumLength = 8
+    public static let maximumLength = 128
+
     public let rawValue: String
 
-    public init(rawValue: String) {
+    /// 校验式构造（唯一公开入口）：不合法即抛 `IdempotencyKeyError`。
+    public init(validating rawValue: String) throws {
+        try IdempotencyKey.validate(rawValue)
         self.rawValue = rawValue
+    }
+
+    /// 生成器专用：输入由本类型生成，恒为规范形态。
+    init(generated rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public static func validate(_ raw: String) throws {
+        if raw.isEmpty { throw IdempotencyKeyError.empty }
+        let byteCount = raw.utf8.count
+        if byteCount < minimumLength { throw IdempotencyKeyError.tooShort(minimum: minimumLength) }
+        if byteCount > maximumLength { throw IdempotencyKeyError.tooLong(maximum: maximumLength) }
+        for scalar in raw.unicodeScalars {
+            let value = scalar.value
+            if value < 0x20 || value == 0x7F { throw IdempotencyKeyError.controlCharacters }
+            let allowed = (value >= 0x61 && value <= 0x7A)
+                || (value >= 0x41 && value <= 0x5A)
+                || (value >= 0x30 && value <= 0x39)
+                || value == 0x2D || value == 0x5F
+            if !allowed { throw IdempotencyKeyError.invalidCharacters }
+        }
     }
 
     public var description: String { rawValue }
@@ -35,6 +87,23 @@ public struct IdempotencyKey: Hashable, Codable, Sendable, RawRepresentable, Cus
         let suffix = rawValue.dropFirst(prefix.count)
         guard suffix.count == IdempotencyKeyGenerator.hexLength else { return false }
         return suffix.allSatisfy(IdempotencyKeyGenerator.isLowercaseHexDigit)
+    }
+
+    // MARK: - Codable（编解码为 JSON string）
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        do {
+            try self.init(validating: raw)
+        } catch {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "无效幂等键")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 
@@ -65,7 +134,7 @@ public enum IdempotencyKeyGenerator {
         for _ in 0..<randomByteCount {
             bytes.append(UInt8.random(in: UInt8.min...UInt8.max, using: &generator))
         }
-        return IdempotencyKey(rawValue: operation.keyPrefix + hexString(bytes))
+        return IdempotencyKey(generated: operation.keyPrefix + hexString(bytes))
     }
 
     static func hexString(_ bytes: [UInt8]) -> String {
@@ -95,6 +164,7 @@ public enum IdempotencyKeyGenerator {
 /// - **构造 token 一次 = 生成一个键**；
 /// - 该逻辑操作的所有重试/重放都必须复用 `key`（不要为每次重试新建 token）；
 /// - 新的逻辑操作必须新建 token（得到新键）。
+/// - 显式指定键的构造会校验 `operation` 与 `key` 前缀一致（防串操作类型）。
 public struct IdempotentRequestToken: Hashable, Sendable {
     public let operation: IdempotentOperation
     public let key: IdempotencyKey
@@ -104,8 +174,11 @@ public struct IdempotentRequestToken: Hashable, Sendable {
         self.key = IdempotencyKeyGenerator.generate(for: operation)
     }
 
-    /// 显式指定键（测试/从已持久化的操作恢复时使用）。
-    public init(operation: IdempotentOperation, key: IdempotencyKey) {
+    /// 显式指定键（测试/从已持久化的操作恢复时使用）；前缀不匹配即抛 `operationMismatch`。
+    public init(operation: IdempotentOperation, key: IdempotencyKey) throws {
+        guard key.isCanonical(for: operation) else {
+            throw IdempotencyKeyError.operationMismatch
+        }
         self.operation = operation
         self.key = key
     }
