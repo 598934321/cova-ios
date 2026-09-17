@@ -50,8 +50,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: cn.covalink.ios
         # 版本（AGENTS.md：每次 commit 递增，小迭代 +0.0.1 / 大迭代 +0.1）
         # 0.1.0/1 骨架 → ... → 0.2.3/14 similarTo 投影封套/登录请求钉死 → 0.2.4/15 G3-a 验收落证
-        CFBundleShortVersionString: "0.2.4"
-        CFBundleVersion: "15"
+        # → 0.2.5/16 G3-b 幂等键/Keychain 封装/owner 绑定持久化
+        CFBundleShortVersionString: "0.2.5"
+        CFBundleVersion: "16"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
