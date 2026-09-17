@@ -1,4 +1,4 @@
-@testable import CovaCore
+import CovaCore
 import XCTest
 
 final class CollectionDTOTests: XCTestCase {
@@ -13,9 +13,10 @@ final class CollectionDTOTests: XCTestCase {
 
     func testFavoriteMutationRequestUsesTrackIdKey() throws {
         let request = FavoriteMutationRequestDto(trackId: "library-1")
-        let data = try JSONEncoder().encode(request)
-        let text = String(data: data, encoding: .utf8) ?? ""
-        XCTAssertEqual(text, #"{"trackId":"library-1"}"#)
+        try XCTAssertEncodedJSONEqual(
+            JSONEncoder().encode(request),
+            fixture: "requests/favorite-mutation-request"
+        )
     }
 
     func testDecodesFavoriteMutationResponse() throws {
@@ -44,8 +45,10 @@ final class CollectionDTOTests: XCTestCase {
 
     func testSavedPlaylistMutationUsesPlaylistIdKey() throws {
         let request = SavedPlaylistMutationRequestDto(playlistId: "PL-1")
-        let data = try JSONEncoder().encode(request)
-        XCTAssertEqual(String(data: data, encoding: .utf8), #"{"playlistId":"PL-1"}"#)
+        try XCTAssertEncodedJSONEqual(
+            JSONEncoder().encode(request),
+            fixture: "requests/saved-playlist-mutation-request"
+        )
     }
 
     func testDecodesSavedPlaylistMutationResponse() throws {

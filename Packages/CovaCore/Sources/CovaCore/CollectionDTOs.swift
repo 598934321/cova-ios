@@ -19,6 +19,10 @@ public struct FavoritesListDto: Codable, Equatable, Sendable {
 public struct FavoriteMutationRequestDto: Codable, Equatable, Sendable {
     public let trackId: String
 
+    public init(trackId: String) {
+        self.trackId = trackId
+    }
+
     enum CodingKeys: String, CodingKey {
         case trackId
     }
@@ -49,6 +53,10 @@ public struct SavedPlaylistsListDto: Codable, Equatable, Sendable {
 /// `POST` / `DELETE /api/saved-playlists` 请求体。
 public struct SavedPlaylistMutationRequestDto: Codable, Equatable, Sendable {
     public let playlistId: String
+
+    public init(playlistId: String) {
+        self.playlistId = playlistId
+    }
 
     enum CodingKeys: String, CodingKey {
         case playlistId

@@ -29,12 +29,14 @@ public enum CovaEnvironment {
 
     /// 相对路径 + 查询项 → 生产 origin 下的绝对 URL。
     ///
-    /// 任何可能改写 host 的输入（绝对 URL、协议相对路径、内嵌 `?`/`#`）一律返回 `nil`，
-    /// 使「出口唯一」在构造层就无法被绕过。
+    /// 拒绝一切可能造成 authority 逃逸的路径形态：不以 `/` 开头、以 `//` 开头（协议相对）、
+    /// 内嵌 `://`、内嵌 `?`/`#`（请求自带查询用 `queryItems`）、含反斜杠（部分解析器视同 `/`）。
     public static func makeAPIURL(path: String, queryItems: [URLQueryItem] = []) -> URL? {
         guard path.hasPrefix("/") else { return nil }
+        guard !path.hasPrefix("//") else { return nil }
         guard !path.contains("://") else { return nil }
         guard !path.contains("?") && !path.contains("#") else { return nil }
+        guard !path.contains("\\") else { return nil }
         var components = URLComponents()
         components.scheme = apiBaseURL.scheme
         components.host = apiBaseURL.host()

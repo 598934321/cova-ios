@@ -189,4 +189,20 @@ final class CovaEnvironmentTests: XCTestCase {
         XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/api/tracks#frag"))
         XCTAssertNil(CovaEnvironment.makeAPIURL(path: ""))
     }
+
+    /// Minor-1 回归：协议相对路径（`//host/...`）与反斜杠形态必须拒绝，
+    /// 不得产出 `https://covalink.cn//evil.com/x` 这类「文档说会拒绝、实际放行」的结果。
+    func testMakeAPIURLRejectsProtocolRelativeAndBackslashPaths() {
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "//evil.invalid/x"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "//covalink.cn/x"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "///evil.invalid"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/\\evil.invalid/x"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "/api\\..\\evil"))
+        XCTAssertNil(CovaEnvironment.makeAPIURL(path: "\\/evil.invalid"))
+
+        // 对照：正常的双斜杠出现在路径中段（合法）仍应放行，且 host 严格钉死
+        let midSlash = CovaEnvironment.makeAPIURL(path: "/api/v1//tracks")
+        XCTAssertEqual(midSlash?.host, "covalink.cn")
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(midSlash!))
+    }
 }

@@ -5,6 +5,12 @@ public struct CovaAPIErrorEnvelope: Codable, Equatable, Sendable {
     public let error: String?
     public let code: String?
 
+    /// 对外构造（客户端可用它构造错误载荷/桩数据）。
+    public init(error: String?, code: String?) {
+        self.error = error
+        self.code = code
+    }
+
     enum CodingKeys: String, CodingKey {
         case error
         case code

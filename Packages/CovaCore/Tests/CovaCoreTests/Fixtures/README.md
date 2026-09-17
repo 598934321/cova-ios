@@ -40,3 +40,18 @@
 | fixture | 用途 |
 |---|---|
 | `synthetic/track-with-variants.json` | 真实 page-1 数据里 `variantCount` 全为 0，故用合成样例覆盖「非空 `variants[]` + 未知字段忽略 + 可选字段缺失」路径 |
+
+## 四、写请求体（**契约目标形态**，写操作/需登录 → 无法只读验证）
+
+编码单测把 DTO 的编码结果与这些 fixture 做结构比对，从而把「字段名（尤其 D8 幂等键
+`idempotencyKey`）」钉死；字段名不符即测试失败。
+
+| fixture | 端点 | 依据 |
+|---|---|---|
+| `requests/favorite-mutation-request.json` | `POST/DELETE /api/favorites` | 契约 §2 |
+| `requests/saved-playlist-mutation-request.json` | `POST/DELETE /api/saved-playlists` | 契约 §2 |
+| `requests/play-report-request.json` | `POST /api/tracks/play`（`source:"app-ios"`） | 契约 §2 + **NEEDS-2** |
+| `requests/checkout-request.json` | `POST /api/downloads/checkout`（幂等键） | 契约 §3 + D8 |
+| `requests/one-step-plan-start-request.json` | `POST /api/studio/one-step/plans/start`（幂等键） | 契约 §4 + D8 |
+| `requests/create-session-request.json` | `POST /api/find-my-song/sessions` | 契约 §4 |
+| `requests/media-retention-request.json` | `PATCH /api/media/references/:id/retention` | 契约 §4 |

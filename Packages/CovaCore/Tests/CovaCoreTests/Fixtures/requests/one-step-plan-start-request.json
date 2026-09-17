@@ -1,0 +1,7 @@
+{
+  "sessionId": "session-1",
+  "planCardId": "plan-1",
+  "revision": 4,
+  "snapshotHash": "snapshot-1",
+  "idempotencyKey": "start-0001"
+}

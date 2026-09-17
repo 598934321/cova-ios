@@ -1,0 +1,8 @@
+{
+  "trackIds": [
+    "library-1",
+    "library-2"
+  ],
+  "format": "mp3",
+  "idempotencyKey": "checkout-0001"
+}

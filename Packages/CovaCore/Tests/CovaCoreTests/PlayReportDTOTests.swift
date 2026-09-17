@@ -1,4 +1,4 @@
-@testable import CovaCore
+import CovaCore
 import XCTest
 
 final class PlayReportDTOTests: XCTestCase {
@@ -7,11 +7,10 @@ final class PlayReportDTOTests: XCTestCase {
 
         let request = PlayReportRequestDto(trackId: "library-1", idempotencyKey: "play-0001")
         XCTAssertEqual(request.source, "app-ios")
-        let data = try JSONEncoder().encode(request)
-        let text = String(data: data, encoding: .utf8) ?? ""
-        XCTAssertTrue(text.contains(#""trackId":"library-1""#))
-        XCTAssertTrue(text.contains(#""source":"app-ios""#))
-        XCTAssertTrue(text.contains(#""idempotencyKey":"play-0001""#))
+        try XCTAssertEncodedJSONEqual(
+            JSONEncoder().encode(request),
+            fixture: "requests/play-report-request"
+        )
     }
 
     func testDecodesPlayReportResponse() throws {

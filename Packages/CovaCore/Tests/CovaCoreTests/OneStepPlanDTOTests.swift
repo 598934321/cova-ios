@@ -1,4 +1,4 @@
-@testable import CovaCore
+import CovaCore
 import XCTest
 
 final class OneStepPlanDTOTests: XCTestCase {

@@ -194,3 +194,76 @@ public struct OneStepPlanCardsResponseDto: Codable, Equatable, Sendable {
         case planCards
     }
 }
+
+// MARK: - 一步模式写请求（api-contracts 4；D8 幂等键）
+
+/// `POST /api/studio/one-step/plans/start` 请求体
+/// （契约：`{sessionId, planCardId, revision, snapshotHash, idempotencyKey}`）。
+///
+/// D8：计划启动属扣费写操作，幂等键字段名与契约一致（`idempotencyKey`）。
+public struct OneStepPlanStartRequestDto: Codable, Equatable, Sendable {
+    public let sessionId: String
+    public let planCardId: String
+    public let revision: Int
+    public let snapshotHash: String
+    public let idempotencyKey: String
+
+    public init(
+        sessionId: String,
+        planCardId: String,
+        revision: Int,
+        snapshotHash: String,
+        idempotencyKey: String
+    ) {
+        self.sessionId = sessionId
+        self.planCardId = planCardId
+        self.revision = revision
+        self.snapshotHash = snapshotHash
+        self.idempotencyKey = idempotencyKey
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId
+        case planCardId
+        case revision
+        case snapshotHash
+        case idempotencyKey
+    }
+}
+
+/// `POST /api/find-my-song/sessions` 请求体（契约：`{workflowMode:'one-step', skipWelcome:true}`）。
+///
+/// v1.0 锁定一步模式（PRD 4.4），故默认值即契约形态。
+public struct CovaCreateSessionRequestDto: Codable, Equatable, Sendable {
+    /// 契约固定的工作流模式。
+    public static let oneStepWorkflowMode = "one-step"
+
+    public let workflowMode: String
+    public let skipWelcome: Bool
+
+    public init(
+        workflowMode: String = CovaCreateSessionRequestDto.oneStepWorkflowMode,
+        skipWelcome: Bool = true
+    ) {
+        self.workflowMode = workflowMode
+        self.skipWelcome = skipWelcome
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case workflowMode
+        case skipWelcome
+    }
+}
+
+/// `PATCH /api/media/references/:id/retention` 请求体（契约：`{favorite}`）——生成候选收藏。
+public struct MediaRetentionRequestDto: Codable, Equatable, Sendable {
+    public let favorite: Bool
+
+    public init(favorite: Bool) {
+        self.favorite = favorite
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case favorite
+    }
+}
