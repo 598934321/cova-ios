@@ -441,10 +441,11 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         await awaitConsumer(consumer)
     }
 
-    /// Minor-1（确定性注入点）：轮询任务顶层取消守卫阻止取消后进入 `pollPlans`。
+    /// Minor-1（确定性注入点）：**轮询任务闭包内**的取消守卫阻止取消后进入 `pollPlans`。
     ///
     /// 注入点让轮询任务停在守卫**之前**；cancel 后再放行 → 守卫必须直接返回。
-    func testPollTopGuardPreventsCycleCallAfterCancel() async throws {
+    /// （`performPoll` 方法入口的 `isFinished` 守卫不可达，已删除，不在此锁定。）
+    func testPollTaskCancellationGuardPreventsCallAfterCancel() async throws {
         let clock = VirtualClock()
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
@@ -493,6 +494,9 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         XCTAssertEqual(calls, 0, "取消后 SSE 顶层守卫必须阻止发起传输")
         let terminated = await coordinator.isTerminated()
         XCTAssertTrue(terminated)
+        // D16①：SSE 周期只调度一次，取消后不再新增。
+        let sseCycles = await coordinator.scheduledSSECycleCount()
+        XCTAssertEqual(sseCycles, 1, "取消后不得再调度新的 SSE 周期")
         await awaitConsumer(consumer)
         let frames = await collector.snapshot()
         XCTAssertTrue(frames.isEmpty)
@@ -772,15 +776,20 @@ final class HTTPOneStepPlanPollerTests: XCTestCase {
         }
     }
 
-    /// M-1：轮询传输入口的取消守卫——已取消任务调用 `pollPlans` 抛错且**不发请求**。
-    func testPollPlansThrowsCancellationWithoutTransportCall() async throws {
+    /// Minor-1（确定性）：`pollPlans` 传输入口守卫——**已取消的任务**调用它必须抛取消错误且不发请求。
+    ///
+    /// 用 `AsyncGate` 把任务停在 `pollPlans` **之前**，取消后再放行，确保进入 `pollPlans` 时任务已取消
+    /// （不依赖「`Task{}` 是否抢在 cancel 前启动」的调度竞态，符合 D16⑤）。
+    func testPollPlansCancelledTaskDoesNotTransport() async throws {
         let body = try Fixture.data("one-step-plan-cards")
         let transport = FakeHTTPTransport { _ in
             HTTPResponse(statusCode: 200, body: body)
         }
         let poller = HTTPOneStepPlanPoller(transport: transport)
+        let gate = AsyncGate()
 
         let task = Task { () -> Bool in
+            await gate.wait()
             do {
                 _ = try await poller.pollPlans(sessionId: "s-1")
                 return false
@@ -788,11 +797,14 @@ final class HTTPOneStepPlanPollerTests: XCTestCase {
                 return error is CancellationError || (error as? CovaAPIError) == .cancelled
             }
         }
+        await assertEventually { await gate.isWaiting() }
         task.cancel()
+        await gate.open()
+
         let cancelled = await task.value
         XCTAssertTrue(cancelled, "已取消任务应抛 CancellationError/.cancelled")
         let calls = await transport.requestCount(path: "/api/studio/one-step/plans")
-        XCTAssertEqual(calls, 0, "取消后不得发起轮询请求")
+        XCTAssertEqual(calls, 0, "进入 pollPlans 时任务已取消，不得发起请求")
     }
 
     func testRequestFactoryUsesProductionOriginAndSSEAccept() throws {

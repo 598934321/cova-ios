@@ -217,6 +217,33 @@ final class SSETransportConfigurationTests: XCTestCase {
         XCTAssertTrue(stopped, "取消后必须停止底层 URLSession 任务")
     }
 
+    /// D16②（轮询入口）：在途轮询请求取消后必须停止底层 URLSession 任务，且结果以取消结束。
+    func testPollInFlightRequestCancelledAtURLSession() async throws {
+        StubURLProtocol.configure(body: Data("{}".utf8), delaysResponse: true)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let httpTransport = URLSessionTransport(session: URLSession(configuration: configuration))
+        let poller = HTTPOneStepPlanPoller(transport: httpTransport)
+
+        let task = Task { () -> CovaAPIError? in
+            do {
+                _ = try await poller.pollPlans(sessionId: "s-1")
+                return nil
+            } catch {
+                return CovaAPIError.normalize(error)
+            }
+        }
+        // 请求已发起并停在未完成状态（确定性：等到 captured 再取消）。
+        let started = await waitUntil { !StubURLProtocol.captured().isEmpty }
+        XCTAssertTrue(started, "轮询请求应已发起并在途")
+
+        task.cancel()
+        let error = await task.value
+        XCTAssertEqual(error, .cancelled, "在途轮询取消后应以取消结束")
+        let stopped = await waitUntil { StubURLProtocol.stopLoadingCount() > 0 }
+        XCTAssertTrue(stopped, "取消后必须停止底层 URLSession 任务")
+    }
+
     /// Minor-1：底层传输错误归一化为 `CovaAPIError`。
     func testStreamNormalizesTransportFailure() async throws {
         StubURLProtocol.configure(failure: URLError(.timedOut))

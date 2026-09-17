@@ -434,8 +434,10 @@ public actor OneStepStreamCoordinator {
     // MARK: - 轮询
 
     private func performPoll() {
-        // 顶层同步守卫（D16）：已终态不再调度新的轮询周期（确定性计数器可观测）。
-        guard !isFinished else { return }
+        // 注：`performPoll` 只由 `.pollNow` 触发，而状态机在 `.finished` 后不再产生 `.pollNow`
+        // （取消动作是 `[.terminateStreaming, .finish]`，不含 `.pollNow`），故此处无需 `isFinished` 守卫
+        // —— 原 `guard !isFinished` 不可达，已删除（Minor-1）。周期不再新增由状态机终态保证，
+        // 并由 `scheduledPollCycleCount()` 确定性计数器用例锁定。
         scheduledPollCycles += 1
         // 同一时刻只允许一个在途轮询任务：先取消旧的，避免无主任务并发。
         pollTask?.cancel()
@@ -444,7 +446,7 @@ public actor OneStepStreamCoordinator {
         let hook = beforePollTaskStart
         pollTask = Task { [weak self] in
             await hook?()
-            // 顶层取消守卫：取消后不得进入本轮周期（其结果也不得投递）。
+            // 任务级取消守卫：取消后不得进入本轮周期（其结果也不得投递）。
             guard !Task.isCancelled else { return }
             do {
                 let cards = try await poller.pollPlans(sessionId: sessionId)
