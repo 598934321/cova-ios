@@ -233,10 +233,10 @@ done
 
 # 符号链接整类禁止（CovaCore 内）：SwiftPM 会跟随并编译，而 .SwiftFileList 记录词法路径，
 # 二者差异正是「链接目录指向包外」的绕过机制；CovaCore 是纯逻辑层，不需要符号链接。
-SYMLINKS="$(find Packages/CovaCore -type l -not -path '*/.build/*' 2>/dev/null || true)"
+SYMLINKS="$(find Packages/CovaCore -type l -not -path '*/.*' 2>/dev/null || true)"
 if [ -n "$SYMLINKS" ]; then
   printf '%s\n' "$SYMLINKS" | head -10 | sed 's/^/    /'
-  fail "CovaCore 内存在符号链接（整类禁止；如需共享源文件请改为仓内真实文件）"
+  fail "CovaCore 内存在符号链接（整类禁止，点号路径除外——SwiftPM 不编译点号目录；如需共享源文件请改为仓内真实文件）"
 fi
 
 # 平台中立性不变量：字面 #if 即失败（条件编译整类禁止；注释/字符串中的命中亦拦，fail-closed）
@@ -290,14 +290,17 @@ assert_no_language_override_flags() { # file label
   esac
 }
 
-# 实际编译日志中的 -strict-concurrency 取值必须是 complete（Swift 6 模式不得降级）
+# 实际编译日志中的 -strict-concurrency 令牌：**若出现**则取值必须为 complete。
+# 据实说明：Swift 6 语言模式已隐含 complete，Xcode 通常不输出该 flag（干净构建日志中 0 次命中），
+# 因此本检查在缺数据时通过 —— 它拦的是「显式注入其它取值」，不构成对默认行为的实测校验。
+# 默认行为的权威校验在有效构建设置层（SWIFT_STRICT_CONCURRENCY=complete + OTHER_SWIFT_FLAGS 令牌禁用）。
 assert_strict_concurrency_complete() { # tokens label
   local tokens="$1" label="$2" t
   while IFS= read -r t; do
     [ -n "$t" ] || continue
     case "$t" in
       '-strict-concurrency=complete'|'-strict-concurrency complete'|'-strict-concurrency\=complete') ;;
-      *) fail "${label}：实际编译使用非 complete 的严格并发设置：${t}" ;;
+      *) fail "${label}：编译日志出现非 complete 的严格并发令牌（显式注入）：${t}" ;;
     esac
   done <<< "$tokens"
 }
@@ -360,7 +363,11 @@ APP_SC_TOKENS="$(
     | sort -u
 )"
 assert_strict_concurrency_complete "$APP_SC_TOKENS" "App"
-[ -n "$APP_SC_TOKENS" ] && echo "    实际严格并发设置（App）：$(echo "$APP_SC_TOKENS" | tr '\n' ' ')"
+if [ -n "$APP_SC_TOKENS" ]; then
+  echo "    编译日志中的严格并发令牌（App）：$(echo "$APP_SC_TOKENS" | tr '\n' ' ')（均须为 complete）"
+else
+  echo "    编译日志未出现 -strict-concurrency 令牌（Swift 6 模式通常不输出，符合预期）"
+fi
 
 [ -d "$APP_BUNDLE" ] || fail "构建产物不存在：$APP_BUNDLE"
 plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP_BUNDLE/Info.plist" 2>/dev/null; }
@@ -437,8 +444,9 @@ assert_strict_concurrency_complete "$PKG_SC_TOKENS" "CovaCore 包"
 CORE_TARGET_FL="$(find Packages/CovaCore/.build -name 'CovaCore.SwiftFileList' 2>/dev/null | head -1)"
 [ -n "$CORE_TARGET_FL" ] || fail "未找到 CovaCore 目标的编译文件清单（CovaCore.SwiftFileList）"
 COMPILED="$( { while IFS= read -r l; do [ -n "$l" ] || continue; realpath "$(printf '%s' "$l" | sed 's/\\ / /g')"; done < "$CORE_TARGET_FL"; } | sort -u )"
-# 源集合定义：包内全部目标源文件（排除 Tests/、生成物 .build/ 与清单 Package.swift 本身）
-SOURCES="$(find Packages/CovaCore -name '*.swift' -not -name 'Package.swift' -not -path '*/Tests/*' -not -path '*/.build/*' 2>/dev/null \
+# 源集合定义：包内全部目标源文件。与 SwiftPM 的忽略规则对齐 —— 排除 Tests/、清单 Package.swift 本身，
+# 以及所有「点号路径分量」（含 .build 自身与其内部、SwiftPM 忽略的点号目录/文件）。
+SOURCES="$(find Packages/CovaCore -name '*.swift' -not -name 'Package.swift' -not -path '*/Tests/*' -not -path '*/.*' 2>/dev/null \
   | while IFS= read -r f; do realpath "$f"; done | sort -u)"
 [ -n "$COMPILED" ] || fail "CovaCore 编译集合为空（.SwiftFileList 无可读条目）"
 [ -n "$SOURCES" ] || fail "CovaCore 源目录 .swift 集合为空"
@@ -488,17 +496,11 @@ echo "    产物发现：$(basename "$CORE_BIN_DIR")/$(basename "$CORE_BIN") + $
 # 覆盖率口径：CovaCore 下除 Tests/ 与生成物（.build/）之外的全部源码（含未来新增源目录）
 LCOV_FILE="$LOG_DIR/core-coverage.lcov"
 { xcrun llvm-cov export "$CORE_BIN" -instr-profile="$CORE_PROF" --format=lcov 2>/dev/null || true; } > "$LCOV_FILE"
-# 分母完备性：源目录 .swift 真实路径全集必须都出现在 lcov 的 SF 条目中（exclude:/sources: 收缩即失败）
-LCOV_SF="$( { grep '^SF:' "$LCOV_FILE" || true; } | sed 's/^SF://' | while IFS= read -r f; do realpath "$f" 2>/dev/null || printf '%s\n' "$f"; done | sort -u )"
-MISSING_SF=0
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
-  if ! printf '%s\n' "$LCOV_SF" | grep -qxF "$f"; then
-    echo "    核心层源文件未出现在覆盖率分母中：${f}"
-    MISSING_SF=1
-  fi
-done <<< "$SOURCES"
-[ "$MISSING_SF" -eq 0 ] || fail "覆盖率分母缺失核心层源文件（可能被 exclude:/sources: 收缩）"
+# 说明（第七轮结论）：不再断言「源文件必须出现在 lcov SF 中」。
+#   llvm-cov 只为「含可执行区域」的文件产出 SF —— protocol/空枚举/仅 case 枚举/0 字节/仅注释文件天然无 SF；
+#   「被编译」是编译事实，「进入覆盖率分母」是插桩事实，二者不是同一集合。
+#   exclude:/sources: 收缩已由上面的「编译集合 == 源目录 .swift 全集」双向校验拦截（W1c/W1d 实测有效），
+#   此处若再要求 SF 完备，只会在合法文件上误红（误红会反向迫使维护者放宽门禁，与漏检同等严重）。
 COVERAGE="$(awk '
   /^SF:/ { in_pkg = (index($0, "Packages/CovaCore/") > 0) && (index($0, "/.build/") == 0)
            in_test = in_pkg && (index($0, "/Tests/") > 0)
