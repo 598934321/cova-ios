@@ -346,22 +346,29 @@ if ! xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
 fi
 { grep -E "^\*\* BUILD (SUCCEEDED|FAILED) \*\*" "$LOG_DIR/build.log" || true; } | tail -1
 
-# 实际编译语言版本：从构建日志（xcactivitylog）解析编译器调用（权威，不受构建设置清单影响）
-APP_SWIFT_VERSIONS="$(
+# 从构建日志（xcactivitylog）提取令牌。
+# ⚠️ 必须先把 gunzip 输出落盘、再 `strings <file>`：`... | strings` 从 stdin 读取时按约 1KB
+# 分块，并把超长可打印串截断到 1022 字符，而 `-swift-version 6` 处于数万字符的连续可打印串内，
+# 会被截断导致正则恒不命中（评审干净克隆连续 EXIT=1 的根因）。落盘读取使用完整行长，判据不变。
+extract_build_log_tokens() { # $1 = 正则（grep -E）
   find "$DERIVED_DATA/Logs/Build" -name '*.xcactivitylog' -newer "$BUILD_MARKER" 2>/dev/null \
-    | while IFS= read -r l; do gunzip -c "$l" 2>/dev/null | strings | grep -oE -- '-swift-version [0-9]+' || true; done \
+    | while IFS= read -r l; do
+        tmp="$(mktemp "$LOG_DIR/xcactivity.XXXXXX")"
+        gunzip -c "$l" 2>/dev/null > "$tmp" || true
+        strings "$tmp" 2>/dev/null | grep -oE -- "$1" || true
+        rm -f "$tmp"
+      done \
     | sort -u
-)"
+}
+
+# 实际编译语言版本：从构建日志解析编译器调用（权威，不受构建设置清单影响）
+APP_SWIFT_VERSIONS="$(extract_build_log_tokens '-swift-version [0-9]+')"
 [ -n "$APP_SWIFT_VERSIONS" ] \
   || fail "构建日志（xcactivitylog）中未出现任何 -swift-version：无法证明实际编译语言版本"
 [ "$APP_SWIFT_VERSIONS" = "-swift-version $REQUIRED_LANGUAGE_VERSION" ] \
   || fail "App 实际编译语言版本异常：$(echo "$APP_SWIFT_VERSIONS" | tr '\n' ' ')"
 echo "    实际编译语言版本（App/构建日志）：$(echo "$APP_SWIFT_VERSIONS" | tr '\n' ' ')"
-APP_SC_TOKENS="$(
-  find "$DERIVED_DATA/Logs/Build" -name '*.xcactivitylog' -newer "$BUILD_MARKER" 2>/dev/null \
-    | while IFS= read -r l; do gunzip -c "$l" 2>/dev/null | strings | grep -oE -- '-strict-concurrency[\\]?[= ]?[a-z]*' || true; done \
-    | sort -u
-)"
+APP_SC_TOKENS="$(extract_build_log_tokens '-strict-concurrency[\\]?[= ]?[a-z]*')"
 assert_strict_concurrency_complete "$APP_SC_TOKENS" "App"
 if [ -n "$APP_SC_TOKENS" ]; then
   echo "    编译日志中的严格并发令牌（App）：$(echo "$APP_SC_TOKENS" | tr '\n' ' ')（均须为 complete）"

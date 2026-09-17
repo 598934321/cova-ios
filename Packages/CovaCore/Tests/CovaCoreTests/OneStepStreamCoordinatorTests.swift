@@ -319,6 +319,35 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         }
     }
 
+    /// F3：`cancel()` 落在 `start()` 的 `await clock.now()` 窗口内也必须被尊重。
+    func testCancelDuringStartWindowIsRespected() async throws {
+        for iteration in 0..<60 {
+            let clock = VirtualClock(yields: 300)
+            let sse = FakeSSEStreamingTransport()
+            let poller = FakePlanPoller()
+            let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
+
+            let startTask = Task { try await coordinator.start(sessionId: "s", agentRequest: try agentRequest()) }
+            let cancelTask = Task { await coordinator.cancel() }
+            let stream = try await startTask.value
+            await cancelTask.value
+
+            await assertEventually { await coordinator.currentPhase() == .finished }
+            let collector = FrameCollector()
+            let completed = CompletionFlag()
+            let consumer = Task {
+                for await frame in stream { await collector.append(frame) }
+                await completed.mark()
+            }
+            await awaitConsumer(consumer)
+            let frames = await collector.snapshot()
+            let calls = await poller.callCount()
+            XCTAssertTrue(frames.isEmpty, "第 \(iteration) 次：start 窗口内 cancel 被丢弃")
+            XCTAssertEqual(calls, 0, "第 \(iteration) 次：取消后不得轮询")
+            await coordinator.cancel()
+        }
+    }
+
     // MARK: - M1：跨 await 读-改-写竞态
 
     func testConcurrentFrameAndCancelNeverRegressOrHang() async throws {

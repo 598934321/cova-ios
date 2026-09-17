@@ -69,7 +69,7 @@ public struct OneStepStreamMachine: Sendable {
     public private(set) var degradedBy: OneStepDegradationTrigger?
     public private(set) var malformedEventCount = 0
 
-    private let startedAt: TimeInterval
+    private var startedAt: TimeInterval
     private var lastActivityAt: TimeInterval
     private var receivedFirstEvent = false
     private var lastPollAt: TimeInterval
@@ -84,6 +84,17 @@ public struct OneStepStreamMachine: Sendable {
     }
 
     public var isFinished: Bool { phase == .finished }
+
+    /// 校正起始时间（仅用于 `start` 的时间获取窗口）：在收到任何事件、且仍处于 `streaming` 前有效。
+    ///
+    /// 协调器先在 `await clock.now()` 之前安装本状态机（临时 `startedAt = 0`），使窗口期内到达的
+    /// `cancel()` 不被丢弃；取到真实时间后再调用本方法校正。
+    mutating func updateStartTime(_ time: TimeInterval) {
+        guard phase == .streaming, !receivedFirstEvent else { return }
+        startedAt = time
+        lastActivityAt = time
+        lastPollAt = time
+    }
 
     /// 收到一条 SSE 帧。
     public mutating func frameReceived(_ frame: CovaSSEFrame, at now: TimeInterval) -> [OneStepStreamAction] {
@@ -273,8 +284,15 @@ public actor OneStepStreamCoordinator {
         let (stream, continuation) = AsyncStream.makeStream(of: CovaSSEFrame.self)
         output = continuation
         self.sessionId = sessionId
+        // 先安装状态机（临时 startedAt=0），确保 start 的 await 窗口内到达的 cancel() 不被丢弃；
+        // 取到真实时间后再校正起始时间（此刻尚无事件/定时器/SSE）。
+        machine = OneStepStreamMachine(policy: policy, startedAt: 0)
         let now = await clock.now()
-        machine = OneStepStreamMachine(policy: policy, startedAt: now)
+        guard lifecycle == .running else {
+            // 窗口内已 cancel：输出流已由 cancel 结束，直接返回该（已终止的）流。
+            return stream
+        }
+        machine?.updateStartTime(now)
         rescheduleTimer(now: now)
         startSSE(agentRequest)
         return stream
