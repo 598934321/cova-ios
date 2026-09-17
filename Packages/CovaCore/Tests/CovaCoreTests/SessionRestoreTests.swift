@@ -2,6 +2,16 @@
 import Foundation
 import XCTest
 
+private final class RestoreSessionRef: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: CovaAuthSession?
+
+    var session: CovaAuthSession? {
+        get { lock.lock(); defer { lock.unlock() }; return value }
+        set { lock.lock(); value = newValue; lock.unlock() }
+    }
+}
+
 /// M-2：冷启动恢复（`restoreSession()`）。
 ///
 /// 契约目标形态：`GET /api/auth/me` → `{user, entitlements}`。真实字段不全由 NEEDS-3 跟踪，
@@ -146,6 +156,31 @@ final class SessionRestoreTests: XCTestCase {
         XCTAssertEqual(try stack.activeOwnerStore.loadActiveOwner(), ownerA)
         let state = await cold.currentState()
         XCTAssertEqual(state, .signedOut)
+    }
+
+    /// 额外：恢复在途时用户显式选择 guest，恢复结果必须被丢弃（不得覆盖用户选择）。
+    func testRestoreDiscardedWhenUserExplicitlyChoosesGuest() async throws {
+        let box = RestoreSessionRef()
+        let transport = FakeHTTPTransport { request in
+            switch request.url.path {
+            case CovaAuthSession.loginPath: return HTTPResponse(statusCode: 200, body: TestTransportData.login)
+            case CovaAuthSession.mePath:
+                await box.session?.continueAsGuest()
+                return HTTPResponse(statusCode: 200, body: TestTransportData.me)
+            default: return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
+            }
+        }
+        let stack = makeTestStack()
+        try await seedSignedInSession(transport: transport, stack: stack)
+
+        let cold = makeAuthSession(transport: transport, stack: stack)
+        box.session = cold
+        let state = try await cold.restoreSession()
+
+        XCTAssertEqual(state, .guest, "用户显式选择 guest 后不得被恢复为 authenticated")
+        let finalState = await cold.currentState()
+        XCTAssertEqual(finalState, .guest)
+        XCTAssertFalse(state.isAuthenticated)
     }
 
     func testRestoreWithMismatchedUserInvalidatesSession() async throws {

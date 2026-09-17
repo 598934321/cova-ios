@@ -103,6 +103,16 @@ final class ActiveOwnerStoreTests: XCTestCase {
         XCTAssertNotNil(FileActiveOwnerStore.defaultBaseDirectory())
     }
 
+    /// m-2：指针文件按最小权限 0600 写入。
+    func testPointerFileIsOwnerReadWriteOnly() throws {
+        let store = FileActiveOwnerStore(baseDirectory: baseDirectory)
+        try store.saveActiveOwner(PrincipalID(rawValue: "user-1"))
+        let url = baseDirectory.appendingPathComponent("active-owner.json")
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        XCTAssertEqual(mode & 0o777, 0o600, "active-owner.json 权限应为 0600，实为 \(String(mode & 0o777, radix: 8))")
+    }
+
     func testErrorDescriptionsCarryNoPlaintext() {
         XCTAssertTrue(ActiveOwnerStoreError.ioFailure.description.contains("读写"))
         XCTAssertTrue(ActiveOwnerStoreError.decodingFailed.description.contains("解码"))

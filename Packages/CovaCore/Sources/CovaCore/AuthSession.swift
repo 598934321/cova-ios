@@ -37,6 +37,17 @@ public struct AuthSessionSnapshot: Equatable, Sendable {
     }
 }
 
+/// 刷新单飞分桶键：同一 `(principal, generation)` 的并发刷新才共享一次网络调用。
+private struct RefreshKey: Hashable {
+    let principal: PrincipalID
+    let generation: SessionGeneration
+}
+
+/// 在途刷新的等待者集合（键存在即表示在途）。
+private struct RefreshBucket {
+    var waiters: [CheckedContinuation<SecretString, Error>] = []
+}
+
 /// API client 视角的凭证来源（由认证状态机 `CovaAuthSession` 实现）。
 public protocol APICredentialProviding: Sendable {
     /// 当前会话快照；无凭证返回 `nil`（请求不带授权头）。
@@ -72,9 +83,13 @@ public actor CovaAuthSession: APICredentialProviding {
 
     private var state: AuthSessionState = .signedOut
 
-    /// single-flight 刷新状态：`isRefreshing` 为真时，后来者把 continuation 入队等待同一结果。
-    private var isRefreshing = false
-    private var refreshWaiters: [CheckedContinuation<SecretString, Error>] = []
+    /// 刷新单飞状态：按 `(principal, generation)` 分桶，**跨账号互不干扰**（m-1）。
+    /// 某键存在即表示该键有一次刷新在途；等待者只加入同键。
+    private var refreshBuckets: [RefreshKey: RefreshBucket] = [:]
+
+    /// 会话代次：任何用户可感知的会话变化（登录/登出/游客/凭证吊销）都会推进。
+    /// generation 管 owner 绑定，epoch 额外覆盖「显式选择 guest」这类不推进 generation 的变化。
+    private var sessionEpoch: UInt64 = 0
 
     public init(
         transport: any HTTPTransport,
@@ -108,9 +123,13 @@ public actor CovaAuthSession: APICredentialProviding {
     // MARK: - 状态迁移
 
     /// 以游客身份浏览公开内容（仅从 `signedOut` 迁移）。
+    ///
+    /// 推进 `sessionEpoch`：若此时有恢复（restore）在途，恢复结果会被丢弃，
+    /// 不得覆盖用户的显式选择。
     public func continueAsGuest() {
         if case .signedOut = state {
             state = .guest
+            sessionEpoch &+= 1
         }
     }
 
@@ -126,8 +145,9 @@ public actor CovaAuthSession: APICredentialProviding {
     /// 测试使用仓库内脱敏 fixture，不连线上。
     @discardableResult
     public func restoreSession() async throws -> AuthSessionState {
+        let epoch = sessionEpoch
         guard let principal = try activeOwnerStore.loadActiveOwner() else {
-            state = .guest
+            enterGuest()
             return state
         }
         let generation = await lifecycle.currentGeneration()
@@ -135,7 +155,7 @@ public actor CovaAuthSession: APICredentialProviding {
         let refresh = try readSecret(principal, .refreshToken)
         guard access != nil || refresh != nil else {
             try? activeOwnerStore.saveActiveOwner(nil)
-            state = .guest
+            enterGuest()
             return state
         }
 
@@ -143,15 +163,28 @@ public actor CovaAuthSession: APICredentialProviding {
         do {
             me = try await fetchMe(principal: principal)
         } catch let error as CovaAPIError where Self.isAuthenticationFailure(error) {
-            guard let recovered = try await recoverMeAfterExpiry(principal: principal, generation: generation) else {
-                return state // 已 invalidate → signedOut
+            let recovered: CovaMeResponse?
+            do {
+                recovered = try await recoverMeAfterExpiry(principal: principal, generation: generation, epoch: epoch)
+            } catch CovaAPIError.sessionChanged {
+                // 恢复期间会话被显式改变（切号/游客/登出）：丢弃恢复结果，不覆盖用户选择。
+                return state
             }
+            guard let recovered else { return state } // 已 invalidate → signedOut
             me = recovered
         }
 
         guard me.user.id == principal.rawValue else {
-            // 服务端返回的 user 与持久化 owner 不一致：不可信，清理。
-            await invalidateSession(owner: principal)
+            // 服务端返回的 user 与持久化 owner 不一致：不可信。仅当会话未变时才清理。
+            if await isSessionUnchanged(principal: principal, generation: generation, epoch: epoch) {
+                await invalidateSession(owner: principal)
+            }
+            return state
+        }
+        guard sessionEpoch == epoch,
+              case .signedOut = state,
+              await lifecycle.currentGeneration() == generation else {
+            // 恢复完成前用户显式改变了会话状态 → 丢弃恢复结果。
             return state
         }
         await lifecycle.beginSession(owner: principal)
@@ -186,6 +219,7 @@ public actor CovaAuthSession: APICredentialProviding {
         try secureStore.set(response.refreshToken, for: Self.item(principal, .refreshToken))
         try? activeOwnerStore.saveActiveOwner(principal)
         state = .authenticated(response.user)
+        sessionEpoch &+= 1
         if let cleanupFailure { throw cleanupFailure }
         return response.user
     }
@@ -199,6 +233,7 @@ public actor CovaAuthSession: APICredentialProviding {
             await sendLogoutBestEffort(token: token)
         }
         state = .signedOut
+        sessionEpoch &+= 1
         try? activeOwnerStore.saveActiveOwner(nil)
         if let principal {
             try await lifecycle.signOut(owner: principal)
@@ -228,22 +263,29 @@ public actor CovaAuthSession: APICredentialProviding {
         }
         return try await performSingleFlightRefresh(
             principal: snapshot.principal,
-            expectedGeneration: snapshot.generation
+            expectedGeneration: snapshot.generation,
+            expectedEpoch: sessionEpoch
         )
     }
 
     // MARK: - 私有
 
-    /// 刷新失败后的 `me` 恢复；确定性认证失败 → 清理并返回 `nil`（已 signedOut）。
+    /// 刷新失败后的 `me` 恢复；确定性认证失败 → 刷新路径已清理并返回 `nil`。
+    ///
+    /// `.sessionChanged`（会话在刷新期间被切号/游客/登出）不在此吞掉，向上传播由调用方丢弃结果。
     private func recoverMeAfterExpiry(
         principal: PrincipalID,
-        generation: SessionGeneration
+        generation: SessionGeneration,
+        epoch: UInt64
     ) async throws -> CovaMeResponse? {
         do {
-            _ = try await performSingleFlightRefresh(principal: principal, expectedGeneration: generation)
+            _ = try await performSingleFlightRefresh(
+                principal: principal,
+                expectedGeneration: generation,
+                expectedEpoch: epoch
+            )
             return try await fetchMe(principal: principal)
         } catch let error as CovaAPIError where Self.isAuthenticationFailure(error) {
-            await invalidateSession(owner: principal)
             return nil
         }
     }
@@ -256,28 +298,40 @@ public actor CovaAuthSession: APICredentialProviding {
         return try await sendRaw(request)
     }
 
+    /// single-flight 刷新（按 `(principal, generation)` 分桶）。
+    ///
+    /// 失败分类（M-1 + m-4）：
+    /// - **会话已变**（epoch/generation/principal 任一改变）→ 不做任何全局清理，抛 `.sessionChanged`；
+    /// - 会话未变且为**确定性认证失败** → 清该 owner 凭证并转 `signedOut`；
+    /// - 会话未变且为**传输类失败** → 保留会话并抛可重试错误。
     private func performSingleFlightRefresh(
         principal: PrincipalID,
-        expectedGeneration: SessionGeneration
+        expectedGeneration: SessionGeneration,
+        expectedEpoch: UInt64
     ) async throws -> SecretString {
-        if isRefreshing {
-            return try await withCheckedThrowingContinuation { refreshWaiters.append($0) }
-        }
-        guard let refreshSecret = try readSecret(principal, .refreshToken) else {
-            // 缺 refresh token：确定性不可恢复 → 清理。
-            await invalidateSession(owner: principal)
-            throw CovaAPIError.unauthorized(apiCode: nil)
+        let key = RefreshKey(principal: principal, generation: expectedGeneration)
+        if var bucket = refreshBuckets[key] {
+            // 只加入同账号 + 同 generation 的在途刷新（m-1：新账号不得被旧账号刷新影响）。
+            return try await withCheckedThrowingContinuation { continuation in
+                bucket.waiters.append(continuation)
+                refreshBuckets[key] = bucket
+            }
         }
 
-        isRefreshing = true
+        guard let refreshSecret = try readSecret(principal, .refreshToken) else {
+            if await isSessionUnchanged(principal: principal, generation: expectedGeneration, epoch: expectedEpoch) {
+                await invalidateSession(owner: principal)
+                throw CovaAPIError.unauthorized(apiCode: nil)
+            }
+            throw CovaAPIError.sessionChanged
+        }
+
+        refreshBuckets[key] = RefreshBucket()
         let result: Result<SecretString, Error>
         do {
             let request = try APIRequestBuilder.make(method: .post, path: Self.refreshPath, bearer: refreshSecret)
             let response: CovaRefreshResponseDto = try await sendRaw(request)
-            // 授权归属：generation 未推进；若状态已进入某账号，则必须仍是同一 principal。
-            // （冷启动恢复期间 state 尚未置为 authenticated，故用 map/?? true 容忍 nil。）
-            let samePrincipal = currentPrincipal().map { $0 == principal } ?? true
-            if await lifecycle.currentGeneration() == expectedGeneration, samePrincipal {
+            if await isSessionUnchanged(principal: principal, generation: expectedGeneration, epoch: expectedEpoch) {
                 try secureStore.set(response.token, for: Self.item(principal, .accessToken))
                 try secureStore.set(response.refreshToken, for: Self.item(principal, .refreshToken))
                 result = .success(response.token)
@@ -287,12 +341,16 @@ public actor CovaAuthSession: APICredentialProviding {
         } catch {
             result = .failure(CovaAPIError.normalize(error))
         }
-        finishRefresh(result)
+        finishRefresh(key: key, result: result)
 
         switch result {
         case .success(let token):
             return token
         case .failure(let error):
+            // 关键：失败分支同样先复核归属；会话已变则绝不清理新账号，改抛 stale 错误。
+            guard await isSessionUnchanged(principal: principal, generation: expectedGeneration, epoch: expectedEpoch) else {
+                throw CovaAPIError.sessionChanged
+            }
             if Self.isAuthenticationFailure(error) {
                 await invalidateSession(owner: principal)
             }
@@ -300,12 +358,10 @@ public actor CovaAuthSession: APICredentialProviding {
         }
     }
 
-    /// 结束一次刷新：清空队列并把同一结果派发给全部等待者。
-    private func finishRefresh(_ result: Result<SecretString, Error>) {
-        isRefreshing = false
-        let waiters = refreshWaiters
-        refreshWaiters = []
-        for waiter in waiters {
+    /// 结束一次刷新（指定分桶）：移除分桶并把同一结果派发给该桶的全部等待者。
+    private func finishRefresh(key: RefreshKey, result: Result<SecretString, Error>) {
+        let bucket = refreshBuckets.removeValue(forKey: key)
+        for waiter in bucket?.waiters ?? [] {
             switch result {
             case .success(let token): waiter.resume(returning: token)
             case .failure(let error): waiter.resume(throwing: error)
@@ -313,9 +369,28 @@ public actor CovaAuthSession: APICredentialProviding {
         }
     }
 
+    /// 会话是否仍是发起刷新时的那一个：epoch 未推进 + generation 未推进 + principal 未被换成别人。
+    private func isSessionUnchanged(
+        principal: PrincipalID,
+        generation: SessionGeneration,
+        epoch: UInt64
+    ) async -> Bool {
+        guard sessionEpoch == epoch else { return false }
+        guard await lifecycle.currentGeneration() == generation else { return false }
+        if let current = currentPrincipal() { return current == principal }
+        return true
+    }
+
+    /// 进入游客态（推进 epoch，使在途恢复/刷新失效）。
+    private func enterGuest() {
+        state = .guest
+        sessionEpoch &+= 1
+    }
+
     /// 凭证被吊销/不可恢复：清该 owner 本地状态与 owner 指针并转 `signedOut`（清理失败不阻断）。
     private func invalidateSession(owner: PrincipalID) async {
         state = .signedOut
+        sessionEpoch &+= 1
         try? activeOwnerStore.saveActiveOwner(nil)
         try? await lifecycle.signOut(owner: owner)
     }

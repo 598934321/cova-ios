@@ -108,9 +108,12 @@ public struct FileActiveOwnerStore: ActiveOwnerStoring {
             let data = try JSONEncoder().encode(Payload(principalId: owner.rawValue))
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
             )
             try data.write(to: url, options: [.atomic])
+            // m-2：内容仅 principalId（非敏感），仍按最小权限收紧为 0600。
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch let error as ActiveOwnerStoreError {
             throw error
         } catch {
