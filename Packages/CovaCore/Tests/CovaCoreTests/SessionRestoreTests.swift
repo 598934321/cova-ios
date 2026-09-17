@@ -183,6 +183,79 @@ final class SessionRestoreTests: XCTestCase {
         XCTAssertFalse(state.isAuthenticated)
     }
 
+    /// F2：refresh 2xx 但二次 `me` 仍确定性 401 —— 必须清理凭证 + 指针 + lifecycle。
+    func testRestoreRefreshSucceedsButMeStillRevokedCleansUp() async throws {
+        let transport = FakeHTTPTransport { request in
+            switch request.url.path {
+            case CovaAuthSession.loginPath: return HTTPResponse(statusCode: 200, body: TestTransportData.login)
+            case CovaAuthSession.mePath: return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
+            case CovaAuthSession.refreshPath: return HTTPResponse(statusCode: 200, body: TestTransportData.refresh)
+            default: return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
+            }
+        }
+        let stack = makeTestStack()
+        try await seedSignedInSession(transport: transport, stack: stack)
+
+        let cold = makeAuthSession(transport: transport, stack: stack)
+        let state = try await cold.restoreSession()
+
+        XCTAssertEqual(state, .signedOut)
+        XCTAssertNil(try stack.secureStore.secret(for: accessItem), "access token 必须被清理")
+        XCTAssertNil(
+            try stack.secureStore.secret(for: SecureStoreItem(principalId: ownerA, kind: .refreshToken)),
+            "refresh token 必须被清理"
+        )
+        XCTAssertNil(try stack.activeOwnerStore.loadActiveOwner(), "owner 指针必须被清理")
+        let lifecycleOwner = await stack.lifecycle.currentOwner()
+        XCTAssertNil(lifecycleOwner, "lifecycle 登出清理必须执行")
+        let meCount = await transport.requestCount(path: CovaAuthSession.mePath)
+        XCTAssertEqual(meCount, 2, "原始 me + 刷新后重放各一次")
+    }
+
+    /// F2 变体：二次 `me` 返回 403 同样必须清理。
+    func testRestoreRefreshSucceedsButMeForbiddenCleansUp() async throws {
+        let transport = FakeHTTPTransport { request in
+            switch request.url.path {
+            case CovaAuthSession.loginPath: return HTTPResponse(statusCode: 200, body: TestTransportData.login)
+            case CovaAuthSession.mePath: return HTTPResponse(statusCode: 403, body: Data(#"{"error":"forbidden"}"#.utf8))
+            case CovaAuthSession.refreshPath: return HTTPResponse(statusCode: 200, body: TestTransportData.refresh)
+            default: return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
+            }
+        }
+        let stack = makeTestStack()
+        try await seedSignedInSession(transport: transport, stack: stack)
+
+        let cold = makeAuthSession(transport: transport, stack: stack)
+        let state = try await cold.restoreSession()
+
+        XCTAssertEqual(state, .signedOut)
+        XCTAssertNil(try stack.secureStore.secret(for: accessItem))
+        XCTAssertNil(try stack.activeOwnerStore.loadActiveOwner())
+    }
+
+    /// F3：提交临界区（`beginSession` await 期间）用户显式改变会话 → 回滚，不写回 authenticated。
+    func testRestoreRollsBackWhenSessionChangesDuringCommit() async throws {
+        let transport = FakeHTTPTransport { request in
+            switch request.url.path {
+            case CovaAuthSession.loginPath: return HTTPResponse(statusCode: 200, body: TestTransportData.login)
+            case CovaAuthSession.mePath: return HTTPResponse(statusCode: 200, body: TestTransportData.me)
+            default: return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
+            }
+        }
+        let stack = makeTestStack()
+        try await seedSignedInSession(transport: transport, stack: stack)
+
+        let cold = makeAuthSession(transport: transport, stack: stack)
+        await cold.setBeforeSessionActivation { [cold] in
+            await cold.continueAsGuest()
+        }
+        let state = try await cold.restoreSession()
+
+        XCTAssertEqual(state, .guest, "提交临界区内的显式 guest 必须胜出")
+        let finalState = await cold.currentState()
+        XCTAssertEqual(finalState, .guest)
+    }
+
     func testRestoreWithMismatchedUserInvalidatesSession() async throws {
         let mismatch = Data(
             #"{"user":{"id":"user-9999","name":"陌生","role":"user","email":null,"covaId":null,"phone":null,"isArtist":false,"isPartner":false},"entitlements":{"plan":"free","creditsBalance":0,"monthlyCredits":0,"canDownload":false,"canUseCovaAI":false,"canRequestProjects":false}}"#.utf8

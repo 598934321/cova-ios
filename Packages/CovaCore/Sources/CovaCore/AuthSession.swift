@@ -37,10 +37,14 @@ public struct AuthSessionSnapshot: Equatable, Sendable {
     }
 }
 
-/// 刷新单飞分桶键：同一 `(principal, generation)` 的并发刷新才共享一次网络调用。
+/// 刷新单飞分桶键：同一 `(principal, generation, epoch)` 的并发刷新才共享一次网络调用。
+///
+/// 把 `epoch` 并入键，保证同桶等待者与 leader 共享同一会话代次，
+/// 从而「派发前复核归属」的结论对整桶一致（F1）。
 private struct RefreshKey: Hashable {
     let principal: PrincipalID
     let generation: SessionGeneration
+    let epoch: UInt64
 }
 
 /// 在途刷新的等待者集合（键存在即表示在途）。
@@ -90,6 +94,14 @@ public actor CovaAuthSession: APICredentialProviding {
     /// 会话代次：任何用户可感知的会话变化（登录/登出/游客/凭证吊销）都会推进。
     /// generation 管 owner 绑定，epoch 额外覆盖「显式选择 guest」这类不推进 generation 的变化。
     private var sessionEpoch: UInt64 = 0
+
+    /// 测试注入点：会话激活（提交 `authenticated`）前的钩子；生产恒为 `nil`。
+    private var beforeSessionActivation: (@Sendable () async -> Void)?
+
+    /// 仅测试使用：设置在 `restoreSession` 提交临界区的注入钩子（F3 确定性覆盖）。
+    func setBeforeSessionActivation(_ hook: (@Sendable () async -> Void)?) {
+        beforeSessionActivation = hook
+    }
 
     public init(
         transport: any HTTPTransport,
@@ -188,6 +200,15 @@ public actor CovaAuthSession: APICredentialProviding {
             return state
         }
         await lifecycle.beginSession(owner: principal)
+        // 测试注入点（生产恒为 nil）：在两次 await 之间模拟用户显式 guest/切号，验证提交临界区（F3）。
+        if let hook = beforeSessionActivation {
+            await hook()
+        }
+        // 最终复核（同步，无 await）：`beginSession` 是 await 点，期间本 actor 可被重入；
+        // epoch/state 的变更都在本 actor 内同步发生，故此处复核即为权威判定。
+        guard sessionEpoch == epoch, case .signedOut = state else {
+            return state
+        }
         try? activeOwnerStore.saveActiveOwner(principal)
         state = .authenticated(me.user)
         return state
@@ -286,6 +307,11 @@ public actor CovaAuthSession: APICredentialProviding {
             )
             return try await fetchMe(principal: principal)
         } catch let error as CovaAPIError where Self.isAuthenticationFailure(error) {
+            // 两个来源都可能落到这里：刷新本身确定性失败（刷新路径已清理），
+            // 或「刷新 2xx 但二次 me 仍 401/403」。后者此前不清理（F2）——统一按需清理。
+            if await isSessionUnchanged(principal: principal, generation: generation, epoch: epoch) {
+                await invalidateSession(owner: principal)
+            }
             return nil
         }
     }
@@ -309,9 +335,9 @@ public actor CovaAuthSession: APICredentialProviding {
         expectedGeneration: SessionGeneration,
         expectedEpoch: UInt64
     ) async throws -> SecretString {
-        let key = RefreshKey(principal: principal, generation: expectedGeneration)
+        let key = RefreshKey(principal: principal, generation: expectedGeneration, epoch: expectedEpoch)
         if var bucket = refreshBuckets[key] {
-            // 只加入同账号 + 同 generation 的在途刷新（m-1：新账号不得被旧账号刷新影响）。
+            // 只加入同账号 + 同 generation + 同 epoch 的在途刷新（m-1：新账号不得被旧账号刷新影响）。
             return try await withCheckedThrowingContinuation { continuation in
                 bucket.waiters.append(continuation)
                 refreshBuckets[key] = bucket
@@ -341,32 +367,53 @@ public actor CovaAuthSession: APICredentialProviding {
         } catch {
             result = .failure(CovaAPIError.normalize(error))
         }
-        finishRefresh(key: key, result: result)
+        // 派发前复核归属：会话已变则整桶（含 leader）交付 `.sessionChanged`，
+        // 绝不把 leader 的原始认证失败交给等待者（F1）。
+        let delivered = await finishRefresh(key: key, result: result)
 
-        switch result {
+        switch delivered {
         case .success(let token):
             return token
         case .failure(let error):
-            // 关键：失败分支同样先复核归属；会话已变则绝不清理新账号，改抛 stale 错误。
-            guard await isSessionUnchanged(principal: principal, generation: expectedGeneration, epoch: expectedEpoch) else {
-                throw CovaAPIError.sessionChanged
-            }
             if Self.isAuthenticationFailure(error) {
-                await invalidateSession(owner: principal)
+                // 能走到这里说明派发时会话未变；仍再同步复核一次，避免清理期间被切号。
+                if await isSessionUnchanged(principal: principal, generation: expectedGeneration, epoch: expectedEpoch) {
+                    await invalidateSession(owner: principal)
+                } else {
+                    throw CovaAPIError.sessionChanged
+                }
             }
             throw error
         }
     }
 
-    /// 结束一次刷新（指定分桶）：移除分桶并把同一结果派发给该桶的全部等待者。
-    private func finishRefresh(key: RefreshKey, result: Result<SecretString, Error>) {
+    /// 结束一次刷新（指定分桶）：移除分桶，**先复核归属**再向等待者派发结果。
+    ///
+    /// - 会话未变 → 派发 leader 原始结果；
+    /// - 会话已变 → 向整桶派发 `.sessionChanged`。
+    ///
+    /// - Returns: 实际派发给等待者的结果（leader 据此决定自身行为，保证与等待者一致）。
+    private func finishRefresh(
+        key: RefreshKey,
+        result: Result<SecretString, Error>
+    ) async -> Result<SecretString, Error> {
         let bucket = refreshBuckets.removeValue(forKey: key)
-        for waiter in bucket?.waiters ?? [] {
-            switch result {
+        let waiters = bucket?.waiters ?? []
+        let unchanged = await isSessionUnchanged(
+            principal: key.principal,
+            generation: key.generation,
+            epoch: key.epoch
+        )
+        let delivered: Result<SecretString, Error> = unchanged
+            ? result
+            : .failure(CovaAPIError.sessionChanged)
+        for waiter in waiters {
+            switch delivered {
             case .success(let token): waiter.resume(returning: token)
             case .failure(let error): waiter.resume(throwing: error)
             }
         }
+        return delivered
     }
 
     /// 会话是否仍是发起刷新时的那一个：epoch 未推进 + generation 未推进 + principal 未被换成别人。

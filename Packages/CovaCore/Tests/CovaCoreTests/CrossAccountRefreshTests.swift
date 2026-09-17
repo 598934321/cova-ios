@@ -33,6 +33,28 @@ private actor RefreshGate {
     }
 }
 
+/// 到达栅栏：等 N 个受保护请求都拿到 401 后再一起放行，制造真正的并发 401 风暴。
+private actor ArrivalBarrier {
+    private let expected: Int
+    private var arrived = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(expected: Int) {
+        self.expected = expected
+    }
+
+    func arriveAndWait() async {
+        arrived += 1
+        if arrived >= expected {
+            let pending = waiters
+            waiters = []
+            for waiter in pending { waiter.resume() }
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
 private final class SessionRef: @unchecked Sendable {
     private let lock = NSLock()
     private var value: CovaAuthSession?
@@ -157,6 +179,72 @@ final class CrossAccountRefreshTests: XCTestCase {
         )
         let bToken = try stack.secureStore.secret(for: SecureStoreItem(principalId: PrincipalID(rawValue: "user-0002"), kind: .accessToken))
         XCTAssertEqual(bToken?.rawValue, "SECOND_ACCESS", "B 的凭证不受影响")
+    }
+
+    // F1：并发 401 风暴 + 切号，**每个**等待者必须收到 sessionChanged（而非 leader 的 unauthorized）。
+    func testConcurrentWaitersReceiveSessionChangedAfterSwitch() async throws {
+        let concurrency = 8
+        let gate = RefreshGate()
+        let barrier = ArrivalBarrier(expected: concurrency)
+        let script = SwitchLoginScript()
+        let transport = FakeHTTPTransport { request in
+            switch request.url.path {
+            case CovaAuthSession.loginPath:
+                return HTTPResponse(statusCode: 200, body: script.next())
+            case Self.protectedPath:
+                if request.bearerToken == "ACCESS_TOKEN_PLACEHOLDER" {
+                    await barrier.arriveAndWait()
+                    return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
+                }
+                return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
+            case CovaAuthSession.refreshPath:
+                if request.bearerToken == Self.aRefresh {
+                    await gate.signalStarted()
+                    await gate.waitForRelease()
+                    return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
+                }
+                if request.bearerToken == Self.bRefresh {
+                    return HTTPResponse(statusCode: 200, body: Self.bRefreshResponse)
+                }
+                return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
+            default:
+                return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
+            }
+        }
+        let stack = makeTestStack()
+        let session = makeAuthSession(transport: transport, stack: stack)
+        try await session.signIn(email: "a@example.invalid", password: SecretString("pw"))
+        let client = CovaAPIClient(transport: transport, credentials: session)
+
+        let tasks: [Task<CovaAPIError?, Never>] = (0..<concurrency).map { _ in
+            Task {
+                do {
+                    let _: EmptyDTO = try await client.get(Self.protectedPath)
+                    return nil
+                } catch {
+                    return error as? CovaAPIError
+                }
+            }
+        }
+
+        await gate.waitUntilStarted()
+        try await session.signIn(email: "b@example.invalid", password: SecretString("pw"))
+        await gate.release()
+
+        var errors: [CovaAPIError?] = []
+        for task in tasks { errors.append(await task.value) }
+        XCTAssertEqual(errors.count, concurrency)
+        for (index, error) in errors.enumerated() {
+            XCTAssertEqual(
+                error,
+                .sessionChanged,
+                "等待者[\(index)] 必须收到 sessionChanged，而非 leader 的 unauthorized"
+            )
+        }
+        let state = await session.currentState()
+        XCTAssertEqual(state.user?.id, "user-0002", "新会话不得被清理/登出")
+        let pointer = try stack.activeOwnerStore.loadActiveOwner()
+        XCTAssertEqual(pointer, PrincipalID(rawValue: "user-0002"))
     }
 
     // m-1：B 已登录时，A 的在途刷新不得让 B 的合法请求被误判失败。
