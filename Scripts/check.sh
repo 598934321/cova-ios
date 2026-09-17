@@ -231,6 +231,14 @@ for pkg in $PACKAGES; do
   done
 done
 
+# 符号链接整类禁止（CovaCore 内）：SwiftPM 会跟随并编译，而 .SwiftFileList 记录词法路径，
+# 二者差异正是「链接目录指向包外」的绕过机制；CovaCore 是纯逻辑层，不需要符号链接。
+SYMLINKS="$(find Packages/CovaCore -type l -not -path '*/.build/*' 2>/dev/null || true)"
+if [ -n "$SYMLINKS" ]; then
+  printf '%s\n' "$SYMLINKS" | head -10 | sed 's/^/    /'
+  fail "CovaCore 内存在符号链接（整类禁止；如需共享源文件请改为仓内真实文件）"
+fi
+
 # 平台中立性不变量：字面 #if 即失败（条件编译整类禁止；注释/字符串中的命中亦拦，fail-closed）
 CC_HITS="$(grep -rn --fixed-strings '#if' "$CORE_DIR" --exclude-dir=.build 2>/dev/null || true)"
 if [ -n "$CC_HITS" ]; then
@@ -271,12 +279,27 @@ assert_eff() { # file key expected label
   got="$(eff "$1" "$2")"
   [ "$got" = "$3" ] || fail "$4：有效构建设置 $2='${got}'，应为 '$3'（不得被 target/config/sdk 级覆盖）"
 }
-assert_no_swift_version_flag() { # file label
+assert_no_language_override_flags() { # file label
   local got
   got="$(eff "$1" OTHER_SWIFT_FLAGS)"
   case "$got" in
     *"-swift-version"*) fail "$2：OTHER_SWIFT_FLAGS 含 -swift-version（可绕过语言版本钉死）：'${got}'" ;;
   esac
+  case "$got" in
+    *"-strict-concurrency"*) fail "$2：OTHER_SWIFT_FLAGS 含 -strict-concurrency（可绕过严格并发钉死）：'${got}'" ;;
+  esac
+}
+
+# 实际编译日志中的 -strict-concurrency 取值必须是 complete（Swift 6 模式不得降级）
+assert_strict_concurrency_complete() { # tokens label
+  local tokens="$1" label="$2" t
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    case "$t" in
+      '-strict-concurrency=complete'|'-strict-concurrency complete'|'-strict-concurrency\=complete') ;;
+      *) fail "${label}：实际编译使用非 complete 的严格并发设置：${t}" ;;
+    esac
+  done <<< "$tokens"
 }
 for cfg in $CONFIGURATIONS; do
   for sdk in $SETTINGS_SDKS; do
@@ -288,7 +311,7 @@ for cfg in $CONFIGURATIONS; do
     assert_eff "$APPSET" SWIFT_STRICT_CONCURRENCY "$REQUIRED_STRICT_CONCURRENCY" "Cova[${cfg}/${sdk}] 严格并发"
     assert_eff "$APPSET" IPHONEOS_DEPLOYMENT_TARGET "$REQUIRED_DEPLOYMENT_TARGET" "Cova[${cfg}/${sdk}] 部署目标（D1）"
     assert_eff "$APPSET" PRODUCT_BUNDLE_IDENTIFIER "$REQUIRED_APP_BUNDLE_ID" "Cova[${cfg}/${sdk}] bundle id（D13）"
-    assert_no_swift_version_flag "$APPSET" "Cova[${cfg}/${sdk}]"
+    assert_no_language_override_flags "$APPSET" "Cova[${cfg}/${sdk}]"
   done
 done
 for cfg in $CONFIGURATIONS; do
@@ -298,7 +321,7 @@ for cfg in $CONFIGURATIONS; do
   assert_eff "$TESTSET" SWIFT_VERSION "$REQUIRED_SWIFT_VERSION" "CovaTests[${cfg}] SWIFT_VERSION"
   assert_eff "$TESTSET" SWIFT_STRICT_CONCURRENCY "$REQUIRED_STRICT_CONCURRENCY" "CovaTests[${cfg}] 严格并发"
   assert_eff "$TESTSET" PRODUCT_BUNDLE_IDENTIFIER "$REQUIRED_TEST_BUNDLE_ID" "CovaTests[${cfg}] bundle id"
-  assert_no_swift_version_flag "$TESTSET" "CovaTests[${cfg}]"
+  assert_no_language_override_flags "$TESTSET" "CovaTests[${cfg}]"
 done
 
 APPSET_DEBUG="$LOG_DIR/settings-app-Debug-iphonesimulator.log"
@@ -331,6 +354,13 @@ APP_SWIFT_VERSIONS="$(
 [ "$APP_SWIFT_VERSIONS" = "-swift-version $REQUIRED_LANGUAGE_VERSION" ] \
   || fail "App 实际编译语言版本异常：$(echo "$APP_SWIFT_VERSIONS" | tr '\n' ' ')"
 echo "    实际编译语言版本（App/构建日志）：$(echo "$APP_SWIFT_VERSIONS" | tr '\n' ' ')"
+APP_SC_TOKENS="$(
+  find "$DERIVED_DATA/Logs/Build" -name '*.xcactivitylog' -newer "$BUILD_MARKER" 2>/dev/null \
+    | while IFS= read -r l; do gunzip -c "$l" 2>/dev/null | strings | grep -oE -- '-strict-concurrency[\\]?[= ]?[a-z]*' || true; done \
+    | sort -u
+)"
+assert_strict_concurrency_complete "$APP_SC_TOKENS" "App"
+[ -n "$APP_SC_TOKENS" ] && echo "    实际严格并发设置（App）：$(echo "$APP_SC_TOKENS" | tr '\n' ' ')"
 
 [ -d "$APP_BUNDLE" ] || fail "构建产物不存在：$APP_BUNDLE"
 plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP_BUNDLE/Info.plist" 2>/dev/null; }
@@ -398,23 +428,41 @@ PKG_SWIFT_VERSIONS="$( { grep -oE -- '-swift-version [0-9]+' "$LOG_DIR/test-core
 [ "$PKG_SWIFT_VERSIONS" = "-swift-version $REQUIRED_LANGUAGE_VERSION" ] \
   || fail "包实际编译语言版本异常：$(echo "$PKG_SWIFT_VERSIONS" | tr '\n' ' ')"
 echo "    实际编译语言版本（CovaCore 包）：$(echo "$PKG_SWIFT_VERSIONS" | tr '\n' ' ')"
+PKG_SC_TOKENS="$( { grep -oE -- '-strict-concurrency[\\]?[= ]?[a-z]*' "$LOG_DIR/test-core-coverage.log" || true; } | sort -u )"
+assert_strict_concurrency_complete "$PKG_SC_TOKENS" "CovaCore 包"
 
-# 编译集合一致性：被编译进 CovaCore/CovaCoreTests 的源文件必须都在 Packages/CovaCore 内（即都在扫描范围内）
-FILELISTS="$(find Packages/CovaCore/.build -name 'CovaCore*.SwiftFileList' 2>/dev/null || true)"
-[ -n "$FILELISTS" ] || fail "未找到 SwiftPM 编译文件清单（*.SwiftFileList），无法校验编译集合"
-BAD_FILES=0
-for fl in $FILELISTS; do
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    p="$(printf '%s' "$line" | sed 's/\\ / /g')"
-    case "$p" in
-      "$ROOT"/Packages/CovaCore/*) ;;
-      *) echo "    编译集合越界（被编译但不在 Packages/CovaCore 内）：$p"; BAD_FILES=1 ;;
-    esac
-  done < "$fl"
-done
-[ "$BAD_FILES" -eq 0 ] || fail "存在被编译但未被静态扫描覆盖的 CovaCore 源文件"
-echo "    编译集合一致：$(echo "$FILELISTS" | wc -l | tr -d ' ') 个清单内的源文件全部位于 Packages/CovaCore"
+# 编译集合（权威）：以 CovaCore 目标的 .SwiftFileList 为域，realpath 解析符号链接后与源目录全集双向比对。
+# 依据：目录 ≠ 编译集合 —— 目录符号链接（grep -r 不跟随、SwiftPM 跟随）、exclude:/sources: 收缩、
+#       包外链接目录都会让两者背离，而 .SwiftFileList 记录的是词法路径（前缀断言会恒真）。
+CORE_TARGET_FL="$(find Packages/CovaCore/.build -name 'CovaCore.SwiftFileList' 2>/dev/null | head -1)"
+[ -n "$CORE_TARGET_FL" ] || fail "未找到 CovaCore 目标的编译文件清单（CovaCore.SwiftFileList）"
+COMPILED="$( { while IFS= read -r l; do [ -n "$l" ] || continue; realpath "$(printf '%s' "$l" | sed 's/\\ / /g')"; done < "$CORE_TARGET_FL"; } | sort -u )"
+# 源集合定义：包内全部目标源文件（排除 Tests/、生成物 .build/ 与清单 Package.swift 本身）
+SOURCES="$(find Packages/CovaCore -name '*.swift' -not -name 'Package.swift' -not -path '*/Tests/*' -not -path '*/.build/*' 2>/dev/null \
+  | while IFS= read -r f; do realpath "$f"; done | sort -u)"
+[ -n "$COMPILED" ] || fail "CovaCore 编译集合为空（.SwiftFileList 无可读条目）"
+[ -n "$SOURCES" ] || fail "CovaCore 源目录 .swift 集合为空"
+if [ "$COMPILED" != "$SOURCES" ]; then
+  echo "    仅被编译、不在源目录（realpath 后）："
+  comm -23 <(printf '%s\n' "$COMPILED") <(printf '%s\n' "$SOURCES") | head -5 | sed 's/^/      /'
+  echo "    仅在源目录、未被编译："
+  comm -13 <(printf '%s\n' "$COMPILED") <(printf '%s\n' "$SOURCES") | head -5 | sed 's/^/      /'
+  fail "CovaCore 编译集合与源目录 .swift 全集不一致（符号链接/exclude/包外源文件均不允许）"
+fi
+# 逐文件扫描「实际被编译的」文件（realpath 后读取），而非扫目录
+IOS_ONLY_REGEX="$(echo "$IOS_ONLY_MODULES" | tr ' ' '|')"
+CC_BAD=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if grep -q --fixed-strings '#if' "$f" 2>/dev/null; then
+    echo "    含字面 #if（被编译文件）：${f}"; CC_BAD=1
+  fi
+  if grep -qwE "$IOS_ONLY_REGEX" "$f" 2>/dev/null; then
+    echo "    含 iOS-only 框架令牌（被编译文件）：${f}"; CC_BAD=1
+  fi
+done <<< "$COMPILED"
+[ "$CC_BAD" -eq 0 ] || fail "被编译的 CovaCore 源文件违反平台中立性（逐文件扫描编译集合）"
+echo "    编译集合与源集合双向一致：$(printf '%s\n' "$COMPILED" | wc -l | tr -d ' ') 个文件，且均平台中立"
 
 # 稳健发现产物：不硬编码二进制名/目录布局
 CORE_BIN_DIR="$(swift build --package-path Packages/CovaCore --show-bin-path 2>/dev/null | tail -1)"
@@ -438,7 +486,20 @@ fi
 echo "    产物发现：$(basename "$CORE_BIN_DIR")/$(basename "$CORE_BIN") + $(basename "$CORE_PROF")（零命名硬编码）"
 
 # 覆盖率口径：CovaCore 下除 Tests/ 与生成物（.build/）之外的全部源码（含未来新增源目录）
-COVERAGE="$( { xcrun llvm-cov export "$CORE_BIN" -instr-profile="$CORE_PROF" --format=lcov 2>/dev/null || true; } | awk '
+LCOV_FILE="$LOG_DIR/core-coverage.lcov"
+{ xcrun llvm-cov export "$CORE_BIN" -instr-profile="$CORE_PROF" --format=lcov 2>/dev/null || true; } > "$LCOV_FILE"
+# 分母完备性：源目录 .swift 真实路径全集必须都出现在 lcov 的 SF 条目中（exclude:/sources: 收缩即失败）
+LCOV_SF="$( { grep '^SF:' "$LCOV_FILE" || true; } | sed 's/^SF://' | while IFS= read -r f; do realpath "$f" 2>/dev/null || printf '%s\n' "$f"; done | sort -u )"
+MISSING_SF=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if ! printf '%s\n' "$LCOV_SF" | grep -qxF "$f"; then
+    echo "    核心层源文件未出现在覆盖率分母中：${f}"
+    MISSING_SF=1
+  fi
+done <<< "$SOURCES"
+[ "$MISSING_SF" -eq 0 ] || fail "覆盖率分母缺失核心层源文件（可能被 exclude:/sources: 收缩）"
+COVERAGE="$(awk '
   /^SF:/ { in_pkg = (index($0, "Packages/CovaCore/") > 0) && (index($0, "/.build/") == 0)
            in_test = in_pkg && (index($0, "/Tests/") > 0)
            in_core = in_pkg && (index($0, "/Tests/") == 0) }
@@ -447,7 +508,7 @@ COVERAGE="$( { xcrun llvm-cov export "$CORE_BIN" -instr-profile="$CORE_PROF" --f
     if (in_test) { split(substr($0, 4), b, ","); if ((b[2] + 0) > 0) testhit++ }
   }
   END { printf "%d %d %d", covered, total, testhit }
-')"
+' "$LCOV_FILE")"
 read -r COV_COVERED COV_TOTAL TEST_LINES_COVERED <<< "${COVERAGE:-0 0 0}" || true
 [ "${COV_TOTAL:-0}" -gt 0 ] || fail "核心层可执行行数为 0 或覆盖率不可读，不可判定为通过"
 [ "${TEST_LINES_COVERED:-0}" -gt 0 ] \
