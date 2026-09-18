@@ -153,10 +153,12 @@ final class SSETransportConfigurationTests: XCTestCase {
         StubURLProtocol.configure(body: Data("event: done\ndata: {}\n\n".utf8))
         let transport = makeStubTransport()
         let request = try agentRequest()
-        let gate = AsyncGate()
+        let reached = AsyncGate()
+        let release = AsyncGate()
 
         let task = Task { () -> CovaAPIError in
-            await gate.wait()
+            await reached.open()
+            await release.wait()
             do {
                 _ = try await transport.stream(request)
                 return .invalidResponse // 哨兵：不应发生
@@ -164,9 +166,9 @@ final class SSETransportConfigurationTests: XCTestCase {
                 return CovaAPIError.normalize(error)
             }
         }
-        await assertEventually { await gate.isWaiting() }
+        await reached.wait()
         task.cancel()
-        await gate.open()
+        await release.open()
 
         let error = await task.value
         XCTAssertEqual(error, .cancelled)

@@ -17,10 +17,6 @@ private func agentRequest() throws -> HTTPRequest {
     try CovaSSERequests.agent(jsonBody: Data("{}".utf8))
 }
 
-private func planCardCount(_ collector: FrameCollector) async -> Int {
-    await collector.snapshot().filter { $0.event == .planCard }.count
-}
-
 private struct CoordinatorHarness {
     let coordinator: OneStepStreamCoordinator
     let collector: FrameCollector
@@ -28,13 +24,22 @@ private struct CoordinatorHarness {
     let completed: CompletionFlag
 }
 
+/// 启动会话。**所有测试钩子必须在 `start` 之前注入**——任务体在创建时捕获钩子，事后设置无效。
 private func startCoordinator(
-    clock: VirtualClock,
+    clock: any CovaClock,
     sse: FakeSSEStreamingTransport,
-    poller: FakePlanPoller,
-    policy: OneStepDegradationPolicy = OneStepDegradationPolicy()
+    poller: any OneStepPlanPolling,
+    policy: OneStepDegradationPolicy = OneStepDegradationPolicy(),
+    beforeSSE: (@Sendable () async -> Void)? = nil,
+    afterSSE: (@Sendable () async -> Void)? = nil,
+    beforePoll: (@Sendable () async -> Void)? = nil,
+    afterPoll: (@Sendable () async -> Void)? = nil
 ) async throws -> CoordinatorHarness {
     let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller, policy: policy)
+    await coordinator.setBeforeSSETaskStart(beforeSSE)
+    await coordinator.setAfterSSETaskEnd(afterSSE)
+    await coordinator.setBeforePollTaskStart(beforePoll)
+    await coordinator.setAfterPollTaskEnd(afterPoll)
     let stream = try await coordinator.start(sessionId: "session-test-0001", agentRequest: try agentRequest())
     let collector = FrameCollector()
     let completed = CompletionFlag()
@@ -45,6 +50,11 @@ private func startCoordinator(
     return CoordinatorHarness(coordinator: coordinator, collector: collector, consumer: consumer, completed: completed)
 }
 
+/// 本套件的时序口径（D16⑤）：
+/// - 推进虚拟时间一律用 `advanceToNextDeadline(where:)`（等目标定时器**注册**后跳到其截止时刻，不步进猜测）；
+/// - 「任务已开始 / 已完成 / 已退出」一律等注入点或回调的**信号**（`SignalCounter` / `AsyncGate` / `CompletionFlag`）；
+/// - 断言只针对**必然成立量**：不把「让出 N 次调度」当作「推进后必然发生」的依据；也不在时间仍可推进的
+///   情形下断言精确计数（如 cancel 后周期数不变，是状态机终态决定的必然量）。
 final class OneStepStreamCoordinatorTests: XCTestCase {
     // MARK: - 触发条件一：10s 无首事件
 
@@ -53,29 +63,41 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
         await poller.enqueue(try planCards())
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let cycles = SignalCounter()
+        let handled = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            beforePoll: { await cycles.increment() },
+            afterPoll: { await handled.increment() }
+        )
 
-        await assertEventually { await clock.pendingWaiterCount() > 0 }
         await sse.waitUntilOpened()
         let callsBefore = await poller.callCount()
         XCTAssertEqual(callsBefore, 0)
 
-        await clock.advance(by: 10)
-        await assertEventually { await poller.callCount() >= 1 }
+        // 确定性推进到首个截止时刻（10s 无首事件定时器注册后）→ 降级。
+        let released = await clock.advanceToNextDeadline(where: { $0 >= 10 })
+        XCTAssertEqual(released, 1, "会话起始态应恰有一个待触发定时器")
+        await cycles.waitFor(1)
+        await handled.waitFor(1)
+
         let trigger = await harness.coordinator.degradationTrigger()
         let phase = await harness.coordinator.currentPhase()
         let sessionIds = await poller.sessionIds()
+        let cycleCount = await harness.coordinator.scheduledPollCycleCount()
+        let callsAfter = await poller.callCount()
         XCTAssertEqual(trigger, .firstEventTimeout)
         XCTAssertEqual(phase, .polling)
         XCTAssertEqual(sessionIds, ["session-test-0001"])
+        XCTAssertEqual(cycleCount, 1)
+        XCTAssertEqual(callsAfter, 1)
 
-        await assertEventually { await planCardCount(harness.collector) == 2 }
+        await harness.collector.waitForPlanCardCount(2)
 
-        // 严格不并发：SSE 流已终止，降级后注入的字节不再被消费。
-        await assertEventually { await sse.isTerminated() }
+        // 严格不并发：SSE 流已终止（onTermination 信号），降级后注入的字节不可能再被消费。
+        await sse.waitUntilTerminated()
         let before = await harness.collector.snapshot().count
         await sse.send("event: text\ndata: {\"text\":\"late\"}\n\n")
-        for _ in 0..<200 { await Task.yield() }
         let after = await harness.collector.snapshot()
         XCTAssertEqual(after.count, before)
         XCTAssertFalse(after.contains { $0.decodePayload(CovaSSETextEventDto.self)?.text == "late" })
@@ -91,14 +113,23 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
         await poller.enqueue(try planCards())
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let cycles = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            beforePoll: { await cycles.increment() }
+        )
 
         await sse.waitUntilOpened()
         await sse.send("event: thinking\ndata: {\"text\":\"a\"}\n\n")
-        await assertEventually { await harness.collector.snapshot().count >= 1 }
+        await harness.collector.waitForCount(1)
 
-        await advanceUntil(clock) { await harness.coordinator.degradationTrigger() == .silenceTimeout }
-        await advanceUntil(clock) { await planCardCount(harness.collector) == 2 }
+        // 帧已投递 → 静默定时器重排到 lastActivity+30：等它注册后再推进到该时刻。
+        await clock.advanceToNextDeadline(where: { $0 >= 30 })
+        await cycles.waitFor(1)
+
+        let trigger = await harness.coordinator.degradationTrigger()
+        XCTAssertEqual(trigger, .silenceTimeout)
+        await harness.collector.waitForPlanCardCount(2)
 
         await harness.coordinator.cancel()
         await awaitConsumer(harness.consumer)
@@ -111,16 +142,26 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
         await poller.enqueue(try planCards())
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let cycles = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            beforePoll: { await cycles.increment() }
+        )
 
         await sse.waitUntilOpened()
         for _ in 0..<3 {
             await sse.send("event: text\ndata: ###\n\n")
         }
-        await assertEventually { await harness.coordinator.degradationTrigger() == .malformedEvents(count: 3) }
+        // 第 3 个坏事件触发降级：轮询周期信号即「状态机已写入 polling 且已调度首轮」的边界。
+        await cycles.waitFor(1)
+
         let malformed = await harness.coordinator.malformedEventCount()
+        let trigger = await harness.coordinator.degradationTrigger()
+        let cycleCount = await harness.coordinator.scheduledPollCycleCount()
         XCTAssertEqual(malformed, 3)
-        await assertEventually { await planCardCount(harness.collector) == 2 }
+        XCTAssertEqual(trigger, .malformedEvents(count: 3))
+        XCTAssertEqual(cycleCount, 1)
+        await harness.collector.waitForPlanCardCount(2)
         let frames = await harness.collector.snapshot()
         XCTAssertFalse(frames.contains { $0.event == .text })
 
@@ -135,12 +176,18 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
         await poller.enqueue(try planCards())
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let cycles = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            beforePoll: { await cycles.increment() }
+        )
 
         await sse.waitUntilOpened()
         await sse.endStream()
-        await assertEventually { await harness.coordinator.degradationTrigger() == .eofBeforeDone }
-        await assertEventually { await planCardCount(harness.collector) == 2 }
+        await cycles.waitFor(1)
+        let trigger = await harness.coordinator.degradationTrigger()
+        XCTAssertEqual(trigger, .eofBeforeDone)
+        await harness.collector.waitForPlanCardCount(2)
 
         await harness.coordinator.cancel()
         await awaitConsumer(harness.consumer)
@@ -151,12 +198,18 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
         await poller.enqueue(try planCards())
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let cycles = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            beforePoll: { await cycles.increment() }
+        )
 
         await sse.waitUntilOpened()
         await sse.failStream(CovaAPIError.timeout)
-        await assertEventually { await harness.coordinator.degradationTrigger() == .eofBeforeDone }
-        await assertEventually { await planCardCount(harness.collector) == 2 }
+        await cycles.waitFor(1)
+        let trigger = await harness.coordinator.degradationTrigger()
+        XCTAssertEqual(trigger, .eofBeforeDone)
+        await harness.collector.waitForPlanCardCount(2)
 
         await harness.coordinator.cancel()
         await awaitConsumer(harness.consumer)
@@ -169,16 +222,24 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
         await poller.enqueue(try planCards())
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let cycles = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            beforePoll: { await cycles.increment() }
+        )
 
         await sse.waitUntilOpened()
         await sse.send("event: text\ndata: ###\n\n")
         await sse.send("event: text\ndata: ###\n\n")
-        await assertEventually { await harness.coordinator.malformedEventCount() == 2 }
         // 残帧（无空行收尾）→ EOF 处丢弃并计坏事件 → 达到阈值，降级原因应为 malformedEvents(3)。
         await sse.send("event: text\ndata: {\"text\":")
         await sse.endStream()
-        await assertEventually { await harness.coordinator.degradationTrigger() == .malformedEvents(count: 3) }
+        await cycles.waitFor(1)
+
+        let malformed = await harness.coordinator.malformedEventCount()
+        let trigger = await harness.coordinator.degradationTrigger()
+        XCTAssertEqual(malformed, 3)
+        XCTAssertEqual(trigger, .malformedEvents(count: 3))
 
         await harness.coordinator.cancel()
         await awaitConsumer(harness.consumer)
@@ -190,17 +251,24 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
         await poller.enqueue(try planCards())
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let cycles = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            beforePoll: { await cycles.increment() }
+        )
 
         await sse.waitUntilOpened()
         let long = String(repeating: "x", count: SSEFrameParser.maxLineBytes + 50)
         for _ in 0..<3 {
             await sse.send("event: text\ndata: \(long)\n\n")
         }
-        await assertEventually { await harness.coordinator.degradationTrigger() == .malformedEvents(count: 3) }
+        await cycles.waitFor(1)
+
         let malformed = await harness.coordinator.malformedEventCount()
+        let trigger = await harness.coordinator.degradationTrigger()
         XCTAssertEqual(malformed, 3)
-        await assertEventually { await planCardCount(harness.collector) == 2 }
+        XCTAssertEqual(trigger, .malformedEvents(count: 3))
+        await harness.collector.waitForPlanCardCount(2)
 
         await harness.coordinator.cancel()
         await awaitConsumer(harness.consumer)
@@ -214,17 +282,26 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let poller = FakePlanPoller()
         let card = try planCards()[0]
         await poller.enqueue([card])
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let cycles = SignalCounter()
+        let handled = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            beforePoll: { await cycles.increment() },
+            afterPoll: { await handled.increment() }
+        )
 
         await sse.waitUntilOpened()
         let json = String(decoding: try JSONEncoder().encode(card), as: UTF8.self)
         await sse.send("event: plan_card\ndata: \(json)\n\n")
-        await assertEventually { await planCardCount(harness.collector) == 1 }
+        await harness.collector.waitForPlanCardCount(1)
 
-        await advanceUntil(clock) { await poller.callCount() >= 1 }
-        for _ in 0..<300 { await Task.yield() }
-        let count = await planCardCount(harness.collector)
-        XCTAssertEqual(count, 1)
+        // 静默降级 → 首轮轮询返回同一张卡（已被 SSE 登记去重）：等该轮结束再断言不重发。
+        await clock.advanceToNextDeadline(where: { $0 >= 30 })
+        await cycles.waitFor(1)
+        await handled.waitFor(1)
+
+        let count = await harness.collector.planCardCount()
+        XCTAssertEqual(count, 1, "首轮轮询不得重复投递 SSE 已投递的计划卡")
 
         await harness.coordinator.cancel()
         await awaitConsumer(harness.consumer)
@@ -236,18 +313,22 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let clock = VirtualClock()
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let sseTaskEnded = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            afterSSE: { await sseTaskEnded.increment() }
+        )
 
         await sse.waitUntilOpened()
         await sse.send("event: done\ndata: {}\n\n")
         // 等消费者真正跑完（含最后一帧 append），避免状态位与投递之间的测试侧竞态（M4）。
-        await assertEventually { await harness.completed.isCompleted() }
+        await harness.completed.wait()
         let frames = await harness.collector.snapshot()
         XCTAssertEqual(frames.last?.event, .done)
 
-        // done 之后的正常 EOF 不降级、不轮询。
+        // SSE 消费任务退出（结束注入点信号）后仍不得降级、不得轮询。
         await sse.endStream()
-        for _ in 0..<200 { await Task.yield() }
+        await sseTaskEnded.waitFor(1)
         let calls = await poller.callCount()
         let trigger = await harness.coordinator.degradationTrigger()
         let phase = await harness.coordinator.currentPhase()
@@ -265,11 +346,10 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
 
         await sse.waitUntilOpened()
         await sse.send("event: error\ndata: {\"text\":\"boom\"}\n\n")
-        await assertEventually { await harness.completed.isCompleted() }
+        await harness.completed.wait()
         let frames = await harness.collector.snapshot()
         XCTAssertEqual(frames.last?.event, .error)
         XCTAssertEqual(frames.last?.decodePayload(CovaSSETextEventDto.self)?.text, "boom")
-        for _ in 0..<200 { await Task.yield() }
         let calls = await poller.callCount()
         XCTAssertEqual(calls, 0)
 
@@ -287,7 +367,7 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         await harness.coordinator.cancel()
         let phase = await harness.coordinator.currentPhase()
         XCTAssertEqual(phase, .finished)
-        await assertEventually { await sse.isTerminated() }
+        await sse.waitUntilTerminated()
         await awaitConsumer(harness.consumer)
         let calls = await poller.callCount()
         XCTAssertEqual(calls, 0)
@@ -311,7 +391,7 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
 
         // 首流未被遗弃：done 正常结束。
         await sse.send("event: done\ndata: {}\n\n")
-        await assertEventually { await harness.completed.isCompleted() }
+        await harness.completed.wait()
         let frames = await harness.collector.snapshot()
         XCTAssertEqual(frames.last?.event, .done)
         await awaitConsumer(harness.consumer)
@@ -380,8 +460,8 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         await harness.coordinator.cancel()
         let terminated = await harness.coordinator.isTerminated()
         XCTAssertTrue(terminated)
-        await assertEventually { await sse.isTerminated() }
-        await assertEventually { await harness.completed.isCompleted() }
+        await sse.waitUntilTerminated()
+        await harness.completed.wait()
         let frames = await harness.collector.snapshot()
         XCTAssertTrue(frames.isEmpty)
         await awaitConsumer(harness.consumer)
@@ -396,12 +476,12 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let poller = FakePlanPoller()
         let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
 
+        await clock.armNowGate()
         let startTask = Task { try await coordinator.start(sessionId: "s", agentRequest: try agentRequest()) }
-        await assertEventually { await clock.isNowBlocked() }
+        await clock.waitForBlockedNowCalls(1)
         await coordinator.cancel()
         await clock.openNowGate()
         let stream = try await startTask.value
-        for _ in 0..<300 { await Task.yield() }
 
         let calls = await sse.streamCalls()
         XCTAssertEqual(calls, 0, "start await 窗口内 cancel：不得发起 SSE 传输")
@@ -421,52 +501,59 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
         await poller.enqueue(try planCards())
+        let cycles = SignalCounter()
         let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
+        await coordinator.setBeforePollTaskStart { await cycles.increment() }
         let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
         let collector = FrameCollector()
         let consumer = Task { for await frame in stream { await collector.append(frame) } }
 
         await sse.waitUntilOpened()
-        await advanceUntil(clock) { await coordinator.currentPhase() == .polling }
+        await clock.advanceToNextDeadline(where: { $0 >= 10 })
+        await cycles.waitFor(1)
         let cyclesAtCancel = await coordinator.scheduledPollCycleCount()
         XCTAssertEqual(cyclesAtCancel, 1, "降级应恰好调度一个轮询周期")
 
         await coordinator.cancel()
         // 时间大幅推进也不得再调度新周期（取消已终止定时器 + 状态机终态）。
         await clock.advance(by: 10_000)
-        for _ in 0..<300 { await Task.yield() }
         let cyclesAfter = await coordinator.scheduledPollCycleCount()
         XCTAssertEqual(cyclesAfter, cyclesAtCancel, "cancel 返回后不得再调度新的轮询周期")
+        let sseCycles = await coordinator.scheduledSSECycleCount()
+        XCTAssertEqual(sseCycles, 1, "SSE 周期只调度一次，取消后不再新增")
 
         await awaitConsumer(consumer)
     }
 
     /// Minor-1（确定性注入点）：**轮询任务闭包内**的取消守卫阻止取消后进入 `pollPlans`。
     ///
-    /// 注入点让轮询任务停在守卫**之前**；cancel 后再放行 → 守卫必须直接返回。
-    /// （`performPoll` 方法入口的 `isFinished` 守卫不可达，已删除，不在此锁定。）
+    /// 注入点让轮询任务停在守卫**之前**；cancel 后再放行 → 守卫直接返回（任务体退出信号确认），
+    /// 计数必须为 0。（`performPoll` 方法入口的 `isFinished` 守卫不可达，已删除，不在此锁定。）
     func testPollTaskCancellationGuardPreventsCallAfterCancel() async throws {
         let clock = VirtualClock()
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
+        let reached = AsyncGate()
+        let release = AsyncGate()
+        let ended = SignalCounter()
         let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
-        let gate = AsyncGate()
-        await coordinator.setBeforePollTaskStart { await gate.wait() }
+        await coordinator.setBeforePollTaskStart { await reached.open(); await release.wait() }
+        await coordinator.setAfterPollTaskEnd { await ended.increment() }
 
         let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
         let collector = FrameCollector()
         let consumer = Task { for await frame in stream { await collector.append(frame) } }
 
         await sse.waitUntilOpened()
-        await advanceUntil(clock) { await coordinator.currentPhase() == .polling }
-        await assertEventually { await gate.isWaiting() }
+        await clock.advanceToNextDeadline(where: { $0 >= 10 })
+        await reached.wait()
 
         await coordinator.cancel()
-        await gate.open()
-        for _ in 0..<300 { await Task.yield() }
+        await release.open()
+        await ended.waitFor(1)
 
         let calls = await poller.callCount()
-        XCTAssertEqual(calls, 0, "取消后顶层守卫必须阻止本轮周期进入 pollPlans")
+        XCTAssertEqual(calls, 0, "取消后轮询任务守卫必须阻止进入 pollPlans")
         let cycles = await coordinator.scheduledPollCycleCount()
         XCTAssertEqual(cycles, 1)
         await awaitConsumer(consumer)
@@ -477,18 +564,21 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let clock = VirtualClock()
         let sse = FakeSSEStreamingTransport()
         let poller = FakePlanPoller()
+        let reached = AsyncGate()
+        let release = AsyncGate()
+        let ended = SignalCounter()
         let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: poller)
-        let gate = AsyncGate()
-        await coordinator.setBeforeSSETaskStart { await gate.wait() }
+        await coordinator.setBeforeSSETaskStart { await reached.open(); await release.wait() }
+        await coordinator.setAfterSSETaskEnd { await ended.increment() }
 
         let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
         let collector = FrameCollector()
         let consumer = Task { for await frame in stream { await collector.append(frame) } }
 
-        await assertEventually { await gate.isWaiting() }
+        await reached.wait()
         await coordinator.cancel()
-        await gate.open()
-        for _ in 0..<300 { await Task.yield() }
+        await release.open()
+        await ended.waitFor(1)
 
         let calls = await sse.streamCalls()
         XCTAssertEqual(calls, 0, "取消后 SSE 顶层守卫必须阻止发起传输")
@@ -519,11 +609,7 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
             switch result {
             case .success(let stream):
                 let collector = FrameCollector()
-                let completed = CompletionFlag()
-                let consumer = Task {
-                    for await frame in stream { await collector.append(frame) }
-                    await completed.mark()
-                }
+                let consumer = Task { for await frame in stream { await collector.append(frame) } }
                 await awaitConsumer(consumer)
                 let frames = await collector.snapshot()
                 XCTAssertTrue(frames.isEmpty, "第 \(iteration) 次：取消后不得投递帧")
@@ -535,7 +621,6 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
                 )
             }
 
-            for _ in 0..<300 { await Task.yield() }
             let terminated = await coordinator.isTerminated()
             XCTAssertTrue(terminated, "第 \(iteration) 次：协调器必须终态")
             let phase = await coordinator.currentPhase()
@@ -548,7 +633,7 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
             XCTAssertEqual(pollCycles, 0, "第 \(iteration) 次：取消后不得调度轮询周期")
             // D16②：若已授权发起过 SSE 传输，必须已终止。
             if await sse.isOpened() {
-                await assertEventually { await sse.isTerminated() }
+                await sse.waitUntilTerminated()
             }
         }
     }
@@ -567,7 +652,7 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
             async let cancelling: Void = harness.coordinator.cancel()
             _ = await (sending, cancelling)
 
-            await assertEventually { await harness.completed.isCompleted() }
+            await harness.completed.wait()
             let phase = await harness.coordinator.currentPhase()
             let calls = await poller.callCount()
             XCTAssertEqual(phase, .finished, "第 \(iteration) 次：cancel 不得被并发帧回退")
@@ -576,38 +661,60 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         }
     }
 
-    /// 同一降级动作不得重复发起轮询。
+    /// 一次降级只发起一个轮询周期：**坏事件帧与首个截止时刻并发**时，后到的一方不得再次降级。
     ///
-    /// 用极大 `pollInterval` 把「合法节拍轮询」排除出观测窗，口径只针对「并发 tick/坏事件导致的
-    /// 重复降级」——避免把跨过 5s 节拍的合法第二次轮询误判为重复（Minor-1）。
+    /// 确定性驱动：`GatedNowClock.armNowGate()` 把第 3 个坏事件帧停在「已读到时刻、尚未写状态机」处，
+    /// 让定时器先降级；再放行该帧，并以 SSE 任务退出信号确认它已被状态机处理（被 phase 守卫丢弃）。
+    /// 若降级不可幂等（如 `frameReceived` 丢失 phase 守卫），该帧会触发第二个轮询周期 → 断言红。
+    /// `pollInterval=1000` 把「合法节拍轮询」排除出观测窗，口径只针对并发触发源导致的重复降级。
     func testDegradeIsIdempotentUnderConcurrentTickAndMalformedFrame() async throws {
         let isolatedPolicy = OneStepDegradationPolicy(pollInterval: 1000)
         for iteration in 0..<100 {
-            let clock = VirtualClock(yields: 8)
+            let clock = GatedNowClock()
             let sse = FakeSSEStreamingTransport()
             let poller = FakePlanPoller()
             await poller.enqueue(try planCards())
             await poller.enqueue(try planCards())
             await poller.enqueue(try planCards())
-            let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller, policy: isolatedPolicy)
+            let cycles = SignalCounter()
+            let sseEnded = SignalCounter()
+            let harness = try await startCoordinator(
+                clock: clock, sse: sse, poller: poller, policy: isolatedPolicy,
+                afterSSE: { await sseEnded.increment() },
+                beforePoll: { await cycles.increment() }
+            )
             await sse.waitUntilOpened()
 
-            await sse.send("event: text\ndata: ###\n\n")
-            await sse.send("event: text\ndata: ###\n\n")
-            await assertEventually { await harness.coordinator.malformedEventCount() == 2 }
-            await assertEventually { await clock.pendingWaiterCount() > 0 }
+            // 第 1、2 个坏事件帧：逐个「拦住 → 放行」，确保按序写入状态机。
+            for index in 1...2 {
+                await clock.armNowGate()
+                await sse.send("event: text\ndata: ###\n\n")
+                await clock.waitForBlockedNowCalls(index)
+                await clock.openNowGate()
+            }
 
-            async let third: Void = sse.send("event: text\ndata: ###\n\n")
-            async let tick: Void = clock.advance(by: 10)
-            _ = await (third, tick)
+            // 第 3 个坏事件帧：拦住 → 让 10s 首个截止时刻先降级（真并发）→ 再放行该帧。
+            await clock.armNowGate()
+            await sse.send("event: text\ndata: ###\n\n")
+            await clock.waitForBlockedNowCalls(3)
+            let released = await clock.advanceToNextDeadline(where: { $0 >= 10 })
+            XCTAssertGreaterThanOrEqual(released, 1, "第 \(iteration) 次：推进必须放行首个截止时刻")
+            await cycles.waitFor(1)
 
-            await assertEventually { await poller.callCount() >= 1 }
-            for _ in 0..<300 { await Task.yield() }
-            let calls = await poller.callCount()
+            await clock.openNowGate()
+            // SSE 消费任务已因降级被取消：等它退出，即第 3 帧已被状态机处理完毕。
+            await sseEnded.waitFor(1)
+
+            let trigger = await harness.coordinator.degradationTrigger()
             let phase = await harness.coordinator.currentPhase()
-            XCTAssertEqual(calls, 1, "第 \(iteration) 次：同一次降级只能发起一次轮询")
+            let malformed = await harness.coordinator.malformedEventCount()
+            let observedCycles = await cycles.value()
+            let cycleCount = await harness.coordinator.scheduledPollCycleCount()
+            XCTAssertEqual(trigger, .firstEventTimeout, "第 \(iteration) 次：应由截止时刻降级")
             XCTAssertEqual(phase, .polling, "第 \(iteration) 次")
-            _ = await harness.collector.snapshot()
+            XCTAssertEqual(malformed, 2, "第 \(iteration) 次：降级后的坏事件帧必须被丢弃")
+            XCTAssertEqual(observedCycles, 1, "第 \(iteration) 次：同一次降级只能发起一次轮询")
+            XCTAssertEqual(cycleCount, 1, "第 \(iteration) 次")
 
             await harness.coordinator.cancel()
             await awaitConsumer(harness.consumer)
@@ -624,22 +731,36 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         await poller.enqueue(original)
         await poller.enqueue(original)
         await poller.enqueue([try changedPlanCard()])
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let cycles = SignalCounter()
+        let handled = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            beforePoll: { await cycles.increment() },
+            afterPoll: { await handled.increment() }
+        )
 
-        await assertEventually { await clock.pendingWaiterCount() > 0 }
-        await clock.advance(by: 10)
-        await assertEventually { await planCardCount(harness.collector) == 2 }
+        // 第一拍（t=10）：10s 无首事件 → 降级 → 首轮轮询。
+        await clock.advanceToNextDeadline(where: { $0 >= 10 })
+        await cycles.waitFor(1)
+        await handled.waitFor(1)
+        await harness.collector.waitForPlanCardCount(2)
 
-        // 第二个节拍：同一批卡不变 → 不重发。
-        await advanceUntil(clock) { await poller.callCount() >= 2 }
-        for _ in 0..<200 { await Task.yield() }
-        let countAfterSecondTick = await planCardCount(harness.collector)
+        // 第二拍（t=15）：同一批卡不变 → 不重发。
+        await clock.advanceToNextDeadline(where: { $0 >= 15 })
+        await cycles.waitFor(2)
+        await handled.waitFor(2)
+        let countAfterSecondTick = await harness.collector.planCardCount()
         XCTAssertEqual(countAfterSecondTick, 2)
 
-        // 第三个节拍：revision 变化 → 只补发变化的那张。
-        await advanceUntil(clock) { await planCardCount(harness.collector) == 3 }
+        // 第三拍（t=20）：revision 变化 → 只补发变化的那张。
+        await clock.advanceToNextDeadline(where: { $0 >= 20 })
+        await cycles.waitFor(3)
+        await handled.waitFor(3)
+        await harness.collector.waitForPlanCardCount(3)
         let calls = await poller.callCount()
+        let cycleCount = await harness.coordinator.scheduledPollCycleCount()
         XCTAssertEqual(calls, 3)
+        XCTAssertEqual(cycleCount, 3)
 
         await harness.coordinator.cancel()
         await awaitConsumer(harness.consumer)
@@ -651,16 +772,30 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let poller = FakePlanPoller()
         await poller.enqueue(failure: CovaAPIError.timeout)
         await poller.enqueue(try planCards())
-        let harness = try await startCoordinator(clock: clock, sse: sse, poller: poller)
+        let cycles = SignalCounter()
+        let handled = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: poller,
+            beforePoll: { await cycles.increment() },
+            afterPoll: { await handled.increment() }
+        )
 
-        await assertEventually { await clock.pendingWaiterCount() > 0 }
-        await clock.advance(by: 10)
-        await assertEventually { await poller.callCount() == 1 }
-        for _ in 0..<100 { await Task.yield() }
-        let afterFailure = await planCardCount(harness.collector)
+        // 第一拍（t=10）：降级 → 首轮失败（不结束会话、不投递）。
+        await clock.advanceToNextDeadline(where: { $0 >= 10 })
+        await cycles.waitFor(1)
+        await handled.waitFor(1)
+        let afterFailure = await harness.collector.planCardCount()
+        let callsAfterFailure = await poller.callCount()
         XCTAssertEqual(afterFailure, 0)
+        XCTAssertEqual(callsAfterFailure, 1)
 
-        await advanceUntil(clock) { await planCardCount(harness.collector) == 2 }
+        // 第二拍（t=15）：重试成功。
+        await clock.advanceToNextDeadline(where: { $0 >= 15 })
+        await cycles.waitFor(2)
+        await handled.waitFor(2)
+        await harness.collector.waitForPlanCardCount(2)
+        let callsAfterRetry = await poller.callCount()
+        XCTAssertEqual(callsAfterRetry, 2)
 
         await harness.coordinator.cancel()
         await awaitConsumer(harness.consumer)
@@ -672,31 +807,24 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let clock = VirtualClock()
         let sse = FakeSSEStreamingTransport()
         let gate = GatedPlanPoller(response: try planCards())
-        let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: gate)
-        let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
-        let collector = FrameCollector()
-        let completed = CompletionFlag()
-        let consumer = Task {
-            for await frame in stream { await collector.append(frame) }
-            await completed.mark()
-        }
+        let harness = try await startCoordinator(clock: clock, sse: sse, poller: gate)
 
         await sse.waitUntilOpened()
-        await advanceUntil(clock) { await gate.callCount() == 1 }
+        await clock.advanceToNextDeadline(where: { $0 >= 10 })
+        await gate.waitForCalls(1)
 
         // 回包被闸门拦住：此刻 cancel 与回包并发。
-        await coordinator.cancel()
+        await harness.coordinator.cancel()
         await gate.release()
-        await assertEventually { await completed.isCompleted() }
-        for _ in 0..<200 { await Task.yield() }
+        await harness.completed.wait()
 
-        let frames = await collector.snapshot()
+        let frames = await harness.collector.snapshot()
         XCTAssertTrue(frames.isEmpty, "取消后不得投递轮询结果")
-        let phase = await coordinator.currentPhase()
+        let phase = await harness.coordinator.currentPhase()
         XCTAssertEqual(phase, .finished)
         let calls = await gate.callCount()
         XCTAssertEqual(calls, 1, "不得重复降级/重复轮询")
-        await awaitConsumer(consumer)
+        await awaitConsumer(harness.consumer)
     }
 
     /// Minor-2：慢回包（耗时远超 5s 节拍）完成后不得立即背靠背补发下一次轮询。
@@ -704,31 +832,37 @@ final class OneStepStreamCoordinatorTests: XCTestCase {
         let clock = VirtualClock()
         let sse = FakeSSEStreamingTransport()
         let gate = GatedPlanPoller(response: try planCards())
-        let coordinator = OneStepStreamCoordinator(clock: clock, transport: sse, poller: gate)
-        let stream = try await coordinator.start(sessionId: "s", agentRequest: try agentRequest())
-        let collector = FrameCollector()
-        let completed = CompletionFlag()
-        let consumer = Task {
-            for await frame in stream { await collector.append(frame) }
-            await completed.mark()
-        }
+        let handled = SignalCounter()
+        let harness = try await startCoordinator(
+            clock: clock, sse: sse, poller: gate,
+            afterPoll: { await handled.increment() }
+        )
 
         await sse.waitUntilOpened()
-        await advanceUntil(clock) { await gate.callCount() == 1 }   // 降级首轮，回包被闸门拦住
+        await clock.advanceToNextDeadline(where: { $0 >= 10 })   // 降级（t=10）：首轮在途
+        await gate.waitForCalls(1)
+        // 轮询在途期间不得存在定时器（awaitingPoll 语义：不会出现并发节拍）。
+        let pendingWhileInFlight = await clock.pendingWaiterCount()
+        XCTAssertEqual(pendingWhileInFlight, 0, "轮询在途期间不得存在定时器")
 
         // 时间跳跃远超 5s（回包仍未返回）。
         await clock.advance(by: 100)
+        let callsAfterJump = await gate.callCount()
+        XCTAssertEqual(callsAfterJump, 1, "无定时器时时间跳跃不得触发新轮询")
+
         await gate.releaseOne()
-        for _ in 0..<300 { await Task.yield() }
+        await handled.waitFor(1)                                  // 回包完成于 t=110
         let callsAfterSlowResponse = await gate.callCount()
         XCTAssertEqual(callsAfterSlowResponse, 1, "慢回包完成后不得立即背靠背补发")
 
         // 完成时刻起算 5s 后才允许下一拍。
-        await clock.advance(by: 5)
-        await advanceUntil(clock) { await gate.callCount() == 2 }
+        await clock.advanceToNextDeadline(where: { $0 >= 115 })
+        await gate.waitForCalls(2)
+        let callsAfterNextTick = await gate.callCount()
+        XCTAssertEqual(callsAfterNextTick, 2)
 
-        await coordinator.cancel()
-        await awaitConsumer(consumer)
+        await harness.coordinator.cancel()
+        await awaitConsumer(harness.consumer)
     }
 }
 
@@ -786,10 +920,12 @@ final class HTTPOneStepPlanPollerTests: XCTestCase {
             HTTPResponse(statusCode: 200, body: body)
         }
         let poller = HTTPOneStepPlanPoller(transport: transport)
-        let gate = AsyncGate()
+        let reached = AsyncGate()
+        let release = AsyncGate()
 
         let task = Task { () -> Bool in
-            await gate.wait()
+            await reached.open()
+            await release.wait()
             do {
                 _ = try await poller.pollPlans(sessionId: "s-1")
                 return false
@@ -797,9 +933,9 @@ final class HTTPOneStepPlanPollerTests: XCTestCase {
                 return error is CancellationError || (error as? CovaAPIError) == .cancelled
             }
         }
-        await assertEventually { await gate.isWaiting() }
+        await reached.wait()
         task.cancel()
-        await gate.open()
+        await release.open()
 
         let cancelled = await task.value
         XCTAssertTrue(cancelled, "已取消任务应抛 CancellationError/.cancelled")

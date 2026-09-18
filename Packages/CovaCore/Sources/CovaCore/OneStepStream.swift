@@ -261,10 +261,16 @@ public actor OneStepStreamCoordinator {
     private var scheduledSSECycles = 0
     private var scheduledPollCycles = 0
 
-    /// 测试专用注入点：在 SSE / 轮询任务体开始、取消守卫之前 await（生产恒 nil；TD-34）。
-    /// 用于确定性锁定「顶层取消守卫阻止了新一轮传输调用」。
+    /// 测试专用注入点：在 SSE / 轮询任务体**开始**（取消守卫之前）与**结束**（正常返回或
+    /// 被守卫提前返回）时 await（生产恒 nil；TD-34）。
+    ///
+    /// - `before*TaskStart` 用于确定性锁定「顶层取消守卫阻止了新一轮传输调用」；
+    /// - `after*TaskEnd` 用于给「任务体已退出」提供可等待边界（取消守卫的直接返回路径不产生
+    ///   任何其它可观测副作用，仅靠信号量无法判定其已执行完毕）。
     private var beforeSSETaskStart: (@Sendable () async -> Void)?
     private var beforePollTaskStart: (@Sendable () async -> Void)?
+    private var afterSSETaskEnd: (@Sendable () async -> Void)?
+    private var afterPollTaskEnd: (@Sendable () async -> Void)?
 
     public init(
         clock: any CovaClock,
@@ -353,6 +359,14 @@ public actor OneStepStreamCoordinator {
     func setBeforePollTaskStart(_ hook: (@Sendable () async -> Void)?) {
         beforePollTaskStart = hook
     }
+
+    func setAfterSSETaskEnd(_ hook: (@Sendable () async -> Void)?) {
+        afterSSETaskEnd = hook
+    }
+
+    func setAfterPollTaskEnd(_ hook: (@Sendable () async -> Void)?) {
+        afterPollTaskEnd = hook
+    }
     public func degradationTrigger() -> OneStepDegradationTrigger? { machine?.degradedBy }
     public func malformedEventCount() -> Int { machine?.malformedEventCount ?? 0 }
 
@@ -360,10 +374,12 @@ public actor OneStepStreamCoordinator {
 
     private func startSSE(_ request: HTTPRequest) {
         scheduledSSECycles += 1
-        let hook = beforeSSETaskStart
+        let before = beforeSSETaskStart
+        let after = afterSSETaskEnd
         sseTask = Task { [weak self] in
-            await hook?()
+            await before?()
             await self?.consume(request)
+            await after?()
         }
     }
 
@@ -443,19 +459,22 @@ public actor OneStepStreamCoordinator {
         pollTask?.cancel()
         let poller = self.poller
         let sessionId = self.sessionId
-        let hook = beforePollTaskStart
+        let before = beforePollTaskStart
+        let after = afterPollTaskEnd
         pollTask = Task { [weak self] in
-            await hook?()
+            await before?()
             // 任务级取消守卫：取消后不得进入本轮周期（其结果也不得投递）。
-            guard !Task.isCancelled else { return }
-            do {
-                let cards = try await poller.pollPlans(sessionId: sessionId)
-                guard !Task.isCancelled else { return }
-                await self?.receivePoll(cards)
-            } catch {
-                guard !Task.isCancelled else { return }
-                await self?.receivePollFailure()
+            // 语义与 `guard !Task.isCancelled else { return }` 等价；改为 `if` 只为让结束注入点
+            // 在「被守卫提前返回」路径上同样触发（生产恒 nil，行为不变；TD-34）。
+            if !Task.isCancelled {
+                do {
+                    let cards = try await poller.pollPlans(sessionId: sessionId)
+                    if !Task.isCancelled { await self?.receivePoll(cards) }
+                } catch {
+                    if !Task.isCancelled { await self?.receivePollFailure() }
+                }
             }
+            await after?()
         }
     }
 
