@@ -67,9 +67,10 @@ targets:
         # → 0.2.19/30 G3-d 取消语义有界化（D16：周期停止/在途取消；TD-34 测试注入点）
         # → 0.2.20/31 G3-d 六审修复（M-1 去 flake 断言 / Minor-1 死守卫清理 / Minor-2 覆盖补齐 / Minor-3 TD-34）
         # → 0.2.21/32 G3-d 七审：全仓清扫轮询/传输取消竞态断言 + StubURLProtocol 静态状态加锁
-        # → 0.2.22/33 G3-d 八审：协调器测试套件确定性化（信号式等待 + 定时器注册推进原语 + TD-34 结束注入点）
-        CFBundleShortVersionString: "0.2.22"
-        CFBundleVersion: "33"
+        # → 0.2.22/33 G3-d 九审修复：协调器测试套件确定性化（信号式等待 + 定时器注册推进原语 + TD-34 结束注入点）
+        # → 0.2.23/34 G3-d 十审通过落证（零 Critical/Major；130000 执行 0 flake；TD-35/36/37 登记）
+        CFBundleShortVersionString: "0.2.23"
+        CFBundleVersion: "34"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
