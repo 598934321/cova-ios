@@ -71,8 +71,9 @@ targets:
         # → 0.2.23/34 G3-d 十审通过落证（零 Critical/Major；130000 执行 0 flake；TD-35/36/37 登记）
         # → 0.2.24/35 HANDOVER 落证 G1 方向稿产出（待用户验收）
         # → 0.2.25/36 门禁新增「播放器层无 UI」不变量（硬边界 8 机械化 + 源集合非空反向守卫）
-        CFBundleShortVersionString: "0.2.25"
-        CFBundleVersion: "36"
+        # → 0.2.26/37 轨道 B：G2 逐屏规格 04–18（18 份）+ inventory 链接与裁决口径
+        CFBundleShortVersionString: "0.2.26"
+        CFBundleVersion: "37"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
