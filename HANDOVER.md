@@ -282,6 +282,31 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
 
 ## 9. 当前未完成工作与续跑指引
 
+### G3-e CovaPlayer 在途（2026-09-21 协调者停放，**未验收**）
+- **环 1+环 2 已入库**：`8b9d0c1`（15 源文件 / 253 条测试）。协调者独立复跑
+  `./Scripts/check.sh` = **EXIT=0（已扩到十步）**：CovaTests 2、CovaCore 372（95.28%）、
+  CovaPlayerTests 253 passed / 0 failed、**CovaPlayer 行覆盖 2207/2407 = 91.69%**
+  （TD-1 清偿：走 xccov 逐文件行数据，读不到即 fail-closed，阈值只允许抬高）。
+  推导与状态规则裁决表在 `docs/log/20260921.md`。
+- **环 3 隔离评审已跑，结论是「不通过」**：评审实例自建的 8 条对抗探针全失败 → 6 个缺陷：
+  P1/P1b/P1c 失败后状态谎报 `.playing`（引擎未装载任何条目）、P2 过期装载回写竞态、
+  P3 `teardown` 后队列变更复活播放器、P4 迟到的重复 `ended` 多跳一首。
+  证据：`.build/check/test-player-ios.log` + `Packages/CovaPlayer/Tests/CovaPlayerTests/ZZReviewProbeTests.swift`。
+- **环 4 修复实例在跑**（本手册更新时未回传）。
+- ⚠️ **接手第一件必做的事**：`Packages/CovaPlayer/Tests/CovaPlayerTests/ZZReviewProbeTests.swift`
+  是评审的临时取证物，**未跟踪、不得入 git**；它会被 SwiftPM 编进测试，导致门禁
+  「261 跑 8 失败」的**误红**。先确认环 4 已把等价断言转成永久测试，再删除该文件，然后跑门禁。
+- ⚠️ 版本递增失守已前滚修正：`abbd3f2` 的提交信息声称递增到 `0.2.28/39`，但 pathspec
+  形式的 `git commit -- <path>` **不纳入未跟踪文件**，那次提交实际没改 `project.yml`
+  （与 `8b9d0c1` 共用 `0.2.27/38`）。本 commit 补到 `0.2.28/39`。
+  同一原因也让 18 份 G2 规格一度裸在工作树，已由 `abbd3f2` 补提交（现 `design/screens/` 22 个跟踪文件）。
+- 剩余路径：环 4 修完 → **环 3 复审**（又一个全新隔离实例，带上轮 findings 作待攻击弱点清单，
+  判据仍是零 Critical / 零 Major）→ 环 5 落证（勾 `docs/PLAN.md` G3 项、更新本手册
+  §0/§3（8→10 步 + 播放器无 UI 不变量）/§7（TD-1 清偿 + 新 TD）、登记设计实例上报的
+  7 项 NEEDS 候选、版本递增）→ 模拟器刷终态产物再截图。
+- 外部阻塞不变：G1 Figma 验收（UI 禁令解除条件）、G2 画板需 Figma MCP（CLI 会话 0 工具）、
+  NEEDS-1 / NEEDS-2 / NEEDS-4。
+
 ### G3-d 已验收（2026-09-20 落证）
 - 收尾 commit：`f39cfa9`（协调器测试套件确定性化：信号式等待 + 定时器注册推进原语
   `advanceToNextDeadline` + TD-34 结束注入点 `setAfterSSETaskEnd`/`setAfterPollTaskEnd`）。
