@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # 本地门禁（G0–G4 全程复用，fail-closed）：
-#   0 预热模拟器 → 1 生成工程 → 2 结构/语言模式/工程依赖令牌 → 3 依赖图 + 平台中立性不变量
+#   0 预热模拟器 → 1 生成工程 → 2 结构/语言模式/工程依赖令牌 → 3 依赖图 + 平台中立性 + 播放器无 UI 不变量
 #   → 4 有效构建设置（配置×SDK）+ clean build + 实际编译语言版本 + 产物保真
 #   → 5 应用测试（xcresult passed/failed）+ xccov 采集有效性 → 6 核心层 iOS 测试
 #   → 7 核心层覆盖率（SwiftPM 插桩，含编译集合一致性与实际语言版本断言）
+#   → 8 播放器层 iOS 测试（xcresult passed/failed，采集覆盖率）
+#   → 9 播放器层行覆盖率（xccov 逐文件行数据，含编译集合一致性断言）
 #
 # 判定方法论（第五轮评审裁决）：
 #   * 能用机器可读产物表达的事实，一律不得用文本正则判定：
@@ -40,6 +42,8 @@ BUILD_MARKER="$LOG_DIR/.build-start-marker"
 APP_BUNDLE="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/Cova.app"
 RESULT_BUNDLE="$LOG_DIR/Cova.xcresult"
 CORE_RESULT_BUNDLE="$LOG_DIR/CovaCoreTests.xcresult"
+PLAYER_RESULT_BUNDLE="$LOG_DIR/CovaPlayerTests.xcresult"
+PLAYER_PACKAGE_DERIVED_DATA="$LOG_DIR/DerivedData-CovaPlayer"
 BASELINE_FILE="$ROOT/Scripts/test-count-baseline.env"
 mkdir -p "$LOG_DIR"
 
@@ -53,6 +57,7 @@ SETTINGS_SDKS="iphonesimulator iphoneos"
 # 覆盖率阈值：常量基准，环境变量只允许抬高（防止把门禁调到 0 绕过）
 COVERAGE_FLOOR=80
 CORE_COVERAGE_MIN="$COVERAGE_FLOOR"
+PLAYER_COVERAGE_MIN="$COVERAGE_FLOOR"
 
 # 钉死的关键配置（D1 / D13 / AGENTS 版本规则）
 REQUIRED_APP_BUNDLE_ID="cn.covalink.ios"
@@ -81,7 +86,17 @@ if [ -n "${COVA_CORE_COVERAGE_MIN:-}" ]; then
   [ "$COVA_CORE_COVERAGE_MIN" -ge "$COVERAGE_FLOOR" ] \
     || fail "COVA_CORE_COVERAGE_MIN=${COVA_CORE_COVERAGE_MIN} < 基准 ${COVERAGE_FLOOR}：阈值只允许抬高，拒绝执行"
   CORE_COVERAGE_MIN="$COVA_CORE_COVERAGE_MIN"
-  echo "提示：覆盖率阈值被抬高到 ${CORE_COVERAGE_MIN}%（基准 ${COVERAGE_FLOOR}%）"
+  echo "提示：核心层覆盖率阈值被抬高到 ${CORE_COVERAGE_MIN}%（基准 ${COVERAGE_FLOOR}%）"
+fi
+
+if [ -n "${COVA_PLAYER_COVERAGE_MIN:-}" ]; then
+  case "$COVA_PLAYER_COVERAGE_MIN" in
+    ''|*[!0-9]*) fail "COVA_PLAYER_COVERAGE_MIN 必须是整数，收到 '${COVA_PLAYER_COVERAGE_MIN}'" ;;
+  esac
+  [ "$COVA_PLAYER_COVERAGE_MIN" -ge "$COVERAGE_FLOOR" ] \
+    || fail "COVA_PLAYER_COVERAGE_MIN=${COVA_PLAYER_COVERAGE_MIN} < 基准 ${COVERAGE_FLOOR}：阈值只允许抬高，拒绝执行"
+  PLAYER_COVERAGE_MIN="$COVA_PLAYER_COVERAGE_MIN"
+  echo "提示：播放器层覆盖率阈值被抬高到 ${PLAYER_COVERAGE_MIN}%（基准 ${COVERAGE_FLOOR}%）"
 fi
 
 # 测试数量下限来自入库基线文件（删测试必须显式改它，随 commit 进入审查）
@@ -90,8 +105,12 @@ fi
 . "$BASELINE_FILE"
 case "${APP_MIN:-}" in ''|*[!0-9]*) fail "基线 APP_MIN 非法：'${APP_MIN:-}'" ;; esac
 case "${CORE_MIN:-}" in ''|*[!0-9]*) fail "基线 CORE_MIN 非法：'${CORE_MIN:-}'" ;; esac
+case "${PLAYER_MIN:-}" in ''|*[!0-9]*) fail "基线 PLAYER_MIN 非法：'${PLAYER_MIN:-}'" ;; esac
 [ "$APP_MIN" -ge 1 ] || fail "基线 APP_MIN=${APP_MIN} 必须 >= 1（零测试不允许）"
 [ "$CORE_MIN" -ge 1 ] || fail "基线 CORE_MIN=${CORE_MIN} 必须 >= 1（零测试不允许）"
+# 播放器层是 G3 交付物之一，下限单独收紧（与 test-count-baseline.env 的注释口径一致）：
+# 30 = 「队列 / 循环 / ±15s / 中断映射 / 上报去重 / 私有音频」六类规则的最小可断言面。
+[ "$PLAYER_MIN" -ge 30 ] || fail "基线 PLAYER_MIN=${PLAYER_MIN} 必须 >= 30（播放器层最小可断言面）"
 
 allowed_deps() {
   case "$1" in
@@ -132,13 +151,13 @@ assert_tests() { # label "passed failed skipped" baseline
     || fail "${label}：passed=${p} < 基线 ${baseline}（skipped 不计入，不得删除/弱化既有测试）"
 }
 
-echo "==> 0/8 预热模拟器（${SIM_NAME}）"
+echo "==> 0/10 预热模拟器（${SIM_NAME}）"
 xcrun simctl bootstatus "$SIM_NAME" -b >/dev/null
 
-echo "==> 1/8 生成工程（XcodeGen $(xcodegen --version | awk '{print $NF}')）"
+echo "==> 1/10 生成工程（XcodeGen $(xcodegen --version | awk '{print $NF}')）"
 xcodegen generate --spec project.yml
 
-echo "==> 2/8 校验工程结构、语言模式与工程依赖令牌"
+echo "==> 2/10 校验工程结构、语言模式与工程依赖令牌"
 test -f project.yml || fail "缺少 project.yml"
 test -f Config/Info.plist || fail "缺少 Config/Info.plist"
 test -f Cova/CovaApp.swift || fail "缺少 Cova/CovaApp.swift"
@@ -204,7 +223,7 @@ for pkg in $PACKAGES; do
 done
 echo "    结构校验通过（4 个本地包、语言模式 6、无远程包/框架/二进制制品）"
 
-echo "==> 3/8 依赖图（dump-package）+ 核心层平台中立性 + 播放器无 UI 不变量"
+echo "==> 3/10 依赖图（dump-package）+ 核心层平台中立性 + 播放器无 UI 不变量"
 violations=0
 for pkg in $PACKAGES; do
   load_dump "$pkg" || fail "无法获取 Packages/$pkg 的 dump-package"
@@ -287,7 +306,7 @@ PLAYER_SRC_COUNT="$(find Packages/CovaPlayer/Sources -name '*.swift' -type f 2>/
 [ "$violations" -eq 0 ] || fail "依赖方向 / 平台中立性 / 播放器无 UI 不变量校验未通过"
 echo "    依赖图与不变量校验通过（CovaCore 无字面 #if 与 iOS-only 令牌；CovaPlayer ${PLAYER_SRC_COUNT} 个源文件且无 UI import）"
 
-echo "==> 4/8 有效构建设置（配置×SDK）+ clean build + 实际编译语言版本 + 产物保真"
+echo "==> 4/10 有效构建设置（配置×SDK）+ clean build + 实际编译语言版本 + 产物保真"
 eff() {
   { grep -E "^[[:space:]]+$2 = " "$1" || true; } | head -1 | sed -E "s/^[[:space:]]+$2 = //"
 }
@@ -408,7 +427,7 @@ ACT_BG_MODE="$(plist UIBackgroundModes:0)"
 [ "$ACT_BG_MODE" = "audio" ] || fail "产物 UIBackgroundModes[0]=${ACT_BG_MODE}，应为 audio（D4）"
 echo "    产物保真：${ACT_BUNDLE_ID} ${ACT_VERSION}(${ACT_BUILD}) minOS=${ACT_MIN_OS} bg=${ACT_BG_MODE}"
 
-echo "==> 5/8 应用工程测试（CovaTests，iOS Simulator）"
+echo "==> 5/10 应用工程测试（CovaTests，iOS Simulator）"
 rm -rf "$RESULT_BUNDLE"
 if ! xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
   -destination "$DESTINATION" -derivedDataPath "$DERIVED_DATA" -resultBundlePath "$RESULT_BUNDLE" \
@@ -428,7 +447,7 @@ MAX_EXEC_LINES="$( { grep -oE '\([0-9]+/[0-9]+\)' "$LOG_DIR/xccov.txt" || true; 
   || fail "覆盖率报告无任何含可执行行的 target（全部 0/0）——采集实际未生效"
 echo "    xccov 采集有效：target 数 $(grep -cE '^Cova' "$LOG_DIR/xccov.txt")，最大可执行行数 ${MAX_EXEC_LINES}"
 
-echo "==> 6/8 核心层包测试（CovaCoreTests，iOS Simulator）"
+echo "==> 6/10 核心层包测试（CovaCoreTests，iOS Simulator）"
 rm -rf "$CORE_RESULT_BUNDLE"
 if ! (cd Packages/CovaCore && xcodebuild -scheme CovaCore -configuration Debug \
   -destination "$DESTINATION" -derivedDataPath "$PACKAGE_DERIVED_DATA" \
@@ -442,9 +461,9 @@ fi
 CORE_IOS_COUNTS="$(xcresult_counts "$CORE_RESULT_BUNDLE" || true)"
 assert_tests "CovaCoreTests(iOS)" "$CORE_IOS_COUNTS" "$CORE_MIN"
 
-echo "==> 7/8 核心层行覆盖率（SwiftPM 插桩 + llvm-cov，阈值 ${CORE_COVERAGE_MIN}%）"
+echo "==> 7/10 核心层行覆盖率（SwiftPM 插桩 + llvm-cov，阈值 ${CORE_COVERAGE_MIN}%）"
 echo "    说明：Xcode 不为本地 SwiftPM 包目标产出 xccov 覆盖率，故由 SwiftPM 插桩测量；"
-echo "          被测源码与 iOS 运行同一份，平台中立性已由 3/8 不变量强制。"
+echo "          被测源码与 iOS 运行同一份，平台中立性已由 3/10 不变量强制。"
 rm -rf Packages/CovaCore/.build
 if ! swift test --package-path Packages/CovaCore --enable-code-coverage -v \
   > "$LOG_DIR/test-core-coverage.log" 2>&1; then
@@ -544,5 +563,76 @@ COV_PCT="$(awk -v c="$COV_COVERED" -v t="$COV_TOTAL" 'BEGIN { printf "%.2f", 100
 echo "    CovaCore 行覆盖率：${COV_COVERED}/${COV_TOTAL} = ${COV_PCT}%"
 awk -v p="$COV_PCT" -v m="$CORE_COVERAGE_MIN" 'BEGIN { exit !(p >= m) }' \
   || fail "核心层行覆盖率 ${COV_PCT}% < 阈值 ${CORE_COVERAGE_MIN}%"
+
+echo "==> 8/10 播放器层包测试（CovaPlayerTests，iOS Simulator，同时采集行覆盖率）"
+# 与 6/10 同口径（xcresult 只认 passed、failed 必须为 0、下限读基线文件）。
+# 刻意带 -enableCodeCoverage YES：9/10 复用**同一次真实运行**的覆盖率产物，
+# 避免「测试跑一遍、覆盖率再跑一遍」造成的双份事实（也避免两次运行结果不一致时无从判断）。
+rm -rf "$PLAYER_RESULT_BUNDLE"
+if ! (cd Packages/CovaPlayer && xcodebuild -scheme CovaPlayer -configuration Debug \
+  -destination "$DESTINATION" -derivedDataPath "$PLAYER_PACKAGE_DERIVED_DATA" \
+  -enableCodeCoverage YES \
+  -resultBundlePath "$PLAYER_RESULT_BUNDLE" \
+  test > "$LOG_DIR/test-player-ios.log" 2>&1); then
+  echo "播放器层测试失败，日志尾部（完整日志 ${LOG_DIR}/test-player-ios.log）："
+  tail -60 "$LOG_DIR/test-player-ios.log"
+  exit 1
+fi
+{ grep -E "^\*\* TEST (SUCCEEDED|FAILED) \*\*" "$LOG_DIR/test-player-ios.log" || true; } | tail -1
+PLAYER_IOS_COUNTS="$(xcresult_counts "$PLAYER_RESULT_BUNDLE" || true)"
+assert_tests "CovaPlayerTests(iOS)" "$PLAYER_IOS_COUNTS" "$PLAYER_MIN"
+
+echo "==> 9/10 播放器层行覆盖率（xccov 逐文件行数据，阈值 ${PLAYER_COVERAGE_MIN}%）"
+echo "    说明：播放器层是 iOS-only（AVAudioSession / AVPlayer / MediaPlayer），无法沿用 7/10 的"
+echo "          macOS 宿主 SwiftPM 插桩口径；实测「-enableCodeCoverage YES」的模拟器运行会让 xccov"
+echo "          产出本地 SwiftPM 包目标的逐文件行数（见 docs/log/20260921.md §TD-1 实测），故直接取"
+echo "          该 target 行作为行覆盖率；读不到数据一律 fail-closed，阈值只允许抬高。"
+xcrun xccov view --report "$PLAYER_RESULT_BUNDLE" > "$LOG_DIR/player-xccov.txt" 2>/dev/null \
+  || fail "无法读取播放器层覆盖率报告（-enableCodeCoverage 未生效？）"
+
+# 分母可信性（口径同 7/10 的「编译集合 == 源集合」双向校验）：
+# 报告里的百分比只覆盖「真正被编译的文件」；若有人用 exclude:/sources: 把难覆盖文件请出编译集合，
+# 分母会静默变小而百分比虚高 —— 故以 CovaPlayer 目标的 .SwiftFileList 为权威，与源目录全集双向比对。
+PLAYER_FL="$(find "$PLAYER_PACKAGE_DERIVED_DATA" -name 'CovaPlayer.SwiftFileList' 2>/dev/null | head -1)"
+[ -n "$PLAYER_FL" ] || fail "未找到 CovaPlayer 目标的编译文件清单（CovaPlayer.SwiftFileList）"
+PLAYER_COMPILED="$( { while IFS= read -r l; do [ -n "$l" ] || continue; realpath "$(printf '%s' "$l" | sed 's/\\ / /g')"; done < "$PLAYER_FL"; } | sort -u )"
+# 源集合：Sources 下全部 .swift（排除点号路径分量，SwiftPM 不编译点号目录）；Tests/ 本就不在 Sources 下。
+PLAYER_SOURCES="$(find Packages/CovaPlayer/Sources -name '*.swift' -type f -not -path '*/.*' 2>/dev/null \
+  | while IFS= read -r f; do realpath "$f"; done | sort -u)"
+[ -n "$PLAYER_COMPILED" ] || fail "CovaPlayer 编译集合为空（.SwiftFileList 无可读条目）"
+[ -n "$PLAYER_SOURCES" ] || fail "CovaPlayer/Sources 下 .swift 集合为空"
+if [ "$PLAYER_COMPILED" != "$PLAYER_SOURCES" ]; then
+  echo "    仅被编译、不在源目录（realpath 后）："
+  comm -23 <(printf '%s\n' "$PLAYER_COMPILED") <(printf '%s\n' "$PLAYER_SOURCES") | head -5 | sed 's/^/      /'
+  echo "    仅在源目录、未被编译："
+  comm -13 <(printf '%s\n' "$PLAYER_COMPILED") <(printf '%s\n' "$PLAYER_SOURCES") | head -5 | sed 's/^/      /'
+  fail "CovaPlayer 编译集合与源目录 .swift 全集不一致（exclude/包外源文件均不允许）"
+fi
+echo "    编译集合与源集合双向一致：$(printf '%s\n' "$PLAYER_COMPILED" | wc -l | tr -d ' ') 个文件"
+
+# 目标行：报告首列为 target 名（文件行有前导缩进），Tests target 名为 CovaPlayerTests，
+# 故 '^CovaPlayer[[:space:]]' 唯一命中被测 target；分母天然只含 Sources（Tests 属另一个 target）。
+# 用 awk 而非 sed 取数：sed 的贪婪 `.*` 会把 "91.69%" 截成 "9%"（实测踩到），
+# 这里按「以 % 结尾的字段 + 紧随其后的 (covered/total) 字段」定位，形状不符即出 0（fail-closed）。
+PLAYER_COVERAGE="$({ grep -E '^CovaPlayer[[:space:]]' "$LOG_DIR/player-xccov.txt" || true; } | head -1 | awk '
+  { for (i = 1; i <= NF; i++) if ($i ~ /%$/ && $(i + 1) ~ /^\([0-9]+\/[0-9]+\)$/) { pct = $i; pair = $(i + 1) } }
+  END {
+    if (pct == "" || pair == "") { print "0 0 0"; exit }
+    sub(/%$/, "", pct); gsub(/[()]/, "", pair); split(pair, a, "/")
+    print a[1], a[2], pct
+  }
+')"
+read -r PLAYER_COVERED PLAYER_TOTAL PLAYER_PCT <<< "${PLAYER_COVERAGE:-0 0 0}" || true
+case "${PLAYER_TOTAL:-}" in ''|*[!0-9]*) fail "播放器层覆盖率不可读（值='${PLAYER_COVERAGE:-}'）" ;; esac
+[ "${PLAYER_TOTAL:-0}" -gt 0 ] \
+  || fail "播放器层可执行行数为 0 —— 覆盖率实际未采集，不可判定为通过"
+# 反向守卫：报告必须真的点名了 Sources 下的文件（防止 target 行来自别的产物）。
+PLAYER_COV_FILES="$( { grep -oE 'Packages/CovaPlayer/Sources/[^[:space:]]+\.swift' "$LOG_DIR/player-xccov.txt" || true; } | sort -u | wc -l | tr -d ' ' )"
+[ "${PLAYER_COV_FILES:-0}" -gt 0 ] \
+  || fail "播放器层覆盖率报告未点名任何 Packages/CovaPlayer/Sources 源文件"
+echo "    覆盖率运行有效：target CovaPlayer ${PLAYER_COVERED}/${PLAYER_TOTAL} 行，逐文件行数据覆盖 ${PLAYER_COV_FILES} 个源文件"
+echo "    CovaPlayer 行覆盖率：${PLAYER_COVERED}/${PLAYER_TOTAL} = ${PLAYER_PCT}%"
+awk -v p="$PLAYER_PCT" -v m="$PLAYER_COVERAGE_MIN" 'BEGIN { exit !(p >= m) }' \
+  || fail "播放器层行覆盖率 ${PLAYER_PCT}% < 阈值 ${PLAYER_COVERAGE_MIN}%"
 
 echo "✅ check.sh 全部通过"

@@ -72,8 +72,10 @@ targets:
         # → 0.2.24/35 HANDOVER 落证 G1 方向稿产出（待用户验收）
         # → 0.2.25/36 门禁新增「播放器层无 UI」不变量（硬边界 8 机械化 + 源集合非空反向守卫）
         # → 0.2.26/37 轨道 B：G2 逐屏规格 04–18（18 份）+ inventory 链接与裁决口径
-        CFBundleShortVersionString: "0.2.26"
-        CFBundleVersion: "37"
+        # → 0.2.27/38 G3-e CovaPlayer：队列/循环三态/±15s/中断与路由/上报幂等/私有音频落盘
+        #     + 门禁新增 8/10 播放器 iOS 测试、9/10 播放器行覆盖率 ≥80%（TD-1 清偿）、PLAYER_MIN=253（TD-11 口径对齐）
+        CFBundleShortVersionString: "0.2.27"
+        CFBundleVersion: "38"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

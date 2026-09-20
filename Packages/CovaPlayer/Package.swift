@@ -14,6 +14,13 @@ let package = Package(
         .target(
             name: "CovaPlayer",
             dependencies: [.product(name: "CovaCore", package: "CovaCore")]
+        ),
+        .testTarget(
+            name: "CovaPlayerTests",
+            dependencies: [
+                "CovaPlayer",
+                .product(name: "CovaCore", package: "CovaCore"),
+            ]
         )
     ],
     swiftLanguageModes: [.v6]

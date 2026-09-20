@@ -1,0 +1,120 @@
+import CovaCore
+import Foundation
+
+/// 私有音频取回请求（D7 硬规则的唯一入口形态）。
+///
+/// 安全：`source` 是 `AudioURL`（不回显 query），`session` 决定 owner 目录与在途作废；
+/// 本类型 **不实现 `Codable`** —— 请求（含地址）不可持久化。
+public struct PrivateAudioRequest: Equatable, Sendable {
+    public let itemID: String
+    /// 需 Bearer 的私有地址（必须落在 `CovaEnvironment.isProductionOrigin` 上）。
+    public let source: AudioURL
+    public let session: PlaybackSessionContext
+    /// 响应若声明长度，则以此校验完成性（拒绝截断）。
+    public let expectedBytes: Int?
+
+    public init(
+        itemID: String,
+        source: AudioURL,
+        session: PlaybackSessionContext,
+        expectedBytes: Int? = nil
+    ) {
+        self.itemID = itemID
+        self.source = source
+        self.session = session
+        self.expectedBytes = expectedBytes.map { max(0, $0) }
+    }
+}
+
+/// 私有音频取回与 owner 维度清理（D7 / D8 / api-contracts §5）。
+public protocol PrivateAudioFetching: Sendable {
+    /// 先把 Bearer 音频**流式写入沙盒**并校验完成性，再返回 `file://` 地址。
+    func localizedURL(for request: PrivateAudioRequest) async -> Result<AudioURL, PlayerError>
+    /// 清除某 owner 的全部私有音频（登出 / 换号）。返回删除的文件数。
+    @discardableResult func purge(owner: PrincipalID) async -> Int
+    /// 清除不属于给定 generation 的私有音频（在途旧代次结果不得被复用）。返回删除的文件数。
+    @discardableResult func purgeStale(before generation: SessionGeneration) async -> Int
+    /// 全量清除（teardown）。
+    @discardableResult func purgeAll() async -> Int
+}
+
+/// 播放源准备器：`PlaybackCoordinator` 装载前的「可直接播」关口。
+///
+/// 存在的意义是把 D7 写进类型：协调器只能拿到 `PlaybackItem`，
+/// 而「需 Bearer 的条目未经本地化就被播放」这条路径由此协议把守（无绕过入口）。
+public protocol PlaybackSourcePreparing: Sendable {
+    func prepareSource(
+        for item: PlaybackItem,
+        session: PlaybackSessionContext
+    ) async -> Result<PlaybackItem, PlayerError>
+}
+
+/// owner 目录与文件命名（缓存键含 `PrincipalID`，跨账号互不可见）。
+///
+/// 纯函数：路径逃逸与非法 id 在这里 fail-closed，可 100% 单测。
+public enum PrivateAudioPath {
+    /// 沙盒根下的私有音频目录名。
+    public static let directoryName = "cova-private-audio"
+    /// 临时分片目录（原子 move 前的落点）。
+    public static let temporaryDirectoryName = ".inflight"
+    /// 本地文件扩展名（不含任何地址信息）。
+    public static let fileExtension = "covaud"
+    /// 代次分隔符：`<itemID>@g<generation>`。
+    static let generationSeparator = "@g"
+
+    /// owner 命名空间（hex，避免任何原始字符进入文件系统）。
+    public static func namespace(for owner: PrincipalID) -> String {
+        owner.rawValue.utf8.map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func rootDirectory(base: URL) -> URL {
+        base.appendingPathComponent(directoryName, isDirectory: true)
+    }
+
+    public static func ownerDirectory(base: URL, owner: PrincipalID) -> URL {
+        rootDirectory(base: base).appendingPathComponent(namespace(for: owner), isDirectory: true)
+    }
+
+    public static func temporaryDirectory(base: URL) -> URL {
+        rootDirectory(base: base).appendingPathComponent(temporaryDirectoryName, isDirectory: true)
+    }
+
+    /// 文件名：只由 `itemID` 与 generation 构成 —— **不含** host、path、query、token。
+    public static func fileName(itemID: String, generation: SessionGeneration) -> String {
+        itemID + generationSeparator + String(generation.value) + "." + fileExtension
+    }
+
+    /// 从文件名解析 generation（解析失败视为「不属于任何在册代次」）。
+    public static func generation(infileName name: String) -> SessionGeneration? {
+        guard let range = name.range(of: generationSeparator) else { return nil }
+        let tail = name[range.upperBound...]
+        guard let dot = tail.firstIndex(of: "."), let value = UInt64(tail[..<dot]) else { return nil }
+        return SessionGeneration(value: value)
+    }
+
+    /// 目标文件 URL（含路径逃逸守卫）。
+    public static func fileURL(
+        base: URL,
+        owner: PrincipalID,
+        itemID: String,
+        generation: SessionGeneration
+    ) throws -> URL {
+        try OwnerIdentifier.requireValid(owner)
+        try PlaybackItem.validateIdentifier(itemID)
+        let root = rootDirectory(base: base).standardizedFileURL
+        let directory = ownerDirectory(base: base, owner: owner).standardizedFileURL
+        guard isInside(directory: root, url: directory) else { throw PlayerError.pathEscape }
+        let file = directory.appendingPathComponent(fileName(itemID: itemID, generation: generation))
+            .standardizedFileURL
+        guard isInside(directory: root, url: file) else { throw PlayerError.pathEscape }
+        return file
+    }
+
+    /// `url` 是否严格位于 `directory` 之内（含 `..` / 百分号编码的逃逸都已由 standardized 收敛）。
+    public static func isInside(directory: URL, url: URL) -> Bool {
+        let parent = directory.path
+        let child = url.path
+        guard child.count > parent.count else { return false }
+        return child.hasPrefix(parent + "/")
+    }
+}
