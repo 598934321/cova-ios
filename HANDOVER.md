@@ -11,12 +11,12 @@
 | 项 | 值 |
 |---|---|
 | 当前锚点 | HEAD = 本 commit（G3-d 落证，父提交 `f39cfa9` = 代码锚点），工作树干净（另有 1 个 stash，见 §9） |
-| 版本 | `CFBundleShortVersionString 0.2.23` / `CFBundleVersion 34`（`project.yml`） |
-| 阶段 | G0 已完成并落证；G3（核心层）进行中：**G3-a/G3-b/G3-c/G3-d 已验收**（G3-d 于第十轮隔离评审 100% 通过），剩 **G3-e（CovaPlayer）未开始** |
+| 版本 | `CFBundleShortVersionString 0.2.24` / `CFBundleVersion 35`（`project.yml`） |
+| 阶段 | G0 已完成并落证；G3（核心层）进行中：**G3-a/G3-b/G3-c/G3-d 已验收**（G3-d 于第十轮隔离评审 100% 通过），剩 **G3-e（CovaPlayer）未开始**；**G1 Figma 方向稿已产出待用户验收**（§9） |
 | 门禁 | `Scripts/check.sh` EXIT=0；CovaCore 372 个测试、行覆盖率 95.28%；协调器套件 5000 迭代 ×26 用例 = 130000 执行 **0 flake** |
-| 设计闸门 | G1/G2 Figma 未验收 → **禁止写 UI 代码** |
-| 唯一未阻塞工作 | G3 核心层（纯逻辑，不涉 UI）：G3-e CovaPlayer |
-| 下一步 | 见 §10：G3-e（CovaPlayer，D4/D7） |
+| 设计闸门 | G1 方向稿已产出（§9）**待用户验收** / G2 未开始 → **禁止写 UI 代码** |
+| 唯一未阻塞工作 | G3 核心层（纯逻辑，不涉 UI）：G3-e CovaPlayer；G1 验收 + G2 全量设计是外部依赖 |
+| 下一步 | 见 §10：G3-e（CovaPlayer，D4/D7）与 G1 用户验收并行 |
 
 **最重要的一句**：本仓一切改动走「五环流程 + 隔离评审」（§4）。不要跳过门禁、不要自评自过、
 不要在 G1/G2 未验收时写 UI。
@@ -296,6 +296,30 @@ cd Packages/CovaCore && xcodebuild -scheme CovaCore -configuration Debug \
   -test-iterations 5000 test
 ```
 
+### G1 Figma 方向稿已产出（2026-09-20，待用户验收）
+
+- 文件：`Cova iOS — G1 方向稿`，fileKey `da8OZDpP3vvLgY1sUa3kqu`，
+  <https://www.figma.com/design/da8OZDpP3vvLgY1sUa3kqu>。文件属 Figma 账号
+  `hy598934321@gmail.com` 名下，用其他账号打开会报无权限。
+- 变量基建：`Cova Tokens` 变量集（`VariableCollectionId:1:4`，Light `1:2` / Dark `1:3`
+  双模式）已建——24 色 + 4 圆角 + 7 间距，按 `design/tokens.json` 录入；全部画板颜色绑
+  变量，切模式即换肤。
+- 画板 4 张（iPhone 393pt，页面 `G1 方向稿`）：`01 · 首页 Home`、`02 · 播放页 Player`
+  （封面取色压暗背景 + 波形进度 + 队列面板）、`03 · 曲库 Library`（级联筛选 + 已选胶囊 +
+  TrackRow + MiniPlayer）、`04 · 曲库 Library · Dark`（03 克隆帧切 Dark 模式，验证双主题
+  token 生效）。
+- **替代与近似（验收时知情）**：字体以 **Inter 代替 SF Pro**（本 Figma 环境所有 SF 系字体
+  变量字重零宽渲染失败；真机实现仍用系统 SF Pro）；Liquid Glass 以透明度近似
+  （MiniPlayer 72–85% 白），真机走系统 material。
+- **状态：待用户验收。** 验收通过 → G2 补全约 18 屏全量（含空/加载/错误/Reduce Motion
+  变体）；未过前 UI 编码禁令不变。
+- Figma MCP 工具坑（下一代理必读）：
+  - `use_figma` 脚本报错会**整体回滚**本轮已建节点（事务性），先小步验证再扩量。
+  - 自动布局子框的 `layoutSizingVertical` 默认 `FIXED` 且初值 100 → 每个子框必须显式设
+    `HUG`/`FILL`，否则渲染被裁到 100pt 高。
+  - `appendChild` 后再读 `.children` 可能拿到陈旧引用，先存变量再 append。
+  - `fills` 数组元素只读：paint 的 opacity 要在赋值前设好。
+
 ---
 
 ## 10. 下一步路线
@@ -305,9 +329,10 @@ cd Packages/CovaCore && xcodebuild -scheme CovaCore -configuration Debug \
    播放上报去重、私有音频先下载到沙盒校验非空再 `file://`。注意 TD-1（覆盖率门槛需 iOS destination
    方案）与平台中立性（`AVAudioSession` 是 iOS-only，需与 CovaCore 的 macOS 覆盖率口径分开处理）。
 3. **G3 完成判据**：`check.sh` 全绿 + 核心层 ≥80% 覆盖率。
-4. **G1/G2：Figma 方向稿/完整设计**（外部依赖，需要你/设计师验收）。产出规格已就绪：
-   `design/tokens.json`、`design/screens/01-home|02-player|03-library.md`、
-   `design/screens/inventory.md`、`design/components.md`。**验收前不得写 UI**。
+4. **G1/G2：Figma 方向稿/完整设计**。G1 方向稿已产出待用户验收（§9）；验收后 G2 按
+   `design/screens/inventory.md` 补全约 18 屏（含空/加载/错误/Reduce Motion 变体）。
+   产出规格：`design/tokens.json`、`design/screens/01-home|02-player|03-library.md`、
+   `design/components.md`。**验收前不得写 UI**。
 5. **M1**：发现与播放闭环（先等 NEEDS-1/2/3 解锁登录与播放上报）。
 6. **M2/M3/G4**：见 `docs/PLAN.md` 与 `docs/release-runbook.md`。
 
@@ -352,7 +377,7 @@ git stash list && git stash show -p stash@{0}
 - [ ] 读完 `AGENTS.md`、`docs/EXECUTION-PROMPT.md`、`docs/PLAN.md`、`docs/decisions.md`（含 D16）。
 - [ ] 本机 `xcodebuild -version` 与 `xcodegen --version` 正常，Xcode 许可已接受。
 - [ ] `./Scripts/check.sh` 能跑通（首次较慢）。
-- [ ] 明白 G1/G2 未验收前不写 UI。
+- [ ] 明白 G1/G2 未验收前不写 UI（G1 方向稿已产出待验收，fileKey 见 §9）。
 - [ ] 明白「隔离评审」规则与五环流程，不自评自过。
 - [ ] 知道当前在途任务（G3-e CovaPlayer），以及 `stash@{0}` 已被超越建议处置。
 - [ ] 知道所有后端缺口在 `docs/NEEDS.md`，不得自行改后端。
@@ -360,5 +385,5 @@ git stash list && git stash show -p stash@{0}
 
 ---
 
-*本手册由协调者编写（初版 2026-09-18，2026-09-20 随 G3-d 落证更新）。若手册与仓库实际不符，
-以 `git log`/`docs/log/`/`check.sh` 实际输出为准，并顺手更新本手册。*
+*本手册由协调者编写（初版 2026-09-18；2026-09-20 随 G3-d 落证与 G1 Figma 方向稿产出更新）。
+若手册与仓库实际不符，以 `git log`/`docs/log/`/`check.sh` 实际输出为准，并顺手更新本手册。*
