@@ -11,7 +11,7 @@
 | 项 | 值 |
 |---|---|
 | 当前锚点 | HEAD = 本 commit（G3-d 落证，父提交 `f39cfa9` = 代码锚点），工作树干净（另有 1 个 stash，见 §9） |
-| 版本 | `CFBundleShortVersionString 0.2.24` / `CFBundleVersion 35`（`project.yml`） |
+| 版本 | `CFBundleShortVersionString 0.2.25` / `CFBundleVersion 36`（`project.yml`） |
 | 阶段 | G0 已完成并落证；G3（核心层）进行中：**G3-a/G3-b/G3-c/G3-d 已验收**（G3-d 于第十轮隔离评审 100% 通过），剩 **G3-e（CovaPlayer）未开始**；**G1 Figma 方向稿已产出待用户验收**（§9） |
 | 门禁 | `Scripts/check.sh` EXIT=0；CovaCore 372 个测试、行覆盖率 95.28%；协调器套件 5000 迭代 ×26 用例 = 130000 执行 **0 flake** |
 | 设计闸门 | G1 方向稿已产出（§9）**待用户验收** / G2 未开始 → **禁止写 UI 代码** |
@@ -89,6 +89,11 @@ Apple 许可已接受；若新机器报 `You have not agreed to the Xcode licens
 
 - 只允许追加断言，不允许为了让门禁变绿而放宽；测试数量下限在 `Scripts/test-count-baseline.env`，
   新增测试要同步抬高基线（随 commit 进入版本递增与人工审查）。
+- **硬边界 8 已机械化**（3/8）：`Packages/CovaPlayer/Sources` 出现 UI 框架 import 即失败
+  （两段式判定：先取行首 `import` 语句——含属性前缀与 `import class UIKit.UIView` 选择式导入，
+  再按词边界取 `SwiftUI|UIKit`；因此注释/字符串里提到 UI 框架不会误红）。
+  反向守卫：该目录 `.swift` 集合为空即失败，防止清空源目录绕过扫描。
+  正反对照均已实测（合法工程与合法夹具零命中；5 种绕过形态全部命中）。
 - 判据来自**权威机器可读产物**（`dump-package` / `.SwiftFileList` / `xcactivitylog` / `xcresult` /
   `plansrc lcov`），不依赖对源码文本的正则——这是 G0 期间 8 轮对抗审查换来的结论，别再退回文本正则。
 - **误红与漏检同等严重**：任何新断言都要有「合法工程对照不得误红」用例（TD-9）。

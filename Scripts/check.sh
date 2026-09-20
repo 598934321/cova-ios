@@ -204,7 +204,7 @@ for pkg in $PACKAGES; do
 done
 echo "    结构校验通过（4 个本地包、语言模式 6、无远程包/框架/二进制制品）"
 
-echo "==> 3/8 依赖图（dump-package）+ 核心层平台中立性不变量"
+echo "==> 3/8 依赖图（dump-package）+ 核心层平台中立性 + 播放器无 UI 不变量"
 violations=0
 for pkg in $PACKAGES; do
   load_dump "$pkg" || fail "无法获取 Packages/$pkg 的 dump-package"
@@ -267,8 +267,25 @@ CORE_PLATFORMS="$(grep -E '^[[:space:]]*platforms:' "$CORE_PACKAGE_SWIFT" | head
 [ "$CORE_PLATFORMS" = "$REQUIRED_CORE_PLATFORMS" ] \
   || { echo "    CovaCore 平台声明为 [${CORE_PLATFORMS}]，必须恰为 [${REQUIRED_CORE_PLATFORMS}]（.macOS 仅供宿主侧覆盖率测量）"; violations=1; }
 
-[ "$violations" -eq 0 ] || fail "依赖方向 / 平台中立性不变量校验未通过"
-echo "    依赖图与平台中立性校验通过（字面 #if 与 iOS-only 令牌均无命中）"
+# 播放器层无 UI 不变量（AGENTS 硬边界 8「G1/G2 未验收不写 UI」+ D3/D4 分层的机械化为门禁）：
+# CovaPlayer 只允许非 UI 播放能力（AVFoundation/MediaPlayer），出现 UI 框架 import 即失败。
+# 判据取「行首 import 语句」而非全词扫描：UI 代码必然需要 import，且不会因注释/文档提到
+# SwiftUI 而误红（TD-9：合法工程对照不得误红优先于 fail-closed 的字面令牌口径）。
+# 两段式：先取 import 行（含属性前缀与 `import class UIKit.UIView` 选择式导入），再按词边界取 UI 模块。
+PLAYER_UI_HITS="$(grep -rnE '^[[:space:]]*(@[A-Za-z_]+[[:space:]]+)*import[[:space:]]' \
+  Packages/CovaPlayer/Sources 2>/dev/null | grep -wE 'SwiftUI|UIKit' || true)"
+if [ -n "$PLAYER_UI_HITS" ]; then
+  printf '%s\n' "$PLAYER_UI_HITS" | head -10 | sed 's/^/    /'
+  echo "    ↑ CovaPlayer 引入了 UI 框架：设计闸门（G1/G2）未验收前禁止编写 UI 代码"
+  violations=1
+fi
+# 反向防绕过：源集合为空时上面的扫描恒真通过（清空目录即免检），故要求播放器层非空。
+PLAYER_SRC_COUNT="$(find Packages/CovaPlayer/Sources -name '*.swift' -type f 2>/dev/null | wc -l | tr -d ' ')"
+[ "${PLAYER_SRC_COUNT:-0}" -ge 1 ] \
+  || { echo "    CovaPlayer/Sources 下无任何 .swift 源文件（清空源目录不得绕过无 UI 不变量）"; violations=1; }
+
+[ "$violations" -eq 0 ] || fail "依赖方向 / 平台中立性 / 播放器无 UI 不变量校验未通过"
+echo "    依赖图与不变量校验通过（CovaCore 无字面 #if 与 iOS-only 令牌；CovaPlayer ${PLAYER_SRC_COUNT} 个源文件且无 UI import）"
 
 echo "==> 4/8 有效构建设置（配置×SDK）+ clean build + 实际编译语言版本 + 产物保真"
 eff() {
