@@ -13,7 +13,7 @@
 | 当前锚点 | HEAD = 本 commit（G3-d 落证，父提交 `f39cfa9` = 代码锚点），工作树干净（另有 1 个 stash，见 §9） |
 | 版本 | `CFBundleShortVersionString 0.2.25` / `CFBundleVersion 36`（`project.yml`） |
 | 阶段 | G0 已完成并落证；G3（核心层）进行中：**G3-a/G3-b/G3-c/G3-d 已验收**（G3-d 于第十轮隔离评审 100% 通过），剩 **G3-e（CovaPlayer）未开始**；**G1 Figma 方向稿已产出待用户验收**（§9） |
-| 门禁 | `Scripts/check.sh` EXIT=0；CovaCore 372 个测试、行覆盖率 95.28%；协调器套件 5000 迭代 ×26 用例 = 130000 执行 **0 flake** |
+| 门禁 | `Scripts/check.sh` **十步** EXIT=0（协调者在含环 4 全部修复的 HEAD 上亲跑）：CovaCore 372 / 95.28%、**CovaPlayer 331 / 93.75%**（15/15 源文件无条件归因）；第 3 轮复审又判门禁 2 Major（禁 UI 黑名单形态可被 WebKit 与「仅测试 target 的 UIKit」打穿）→ 正在改白名单 |
 | 设计闸门 | G1 方向稿已产出（§9）**待用户验收** / G2 未开始 → **禁止写 UI 代码** |
 | 唯一未阻塞工作 | G3 核心层（纯逻辑，不涉 UI）：G3-e CovaPlayer；G1 验收 + G2 全量设计是外部依赖 |
 | 下一步 | 见 §10：G3-e（CovaPlayer，D4/D7）与 G1 用户验收并行 |
@@ -49,7 +49,7 @@ SwiftUI + Swift Concurrency，部署目标 iOS 26。分层为四个本地 SwiftP
 ├── Packages/                # 四层本地 SwiftPM 包（CovaCore 已实现）
 ├── Scripts/
 │   ├── check.sh             # 门禁（8 步，见 §3）
-│   └── test-count-baseline.env   # 测试数量下限（APP_MIN=2 / CORE_MIN=372）
+│   └── test-count-baseline.env   # 测试数量下限（APP_MIN=2 / CORE_MIN=372 / PLAYER_MIN=331）
 ├── design/                  # tokens.json + screens/*.md + components.md + 官方 AppIcon
 └── docs/
     ├── PLAN.md PRD.md decisions.md api-contracts.md NEEDS.md
@@ -72,28 +72,37 @@ Apple 许可已接受；若新机器报 `You have not agreed to the Xcode licens
 ./Scripts/check.sh        # 退出码 0 才算过；任何一步失败立即非零退出
 ```
 
-八步及其含义：
+十步及其含义（G3-e 起由八步扩来：播放器层需要自己的测试与覆盖率口径）：
 
 | 步骤 | 内容 |
 |---|---|
-| 0/8 | 预热模拟器 |
-| 1/8 | `xcodegen generate` 重新生成工程 |
-| 2/8 | 工程结构 / 语言模式 / 无远程包·框架·二进制制品 / 零第三方依赖 |
-| 3/8 | `swift package dump-package` 依赖图 + **CovaCore 平台中立性**（整目录禁止字面 `#if`、禁止 iOS-only import） |
-| 4/8 | 有效构建设置（Debug/Release × simulator/device）+ clean build + **从实际编译日志断言 `-swift-version 6`** + 产物保真（bundle id / minOS / `UIBackgroundModes`） |
-| 5/8 | App 工程测试（CovaTests，iOS 模拟器） |
-| 6/8 | 核心层包测试（CovaCoreTests，iOS 模拟器），只认 xcresult 的 `passed`，且 `failed==0` |
-| 7/8 | 核心层行覆盖率（SwiftPM 插桩 + `llvm-cov`，阈值 80%）+ 编译集合与源集合双向一致 |
+| 0/10 | 预热模拟器 |
+| 1/10 | `xcodegen generate` 重新生成工程 |
+| 2/10 | 工程结构 / 语言模式 / 无远程包·框架·二进制制品 / 零第三方依赖 |
+| 3/10 | `swift package dump-package` 依赖图（含 target 级依赖与源路径）+ **CovaCore 平台中立性**（整目录禁止字面 `#if`、禁止 iOS-only import）+ **播放器层禁 UI** + 符号链接禁令 + 源集合非空反向守卫 |
+| 4/10 | 有效构建设置（Debug/Release × simulator/device）+ clean build + **从实际编译日志断言 `-swift-version 6`** + 产物保真（bundle id / minOS / `UIBackgroundModes`） |
+| 5/10 | App 工程测试（CovaTests，iOS 模拟器）+ xccov 采集有效性 |
+| 6/10 | 核心层包测试（CovaCoreTests，iOS 模拟器），只认 xcresult 的 `passed`，且 `failed==0` |
+| 7/10 | 核心层行覆盖率（SwiftPM 插桩 + `llvm-cov`，阈值 80%）+ 编译集合与源集合双向一致 |
+| 8/10 | **播放器层包测试**（CovaPlayerTests，iOS 模拟器），同时产出第 9 步要用的插桩产物（先清 ProfileData + 打时间戳） |
+| 9/10 | **播放器层行覆盖率**：消费第 8 步的 `Coverage.profdata` + `llvm-cov` lcov（阈值 80%），并做 `.o ↔ OutputFileMap ↔ __llvm_covmap` **三方无条件交叉**归因（读不到即 fail-closed） |
 
 **门禁设计要点（改动前必读）**：
 
 - 只允许追加断言，不允许为了让门禁变绿而放宽；测试数量下限在 `Scripts/test-count-baseline.env`，
   新增测试要同步抬高基线（随 commit 进入版本递增与人工审查）。
-- **硬边界 8 已机械化**（3/8）：`Packages/CovaPlayer/Sources` 出现 UI 框架 import 即失败
-  （两段式判定：先取行首 `import` 语句——含属性前缀与 `import class UIKit.UIView` 选择式导入，
-  再按词边界取 `SwiftUI|UIKit`；因此注释/字符串里提到 UI 框架不会误红）。
-  反向守卫：该目录 `.swift` 集合为空即失败，防止清空源目录绕过扫描。
-  正反对照均已实测（合法工程与合法夹具零命中；5 种绕过形态全部命中）。
+- **硬边界 8 的机械化仍在收敛中（第 3 次复现，已换判据形态）**：3/10 目前用「单一词源
+  `PLAYER_UI_MODULES` 派生三层判据」（字面 import / 符号 / 依赖与产物）。
+  ⚠️ **撤回本手册此前的不实表述**：「正反对照均已实测（5 种绕过形态全部命中）」只在
+  当时那 5 个夹具上成立。隔离复审随后连续打穿：第 2 轮 `import AVKit` +
+  `AVPlayerViewController` 全绿；第 3 轮 `import WebKit` + `WKWebView` 全绿，
+  `import SafariServices` / `import MessageUI` 也各自全绿；把 `import UIKit` + `UIView`
+  只放进播放器**测试** target 同样三层皆不可见（L1 只扫非测试 target、符号层只扫产品
+  objdir、dylib 层对 UIKit 整名豁免）。
+  **根因是判据形态：黑名单靠人列举必然漏** → 正在改为**白名单**（播放器层含测试 target
+  只允许固定 import 集合，其余一律红），并把 UIKit 豁免收窄为「UIKit 且 weak」
+  （实测：合法态测试二进制是 weak UIKit，任何直接引用后变强依赖 —— weak 承载信号）。
+  反向守卫（清空 `Sources` 即失败）保留。
 - 判据来自**权威机器可读产物**（`dump-package` / `.SwiftFileList` / `xcactivitylog` / `xcresult` /
   `plansrc lcov`），不依赖对源码文本的正则——这是 G0 期间 8 轮对抗审查换来的结论，别再退回文本正则。
 - **误红与漏检同等严重**：任何新断言都要有「合法工程对照不得误红」用例（TD-9）。
@@ -193,7 +202,24 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
 完整条目与上下文在 `docs/log/20260917.md`；下表为汇总，按截止分组。
 
 **G3 内（近期）**
-- TD-1：CovaPlayer 无覆盖率门槛（宿主测量无法代表 iOS-only 逻辑）→ G3-e 处理。
+- TD-1：**已关闭**（G3-e 环 4）。CovaPlayer 有了自己的 iOS 模拟器测试步（8/10）与
+  行覆盖率步（9/10，阈值 80%，实测 93.75%）。关键教训：`xccov` 会把本地 SwiftPM 包目标
+  **折叠进测试 target**（实测 `CovaPlayer 0.00% (0/0)`、报告 0 行点名 `Sources`），
+  且该现象**依赖预热态** —— 干净 clone 上直接 fail-closed 变红。口径因此改为
+  「第 8 步的 `Coverage.profdata` + `llvm-cov` lcov」，并在 6 个独立起点（冷 clone /
+  含空格路径 / 删派生数据 / 换设备 / 预热重跑）上逐字复现同一数字才算数。
+- TD-11：**已关闭**（基线文件改为**键名白名单解析**，不再 `.` source；实测 8 种投毒形态
+  —— 覆写 `CORE_COVERAGE_MIN`/`IOS_ONLY_MODULES`/`REQUIRED_DEPLOYMENT_TARGET`、重复键、
+  内联注释、负数、`$(...)`、`export` —— 全部拒跑）。
+- TD-38：播放器层**禁 UI 判据是黑名单形态**，已被连续打穿三次（SwiftUI/UIKit → AVKit →
+  WebKit/SafariServices/MessageUI，另加「仅测试 target 里的 UIKit」三层皆不可见）。
+  收敛方向：改**白名单**（含测试 target）、符号层纳入测试 objdir、dylib 层 UIKit 豁免
+  收窄为「UIKit 且 weak」。根因是形态问题，不是词表漏项 —— 别再往黑名单里加名字。
+- TD-39：`AdvanceOutcome`/`PlayerError` 结果粒度不足：环 4 的 F-4（终态应回 `.stopped`）、
+  F-5（装载在途时 seek 应专属拒绝码）只能复用既有 case，因为新增 case 会打破
+  `NowPlayingController` 的穷尽 switch。M1 接 UI 时一并复核更细粒度的结果类型。
+- TD-40：私有音频并发合流改用无结构 `Task`（为了在 actor 重入前先把登记表填上），
+  **取消传播路径未经证明**；M1 需复核「上层取消是否真能终止合流中的下载」。
 - TD-10：源集合适配域过宽——`Sources/CovaCore/` 下若出现名为 `Tests` 的子目录会被误红。
 - TD-11：`test-count-baseline.env` 注释与实现口径需对齐（只比较 `passed`）。
 - TD-13：`similar[]` 投影稳定性无保证（后端双发范围可变）。
