@@ -668,6 +668,23 @@ M7 并发去重 + M4 登出清盘接线 + M3 生产音频会话注册）。
 - 若第 7 轮报「`PLAYER_MIN` 与实测不符」：先确认它是在**自己的克隆**里量的 —— 克隆里有
   `R7ProbeTests.swift`，探针会虚增计数（主树实测终值 394 = 基线 394，已由协调者门禁跑证）。
 
+**⚠️ 此刻工作树里有未提交的第 12 批代码改动（协调者写的，尚未编译验证）**
+`git status` 会显示这两个文件为脏 —— 这不是别人留下的半成品，别回退它：
+
+- `Packages/CovaPlayer/Sources/CovaPlayer/PlaybackCoordinator.swift`：
+  ① `convergeStalledLoad` 守卫改成按事实判（R7B）；② `Configuration.init` 三个旋钮 clamp
+  + `fallbackSeekStep`/`fallbackTimeSyncInterval`（R7C）；③ `toggle()` 把 `.loading` 归入
+  「正要响」一侧（R7D）；④ 删掉 §20 那条不可达的收敛腿调用。
+- `Packages/CovaPlayer/Tests/CovaPlayerTests/PlaybackCoordinatorTests.swift`：§21 三条探针
+  转成的永久测试（`testCancelledLoadEndingUnderPauseStillConvergesAndNeverClaimsAdvanced` /
+  `testIllegalConfigurationCannotOpenTerminalWithoutCountedLedger` /
+  `testToggleDuringInFlightLoadPausesInsteadOfStartingNewPlayback`）。
+
+**接手第一件事就是编译 + 跑这三条 + 整轮 `check.sh`**（协调者刻意没跑：第 7 轮评审实例正在
+同一台机器上跑迭代，CPU 争用会把 10s 等待上界压成假红）。写这批时已自查掉两个坑：
+`configuration:` 在 init 里排在 `nowPlaying:` **之前**；R7D 那条必须注入 `reporter:`，
+否则「没播起来不许上报」是恒真的假绿。
+
 **接手顺序（不可跳）**
 1. 等第 7 轮报告 → 用协调者自己的话存档进 `docs/review-g3e-round4.md` §G（**评审实例不落盘**，
    报告只存在于编排上下文里，压缩即丢失；本轮开始前先落盘）。
