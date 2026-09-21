@@ -282,6 +282,26 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
 
 ## 9. 当前未完成工作与续跑指引
 
+### ⚠️ 2026-09-21 环 4 现场（协调者停放，覆盖下方 09-21 早先条目）
+- **已入库且已验证**：`5b86671` 环 4①（状态机与集次守卫：C1/P1–P5/M10/M11）+
+  `8031fec` 门禁修复（G-9…G-13）。门禁实例在**干净 clone** 上实测 `check.sh` **EXIT=0**：
+  CovaTests 2、CovaCore 372（95.28%）、CovaPlayer 284（0 失败）、
+  **CovaPlayer 行覆盖 2304/2476 = 93.05%，逐文件点名 15/15**（第 9 步口径已从 xccov
+  改为 `Coverage.profdata` + `llvm-cov` lcov，TD-1 至此**真正清偿**——不再依赖预热态）。
+  13 项绕过负例全红；0–7 步判据零放宽。`PLAYER_MIN` 由协调者抬到实测终值 **284**。
+- **工作树里有 16 个文件的「环 4②（私有音频管线）」半成品，未提交且实测是坏的**：
+  协调者亲自跑 `cd Packages/CovaPlayer && xcodebuild -scheme CovaPlayer
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -only-testing:CovaPlayerTests test`
+  → **Executed 323 tests, with 25 failures**。红点集中在 `PrivateAudioTransportTests`
+  （18 红），症状是桩侧「音频下载响应状态码 0」（`PrivateAudioTransport.swift:414`、
+  `PrivateAudioTransportTests.swift:705`）。**禁止直接 commit 这份半成品**；
+  接手者应从 `git diff` 中甄别可用部分，或 `git checkout -- Packages/CovaPlayer` 回到
+  `8031fec` 重做第 ② 组。
+- **失败模式已重复三次**：开发实例在 150 轮上限处被截断，且倾向一次吃下过多缺陷。
+  续跑纪律：**每个实例只派 1 组（≤6 条 finding），且要求它先 commit 再做下一组**。
+- 环 3 第 2 轮复审实例正在 `/tmp` 克隆里攻击 `5b86671` + `8031fec`（上轮 13 条 findings
+  作待攻击清单）。**G3-e 仍未验收**：需一轮零 Critical / 零 Major 才能进环 5。
+
 ### G3-e CovaPlayer 在途（2026-09-21 协调者停放，**未验收**）
 - **环 1+环 2 已入库**：`8b9d0c1`（15 源文件 / 253 条测试）。协调者独立复跑
   `./Scripts/check.sh` = **EXIT=0（已扩到十步）**：CovaTests 2、CovaCore 372（95.28%）、
