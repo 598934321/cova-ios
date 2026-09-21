@@ -106,8 +106,13 @@ targets:
         #     不可能状态（停止态上的暂停不再凭空造出 `.paused`），矩阵两列与第 11 批两条用例
         #     按可达形状重写；`TransferWaiter.settle()` 三合一布尔拆成三格定案（定案并唤起 /
         #     定案但未登记 / 败者），取消作废在途时不再少记终止信号；PLAYER_MIN 388 → 394
-        CFBundleShortVersionString: "0.2.49"
-        CFBundleVersion: "60"
+        # → 0.2.50/61 G3-e 环 4 第 12 批（上+下，第 7 轮复审 1 Major / 4 Minor 的收口）：
+        #     MAJ-R7-1（11B 的守卫按症状写 → 一次合法暂停即让收敛腿消失）改为按事实判；
+        #     并按评审指认补 `.advanced` / `.repeated` **总闸**（引擎确实装着当前项或真有一代
+        #     装载在途才允许声称推进）；MIN-R7-1 三个配置旋钮构造期 clamp；MIN-R7-2 toggle 把
+        #     `.loading` 归入「正要响」一侧；§20 删不可达收敛腿；PLAYER_MIN 394 → 397
+        CFBundleShortVersionString: "0.2.50"
+        CFBundleVersion: "61"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
