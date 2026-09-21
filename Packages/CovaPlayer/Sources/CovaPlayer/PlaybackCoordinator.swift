@@ -1218,7 +1218,18 @@ public actor PlaybackCoordinator {
         } else {
             guard !tornDown else { return false }
             if kind == .claim {
-                guard inFlightLoad == nil else { return false }
+                // R8B-1（第 8 轮 b 复审 Major）：**台账开着 ≠ 引擎没装这一项**。
+                // `loadCurrent` 在写下 `engineEpisodeItemID = prepared.id` 之后，还要 await
+                // `engine.play()` / `setRate` / `reportEpisodeIfNeeded()` / `publishNowPlaying()`
+                // （其中上报是**真网络 await**）才由 `defer { finishLoad }` 收台账 ⇒ 存在
+                // 「引擎确实装着当前项 + 正在响 + 台账非 nil」的真实窗口。旧写法把这段窗口一律
+                // 读成「没装」，于是窗口内按 ⏭ 会停掉正在响的音乐并写 `.paused`（用户从未暂停）、
+                // `seek` 被拒、`.playing`/`.paused` 事件被丢 —— **语义由网络时序决定**。
+                // (b) 腿本就要求 `engineOwns(claimed)`，所以「台账开着但引擎装着被宣称的那一项」
+                // 时 (a) 腿的否决是冗余且过宽的；只有「台账开着且引擎没装着被宣称项」
+                // （在途的是**别的**条目，F-2/F-5 的原意）才该否决。
+                let engineHoldsClaimed = claimed != nil && engineEpisodeItemID == claimed
+                guard inFlightLoad == nil || engineHoldsClaimed else { return false }
             }
         }
         // (b) 引擎归属（含「本代际的 load 已失败」）

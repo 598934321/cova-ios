@@ -1902,6 +1902,60 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(submitted, 0, "R7D：没播起来就不许提交播放上报")
     }
 
+    /// 缺陷 R8B-1（**Major**，第 8 轮 b 复审；第 13 批修）：「引擎装着当前项 + 正在响 +
+    /// 在途台账未收」是一段**真实窗口** —— `loadCurrent` 写完 `engineEpisodeItemID` 后还要
+    /// await 播放/上报/回显（上报是真网络 await）才收台账。旧 (a) 腿把「台账开着」读成
+    /// 「引擎没装这一项」，于是窗口内：⏭ 停掉正在响的音乐并写 `.paused`（用户从未暂停）、
+    /// `seek` 被拒（用户拖不动进度条）、`.playing`/`.paused` 事件被丢 —— **语义由网络时序决定**。
+    /// 窗口构造不用睡眠：`GatedPlayReportSubmitter` 让上报挂在真 await 上，引擎账本与
+    /// `.playing` 在它之前就已落定（`enteredSignal` 就是窗口打开的可读事实）。
+    func testReportInFlightWindowKeepsReplaySeekAndEventsHonest() async {
+        let engine = ScriptedEngine()
+        let gated = GatedPlayReportSubmitter()
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock,
+            reporter: PlayReportCoordinator(submitter: gated), nowPlaying: nowPlaying
+        )
+        await subject.setLoopMode(.all)
+        // 上报需要会话（无会话时 playbackStarted 直接返回，闸门永远不会开）。
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "principal-r8b1")))
+        let started = Task { await subject.start(items: TestItems.makeMany(["a"])) }
+        await assertSignalReached(
+            target: 1, counter: gated.enteredSignal, what: "播放上报进入在途（R8B-1 窗口打开）"
+        )
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "前置：引擎装着当前项且正在响")
+        XCTAssertEqual(engine.count(of: "load"), 1, "前置：只装过一趟")
+
+        // ① ⏭ 在单元素 `.all` 上 = 重播当前项：不得停引擎、不得改状态、不得回 `.held`。
+        let pausesBefore = engine.count(of: "pause")
+        let outcome = await subject.next()
+        XCTAssertEqual(
+            outcome, .repeated(at: 0, item: TestItems.make("a")),
+            "R8B-1：窗口内 ⏭ 是重播当前项，不是「保持」；旧实现回 .held 并摁停引擎"
+        )
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "R8B-1：不得把正在响写成 .paused")
+        XCTAssertEqual(engine.count(of: "pause"), pausesBefore, "R8B-1：不得摁停正在响的引擎")
+        XCTAssertFalse(snap.isFailureTerminal, "R8B-1")
+
+        // ② 窗口内 `seek` 不得被拒（引擎正装着当前项在响，用户拖进度条是合法手势）。
+        let seeked = await subject.seek(to: 30)
+        guard case .applied = seeked else {
+            return XCTFail("R8B-1/R8B-2：窗口内 seek 被拒：\(seeked)")
+        }
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.position, 30, "R8B-2：seek 必须真的落位置")
+
+        // ③ 窗口内引擎事件仍须被采信（缓冲恢复一类）。
+        await subject.receive(.playing)
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "R8B-2：窗口内 .playing 事件不得被丢")
+
+        await gated.release()
+        _ = await started.value
+    }
+
     /// F-8（Minor，评审探针 `testG01`）：`PlayerEngine` 契约的「load 失败经 `.failed` 表达」
     /// 在 `loadCurrent` 里不被消费 —— 引擎说装载失败，续体照样 `state = .playing` 并**提交一次
     /// 播放上报**（少报/多报同族的口径偏差）。
