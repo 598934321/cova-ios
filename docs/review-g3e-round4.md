@@ -75,6 +75,24 @@
 - **Major-1（新）**：非持有者门面 `deinit` 无条件对进程单例 `MPRemoteCommandCenter`
   执行 `isEnabled = false` + `removeTarget(nil)`，不看同批刚建的所有权票据 →
   A 注册 → B 接手 → **A 析构打死 B 的锁屏控制**。实测复现、零测试覆盖。修 MAJ-7 引入的 B。
+  **已修（第 9 批）**：退出路径改为**按所有权分形** —— 持有者仍整体塑形（关掉 11 条命令位 +
+  `removeTarget(nil)` 摘净 + 清读数），非持有者**只按自己登记的 token** 摘 target
+  （`MPRemoteCommand.removeTarget(_:)` 收 `addTarget` 交回的不透明句柄 ⇒ 零悬垂、零牵连），
+  `isEnabled` 与 `MPNowPlayingInfoCenter` 只在仍是负责人时塑形。`MPNowPlayingInfoCenter` 是
+  **另一个**进程单例 ⇒ 另记一台账（`publish` 写即认领；迟到的封面回写同样受这道闸约束）；
+  `CovaPlayer.teardown()` 里那句 `setCommandsEnabled(false)` 一并删除（它本身就是一次抢所有权的
+  塑形，被顶掉的旧门面 teardown 会把现任门面的命令位全关掉）。**TD-43 的「做不到」不覆盖此处**
+  （复审指认，本批核实：`registerCommands()` 接手时已 `removeTarget(nil)`，非持有者名下无遗留 target）。
+  永久测试 7 条：控制器层 `testNonHolderTeardownLeavesHoldersCommandSurfaceIntact`、
+  `testNonHolderWithStillMountedTargetsDetachesThemByTokenOnExit`、
+  `testNonHolderDeallocationLeavesCurrentHoldersSurfacesIntact`、
+  `testHolderDeallocationStillRetiresEverySharedSurface`（MAJ-7 反向腿）、
+  `testStaleArtworkMergeDoesNotOverwriteCurrentInfoSurfaceHolder`；
+  门面层 `testNonHolderFacadeDeallocationLeavesTheLiveFacadeInControl`（M1 再装配形状 + 行为腿）、
+  `testHolderFacadeDeallocationStillRetiresEverySharedSurface`。
+  变异 MAJ9-1a（塑形改回无条件）KILLED 3 条 / 3 测试、MAJ9-1b（信息面清理改回无条件）KILLED
+  4 条 / 2 测试、MAJ9-1c（封面回写所有权闸拆除）KILLED 1 条；逐处 `cmp` 还原字节一致。
+  明细见 `docs/log/20260921.md` §16.2 / §16.4。
 - Minor-1：CovaCore 的字面令牌判据在**文档注释**上误红（在文档里解释「为什么不引入 WebKit」
   会变成门禁事故）⇒ 「误红与漏检同等严重」在核心层不成立。
 - Minor-2：播放器层 `import CoreMedia` 即红（清单只收实测在用的四项）。属摩擦非漏检，
@@ -85,6 +103,37 @@
 500 迭代**失败 6 次**、`testUpperLayerCancellationTerminatesInFlightTransfer` 失败 1 次，
 每次耗时 ≈10.0s ⇒ 有界等待超时到期形态。即第 6/7 批为 MAJ-1 写的取消测试本身不稳定，
 按本仓零 flake 判据属 Major —— (A) 侧「MAJ-1 已闭合」的结论要打上这个补丁。
+**已修（第 9 批）**：根因**在测试夹具的会合点、不在生产代码** —— 桩侧 `TransferWaiter.settle()`
+把「我是第一个决出结果的人」与「我顺手唤醒了一个已登记的续体」混为同一个返回值，
+于是落在「出口已入场、续体未登记」窗口里的取消**照样终止那一路传输**（该次失败里其余
+每一条生产断言都通过），终止**边沿**信号却永不 bump ⇒ 等待方只能等满 10s 上界。
+探针 `isSettled=true / terminated=0` 已把这条窗口坐实（确定性复现，见 §16.3）。
+修法：两条用例的会合点换成**蕴含关系**「调用者真的拿到了结果」（`awaitTransfer` 唯一能
+返回的路径是无结构传输任务已完成）+ 桩侧账目复核 `completedCount == 0` 与
+`inFlightCount == 0`；合流腿另加**确定性钉住**（凭证读取次数 ⇒ 加入者确已走上合流分支），
+不再靠「两个一起取消所以不依赖调度」糊过去。删测试 / 放宽断言 / `XCTSkip` / 调小迭代 /
+调大超时**一件都没做**。复现与验后：修前 4000 执行 4 红（本批）与 7 红（协调者），
+修后 `PrivateAudioFetcherTests` 1000 迭代与全量 200 迭代均 0 红（§16.5）；
+变异 MAJ9-2b（测试字节整体换回改前形态）在**同一份生产代码**上复现 4000 执行 2 红。
+残留（交协调者裁决）：夹具 `TransferWaiter.settle` 的语义含糊仍在（本批无权改该原语），
+现余下唯一消费者 `cancelInFlightTransfers()` 走的是 actor 同步区、不可命中该窗口。
 
-**处置**：第 9 批（`dev-g3e-fix9`）只派这两条，并明令禁止用「删测试/放宽断言/XCTSkip/
-调小迭代/调大超时」蒙混；若根因在生产代码，则视为 MAJ-1 原本未真正闭合，修生产。
+---
+
+## §E 第 5 轮 · 状态机与播放上报面（HEAD `6980593`）
+
+**0 Critical / 3 Major / 2 Minor**。正面结论：第 2 轮 F-1…F-8 **无一被重新打开**；
+**「为让测试变绿而改既有期望」未发生**（`13aa6af~1..13aa6af` 对 Tests 是 430 增 / 1 删，
+那 1 行是 `// MARK:` 注释；全区间 Tests 累计删 5 行，逐行核对均为签名跟进或删逃生门；
+`testStoppedThenUserNextDoesNotRevivePlayback` 逐字节 IDENTICAL；全 target `XCTSkip` 0 命中）。
+
+| 编号 | 级别 | 现象 | 证据 |
+|---|---|---|---|
+| MAJ-R5-1 | **Major** | F-A 只修了一半：`repeatGuardVerdict` 把腿 (c) 分给了 `.holdWithoutPlaying`，但腿 (b)（引擎此刻是否装着当前项）失败仍整体进 `haltBecauseNothingIsLoaded()`，而该函数**无条件**写 `isFailureTerminal = true` → `failureStreak==0 && lastFailure==nil` 而 `isFailureTerminal==true`。三条独立复现：纯门面公开 API（start→pause→移除当前曲→`.all`→next）、整队替换后未起播按 ⏭、**私有音频装载在途时按 ⏭**（M1 真实形态）；第三种还会「终态被晚到的装载悄悄抹掉，但调用方已收到 `.stopped`」，锁屏侧映射成 `.success` | `PlaybackCoordinator.swift:858-868`/`:888-892`/`:1110-1117`；违反自述不变量 `:53-58`、design §9、以及第 5 批自己加的 `assertNoFakeTerminal`（矩阵每个场景都先 `start(items:)` 走完装载，故「从未装载/装载在途」两列从未覆盖） |
+| MAJ-R5-2 | Major（升级形态；= 第 9 批在修的 Major-1，**勿重复派单**） | `SharedSurfaceLedger` 只记「谁最后 claim」，不记「系统里还挂着谁的 target」→ 两条方向相反的谎：非持有者 teardown 摘净持有者 target 而持有者仍自称持有（假阳性）；一条 handler 都没挂、只写 `isEnabled` 的实例反而抢到所有权（假阴性）。生产可达：`CovaPlayer.teardown()` 里 `setCommandsEnabled(false)` 本身就是一次抢权塑形 | `MPNowPlayingController.swift:411-416/419-423/436-448/:63-67`、`CovaPlayer.swift:312`；探针 P7/P7b/P9 |
+| MAJ-R5-3 | **Major（判据级）** | 本仓「零 flake」判据在 HEAD 上不成立：本轮合计 **258,200 执行 / 10 失败**（全 target 200 迭代 75,200/2；`PrivateAudioFetcherTests` 500 迭代 25,000/7；四条 MAJ-1 取消用例 1000 迭代 4,000/1），失败全在第 6 批 MAJ-1 的永久测试上、各耗时 ≈10.1–10.6s（= `Signals.wait` 上界）。**根因在测试夹具不在生产**：`TransferWaiter.settle()` 把「我是第一个决出结果的人」与「我唤醒了已登记续体」混成同一返回值，`onTerminate` 只在返回 true 时触发；取消落在「已进出口、续体未登记」窗口时该路照样以取消收尾，但终止边沿永不 bump ⇒ 等待方等满上界变红。探针 FLAKE2：`thrown=1` 而 `terminatedBumps=0`；每次只有 1 条断言红、其余生产断言全过，可反证生产行为正确 | `CovaPlayerTestSupport.swift:1108-1118`/`:1133`/`:1149`；同一 `settle` 形态亦影响 `cancelInFlightTransfers()`（`:1254`，走 actor 同步区故不可命中）。第 8 批已用 `onDelivered` 手法修过 `NowPlayingCommandTests` 的同类自写竞态，但未推广到第 6 批留下的边沿信号 |
+| MIN-R5-4 | Minor | 登出/换号这条失效面**不清系统回显面**：`teardown()` 会 `nowPlaying?.teardown()`，而 `bindSession` 失效分支只丢上报+停引擎+清队列，`clearQueueAndStop()` 不做任何发布 → 实测登出后 `last=Optional("private-song")`，锁屏继续显示上一身份曲名。F-B 立的原则「失效面必须一致收敛」只做到了快照那一半 | `PlaybackCoordinator.swift:741` vs `:337`；探针 P8。违反 D8 / 硬边界 3 / design §7-§8 |
+| OBS-R5-5 | 观察 | `deliver`/`onDelivered` 接缝本身干净（不会挂死、不会双回显）；但 `handlerStatus(for:)`（`:288-295`）在第 7/8 批拆成受理/投递后**生产调用点归零**，只剩测试在断言这张表 —— 「表还绿、线已断」正是本仓攻击模板里的「未接线」形态。另：`acceptAndDeliver(.changeRate(to: 0)) == .success` 而投递 `.failure` 且 `publish` 计数 3→3（一次回显都没有），故「结果以 Now Playing 回显为准」对「被决策层拒绝且不改状态」的命令不成立 → 应补进 TD-42 真机冒烟清单 | `MPNowPlayingController.swift:250-259/265-271/282`、`PlaybackCoordinator.swift:595` |
+
+**修法指认**：MAJ-R5-1 —— 腿 (b) 失败时按「有没有失败账」分流（`failureStreak>0 || lastFailure!=nil`
+才允许写终态，否则收敛 `.held`），并把矩阵基态补上「装载在途 / 从未装载」两列。
