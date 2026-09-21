@@ -46,15 +46,18 @@ SwiftUI + Swift Concurrency，部署目标 iOS 26。分层为四个本地 SwiftP
 ├── Config/Info.plist        # bundle id / UIBackgroundModes:audio / 版本引用
 ├── Cova/CovaApp.swift       # 最小 App 入口（仅占位根视图）
 ├── CovaTests/               # App 工程层间装配测试（2 条）
-├── Packages/                # 四层本地 SwiftPM 包（CovaCore 已实现）
+├── Packages/                # 四层本地 SwiftPM 包：CovaCore ✅ / CovaPlayer ✅(G3-e 待验收)
+│                            #   CovaUI ⛔ / CovaFeature ⛔ —— 被硬边界 8 的 UI 禁令挡住
 ├── Scripts/
-│   ├── check.sh             # 门禁（8 步，见 §3）
-│   └── test-count-baseline.env   # 测试数量下限（APP_MIN=2 / CORE_MIN=372 / PLAYER_MIN=331）
+│   ├── check.sh             # 门禁（十步，零基 0/10…9/10，见 §3）
+│   └── test-count-baseline.env   # 测试数量下限（APP_MIN=2 / CORE_MIN=372 / PLAYER_MIN=394）
 ├── design/                  # tokens.json + screens/*.md + components.md + 官方 AppIcon
 └── docs/
     ├── PLAN.md PRD.md decisions.md api-contracts.md NEEDS.md
     ├── design-language.md release-runbook.md EXECUTION-PROMPT.md
-    └── log/20260917.md      # 全部推导、修复记录、技术债清单、环5验收
+    ├── review-g3e-round4.md # 环 3 隔离复审存档（§A–§F：第 4/5/6 轮 + 处置 + 协调者自纠）
+    └── log/                 # 分日推导与修复记录：20260917 / 20260918 / 20260921
+                             #   （技术债清单在本手册 §7，不在 log 里）
 ```
 
 工具链（本机实测）：**Xcode 27.0（27A266a）/ iOS 27.0 SDK / Swift 6.4 / XcodeGen 2.45.4**。
