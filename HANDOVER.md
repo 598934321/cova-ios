@@ -319,6 +319,15 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
 
 ## 8. 已知坑与硬约束（血泪经验）
 
+**一处待用户裁决的字面冲突（协调者不擅自改 AGENTS.md）**：`AGENTS.md` 写「每次 commit 递增
+`project.yml` 的 `CFBundleShortVersionString`/`CFBundleVersion」，而本仓实际（且此前各轮被接受的）
+做法是**只在影响构建产物的 commit 上递增**，纯文档 commit 不递增。理由：那两个值是**面向 App Store
+与用户的版本号**，若随注释/手册改动上涨，几轮评审就能把版本推到与实现无关的数字，反而失去
+「版本号对应一次可安装变更」的含义。代价是字面违规 —— `022a33a` 之后一串纯文档 commit
+（含本条）都没递增版本。**请用户裁决口径**：① 认可「影响产物的 commit 才递增」并把它写进 AGENTS.md（协调者
+建议），或 ② 要求字面逐 commit 递增（则本仓需一次补涨）。在裁决前，接手者请按 ① 执行并在
+commit message 里注明版本行是否变动，别静默两头押。
+
 **硬边界（`AGENTS.md`，违反即返工）**
 1. 只改本仓；不碰生产 env/DB/服务器；不碰相邻仓。
 2. 网络出口唯一 `https://covalink.cn`；开发期只允许**公开只读 GET**，写操作/扣费端点**未经用户单次批准不得调用**。
