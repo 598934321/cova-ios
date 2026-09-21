@@ -26,6 +26,8 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
         self.credentials = credentials
         self.baseDirectory = baseDirectory ?? Self.defaultBaseDirectory()
         self.fileManager = fileManager
+        // M6：启动期兜底清理上一次进程被杀 / 写异常留下的在途分片。
+        Self.discardInflightShards(in: self.baseDirectory, fileManager: fileManager)
     }
 
     /// 默认落在 Caches（系统可在空间不足时清理 —— 私有音频是可重取的缓存，不是唯一副本）。
@@ -143,16 +145,25 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
 
     // MARK: - 清理（D8：登出/换号清私有音频）
 
+    /// 清除某 owner 的全部私有音频（登出 / 换号）。返回**已确认删除**的文件数。
+    ///
+    /// M5：owner 必须先过校验。空 principal 的 hex 命名空间是 `""`，
+    /// `appendingPathComponent("")` 会算到**缓存根** —— 一次删掉所有账号的私有音频。
+    /// 取回侧早就 fail-closed（`PrivateAudioPath.fileURL` 调 `OwnerIdentifier.requireValid`），
+    /// 清理侧漏了同一道闸。
     @discardableResult
-    public func purge(owner: PrincipalID) -> Int {
-        let directory = PrivateAudioPath.ownerDirectory(base: baseDirectory, owner: owner)
-        let count = fileCount(in: directory)
-        removeItem(at: directory)
-        return count
+    public func purge(owner: PrincipalID) async -> Int {
+        guard (try? OwnerIdentifier.requireValid(owner)) != nil else { return 0 }
+        // M8 / D16②：作废在途传输，否则「已授权的下载」会在清理之后继续投递结果。
+        await transport.cancelInFlightTransfers()
+        return removeVerified(
+            at: PrivateAudioPath.ownerDirectory(base: baseDirectory, owner: owner)
+        )
     }
 
     @discardableResult
-    public func purgeStale(before generation: SessionGeneration) -> Int {
+    public func purgeStale(before generation: SessionGeneration) async -> Int {
+        await transport.cancelInFlightTransfers()
         let root = PrivateAudioPath.rootDirectory(base: baseDirectory)
         guard let owners = try? fileManager.contentsOfDirectory(
             at: root,
@@ -169,19 +180,35 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             for file in files {
                 let stored = PrivateAudioPath.generation(infileName: file.lastPathComponent)
                 guard let stored, stored < generation else { continue }
-                removed += 1
-                removeItem(at: ownerDirectory.appendingPathComponent(file.lastPathComponent))
+                if removeVerified(at: ownerDirectory.appendingPathComponent(file.lastPathComponent)) > 0 {
+                    removed += 1
+                }
             }
         }
         return removed
     }
 
     @discardableResult
-    public func purgeAll() -> Int {
-        let root = PrivateAudioPath.rootDirectory(base: baseDirectory)
-        let count = fileCount(in: root)
-        removeItem(at: root)
-        return count
+    public func purgeAll() async -> Int {
+        await transport.cancelInFlightTransfers()
+        return removeVerified(at: PrivateAudioPath.rootDirectory(base: baseDirectory))
+    }
+
+    /// 丢弃在途分片（M6）：`.inflight` 是隐藏目录、且不在 owner 目录下，
+    /// 因此 `purge(owner:)`/`purgeStale` 都到不了它 —— 上一次进程被杀或 ObjC 写异常
+    /// 留下的半文件会永久残留。清理与 `purgeAll` 都要覆盖它，并在启动期兜一次。
+    @discardableResult
+    public func discardInflightShards() -> Int {
+        Self.discardInflightShards(in: baseDirectory, fileManager: fileManager)
+    }
+
+    /// 启动期清理（同步，供 `init` 使用）。
+    @discardableResult
+    static func discardInflightShards(in base: URL, fileManager: FileManager) -> Int {
+        removeVerified(
+            at: PrivateAudioPath.temporaryDirectory(base: base),
+            fileManager: fileManager
+        )
     }
 
     /// 在途/已缓存文件总数（teardown 断言用）。
@@ -270,6 +297,44 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
         guard fileManager.fileExists(atPath: url.path) else { return }
         // 清理失败不影响判定：文件仍在 owner 目录内，purge/teardown 会兜底。
         try? fileManager.removeItem(at: url)
+    }
+
+    /// 删除并**复核删除结果**，返回已确认删除的文件数（m13）。
+    ///
+    /// 旧实现返回的是「删除前数到的数量」并用 `try?` 吞掉错误 —— 上层因此无法知道
+    /// 清理是否真的发生（登出后磁盘上其实还有上一个账号的私有音频，也会被告知「已清 N 个」）。
+    private func removeVerified(at url: URL) -> Int {
+        Self.removeVerified(at: url, fileManager: fileManager)
+    }
+
+    /// 同上（静态形态，供 `init` 的启动期清理复用）。
+    @discardableResult
+    static func removeVerified(at url: URL, fileManager: FileManager) -> Int {
+        guard fileManager.fileExists(atPath: url.path) else { return 0 }
+        let count = fileCount(in: url, fileManager: fileManager)
+        do {
+            try fileManager.removeItem(at: url)
+        } catch {
+            return 0
+        }
+        // 删除后复核：路径仍在就一个都不算删掉（宁可少报，不可虚报）。
+        return fileManager.fileExists(atPath: url.path) ? 0 : count
+    }
+
+    /// 目录（或单文件）下的文件总数。
+    static func fileCount(in url: URL, fileManager: FileManager) -> Int {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return 0 }
+        if !isDirectory.boolValue { return 1 }
+        guard let enumerator = fileManager.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return 0 }
+        var count = 0
+        for case let candidate as URL in enumerator where !candidate.hasDirectoryPath {
+            count += 1
+        }
+        return count
     }
 
     private func fileExists(at url: URL) -> Bool {
