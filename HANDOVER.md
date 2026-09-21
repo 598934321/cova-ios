@@ -531,6 +531,25 @@ git stash list && git stash show -p stash@{0}
 
 ---
 
+
+播放器层（**必须走 iOS 目的地，`swift test` 不可用** —— `AVAudioSession`/`AVPlayer`/
+`MediaPlayer` 是 iOS-only，macOS 宿主编译不过，这正是当年 TD-1 的根）：
+
+```bash
+cd Packages/CovaPlayer
+xcodebuild -scheme CovaPlayer -configuration Debug \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -derivedDataPath ../.build/check/DerivedData-CovaPlayer \
+  -enableCodeCoverage YES -only-testing:CovaPlayerTests/PlaybackCoordinatorTests test
+
+# 零 flake 判定（本仓口径：跑不完不算过；红一条即 Major）
+#   单套件 1000 迭代 / 全量 200 迭代，上界由 Signals.wait 的 10s 兜住
+... -only-testing:CovaPlayerTests -test-iterations 200 test
+```
+
+⚠️ 两条实测坑：**并行实例必须各用不同 `-derivedDataPath` 与不同模拟器**（共用会互删
+产物/抢设备，表现为一堆无根因的红）；`-enableCodeCoverage YES` 不能省，第 9/10 步的
+覆盖率读的就是**这一次**运行产出的 `Coverage.profdata`（分步跑两次会造出双份事实）。
 ## 12. 交接检查清单
 
 - [ ] 读完 `AGENTS.md`、`docs/EXECUTION-PROMPT.md`、`docs/PLAN.md`、`docs/decisions.md`（含 D16）。
