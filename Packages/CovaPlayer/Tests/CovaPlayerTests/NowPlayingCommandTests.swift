@@ -237,13 +237,13 @@ final class NowPlayingCommandTests: XCTestCase {
         XCTAssertEqual(metadata.elapsed, 0)
     }
 
-    // MARK: - 状态码 → MPRemoteCommandHandlerStatus
+    // MARK: - NowPlayingStatus 面穷举
 
-    func testHandlerStatusMappingCoversAllCases() {
-        XCTAssertEqual(MPNowPlayingController.handlerStatus(for: .success), .success)
-        XCTAssertEqual(MPNowPlayingController.handlerStatus(for: .noSuchContent), .noSuchContent)
-        XCTAssertEqual(MPNowPlayingController.handlerStatus(for: .notReadyToPlay), .noActionableNowPlayingItem)
-        XCTAssertEqual(MPNowPlayingController.handlerStatus(for: .failure), .commandFailed)
+    /// `handlerStatus(for:)` 已删（第 11 批）：MAJ-6 把命令桥改成「同步受理 + 异步投递」后
+    /// 它在生产侧零调用点，只剩一张测试在断言的表。返回码唯一来源是 `acceptanceStatus(for:)`，
+    /// 播放结果以 Now Playing 回显为准（TD-42 记着实机冒烟时是否要把它接回来）。
+    /// 这里保留的是**枚举面穷举**那一半：新增 case 必须在此被看见。
+    func testNowPlayingStatusCaseSetIsExhaustive() {
         XCTAssertEqual(NowPlayingStatus.allCases.count, 4)
     }
 

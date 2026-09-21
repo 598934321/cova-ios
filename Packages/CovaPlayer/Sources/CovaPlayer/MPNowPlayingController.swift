@@ -383,16 +383,6 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
         Task { onDelivered(await router.handle(command)) }
     }
 
-    /// 状态码映射（纯函数）。
-    public static func handlerStatus(for status: NowPlayingStatus) -> MPRemoteCommandHandlerStatus {
-        switch status {
-        case .success: return .success
-        case .noSuchContent: return .noSuchContent
-        case .notReadyToPlay: return .noActionableNowPlayingItem
-        case .failure: return .commandFailed
-        }
-    }
-
     /// 系统 command center 单例。
     public static func sharedCenter() -> MPRemoteCommandCenter { MPRemoteCommandCenter.shared() }
 
