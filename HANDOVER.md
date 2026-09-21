@@ -303,6 +303,13 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
   `NowPlayingCommandRouter` 待复核）。门禁第 4/10 步只断言 `-swift-version 6`，
   对这类**编译器被说服放弃检查**的位置零可见性 —— 而第 5/6 轮抓到的两处竞态
   （`SharedSurfaceLedger`、`StubURLProtocol` 静态面）恰好都住在这类位置下面。
+  **协调者逐处核过的结论（2026-09-22，避免下一个人重做这次普查）**：**9 处全部是真·锁守卫**
+  —— `InMemorySecureStore` / `InMemoryActiveOwnerStore` 各带 `NSLock`；`AVPlayerEngine`（`NSLock`，
+  并在 `:241` 明写「NSLock 只能在同步上下文使用」这条 Swift 6 约束）；`NowPlayingCommandRouter`；
+  `MPNowPlayingController` 与其内嵌 `SharedSurfaceLedger`；`URLSessionPrivateAudioTransport`
+  （可变状态只有 `liveSession` / 三个 `locked*` 计数，全在 `NSLock` 下）；`AVAudioSessionAdapter`
+  与其内嵌 `ObserverLedger`。所以本条**不是**「疑似有未同步的可变状态」，而是：注解放弃的检查
+  没有留在原地可查，门禁也看不见锁纪律是否还成立。
   建议的机制化形态（不要只数数量）：**每处 `@unchecked Sendable` 必须紧邻一行
   `// SAFETY:` 说明同步策略**，门禁断言「站点数 == 标记数」并配**只降不升**的站点上限棘轮；
   同时在 `/tmp` 克隆里做一次反向守卫（删掉一个标记必须变红）。
