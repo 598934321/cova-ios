@@ -211,10 +211,15 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
 - TD-11：**已关闭**（基线文件改为**键名白名单解析**，不再 `.` source；实测 8 种投毒形态
   —— 覆写 `CORE_COVERAGE_MIN`/`IOS_ONLY_MODULES`/`REQUIRED_DEPLOYMENT_TARGET`、重复键、
   内联注释、负数、`$(...)`、`export` —— 全部拒跑）。
-- TD-38：播放器层**禁 UI 判据是黑名单形态**，已被连续打穿三次（SwiftUI/UIKit → AVKit →
-  WebKit/SafariServices/MessageUI，另加「仅测试 target 里的 UIKit」三层皆不可见）。
-  收敛方向：改**白名单**（含测试 target）、符号层纳入测试 objdir、dylib 层 UIKit 豁免
-  收窄为「UIKit 且 weak」。根因是形态问题，不是词表漏项 —— 别再往黑名单里加名字。
+- TD-38：播放器层**禁 UI 判据**已由黑名单形态改为**白名单形态**（`944ba98`）：非测试
+  target 只允许 `Foundation / AVFoundation / CovaCore / MediaPlayer`（实测从 import 全集
+  扫出，刻意不塞未使用模块，故删任一项必红），测试 target 再加 `XCTest`；三层判据
+  均纳入测试 target 的扫描域与 objdir；dylib 层 UIKit 豁免**收窄为「UIKit 且 weak」**
+  （实测合法二进制是 weak UIKit，一旦直接引用即变强依赖 → 红）。黑名单 15 项保留为
+  附加防线。**代价（协调者已裁决接受）**：将来播放器要 import `os`/`Dispatch`/`CoreMedia`
+  等必须显式改清单 —— 这正是白名单的意义，不得为省事预先塞宽。
+- TD-41：禁 UI 白名单**不拦反射/`dlopen` 取 UI 类**（已写进脚本注释）。本仓门禁的威胁模型
+  是「防无意回归与锁定决策失守」，不防蓄意绕过；M1 若引入任何动态加载需人工复核。
 - TD-39：`AdvanceOutcome`/`PlayerError` 结果粒度不足：环 4 的 F-4（终态应回 `.stopped`）、
   F-5（装载在途时 seek 应专属拒绝码）只能复用既有 case，因为新增 case 会打破
   `NowPlayingController` 的穷尽 switch。M1 接 UI 时一并复核更细粒度的结果类型。
