@@ -10,10 +10,10 @@
 
 | 项 | 值 |
 |---|---|
-| 当前锚点 | HEAD = 本 commit（G3-e 环 4 第 11 批 B 落证，父提交 `bbb1a2e`），工作树干净（另有 1 个 stash，**用户裁决保留不动**，见 §9） |
-| 版本 | `CFBundleShortVersionString 0.2.49` / `CFBundleVersion 60`（`project.yml`） |
-| 阶段 | G0 已落证；G3（核心层）**G3-a/b/c/d 已验收**，**G3-e（CovaPlayer）处于环 3↔环 4 收敛末段**：已跑 6 轮全新隔离评审，第 6 轮 0 Critical / 1 Major（MAJ-R6-1）两半已分别由第 11 批与第 11 批 B 收口，**待第 7 轮复审确认「零 Critical 且零 Major」才算验收**。G1 方向稿**用户明确裁决未验收**；G2 全量规格由本仓代产出（`design/screens/` 18 屏 + 12 号屏拆 a–d，索引见 `design/screens/inventory.md`）**待用户验收** |
-| 门禁 | `Scripts/check.sh` **十步** EXIT=0（协调者在第 11 批 B 最终字节上亲跑）：`CovaTests` 2/0、`CovaCoreTests` 372 / 95.28%、`CovaPlayerTests` **394/0/0 跳过** / **CovaPlayer 3203 行 = 94.99%**（15/15 源文件无条件归因）、基线 `PLAYER_MIN=394`；禁 UI 判据已改**白名单形态**并含测试 target 三层扫描（TD-38/TD-41）|
+| 当前锚点 | HEAD = 本 commit（G3-e 环 4 第 12 批收口，代码锚点 `f477114`），工作树干净（另有 1 个 stash，**用户裁决保留不动**，见 §9） |
+| 版本 | `CFBundleShortVersionString 0.2.50` / `CFBundleVersion 61`（`project.yml`） |
+| 阶段 | G0 已落证；G3（核心层）**G3-a/b/c/d 已验收**，**G3-e 处于环 3↔环 4 收敛末段**：已跑 7 轮全新隔离评审。第 7 轮**不放行**（0 Critical / 1 Major / 4 Minor，那条 Major 是 11B 自己留下的「修一半」），已由第 12 批收口并按评审要求在其探针上重验，**待第 8 轮复审确认「零 Critical 且零 Major」才算验收**。G1 方向稿**用户明确裁决未验收**；G2 全量规格由本仓代产出（`design/screens/` 18 屏 + 12 号屏拆 a–d，索引见 `design/screens/inventory.md`）**待用户验收** |
+| 门禁 | `Scripts/check.sh` **十步** EXIT=0（协调者在第 11 批 B 最终字节上亲跑）：`CovaTests` 2/0、`CovaCoreTests` 372 / 95.28%、`CovaPlayerTests` **397/0/0 跳过** / **CovaPlayer 3250 行 = 95.00%**（15/15 源文件无条件归因）、基线 `PLAYER_MIN=397`、零 flake 189,400 执行/0 失败；禁 UI 判据已改**白名单形态**并含测试 target 三层扫描（TD-38/TD-41）|
 | 设计闸门 | G1 **未验收**（用户裁决）/ G2 代产出**待验收** → **禁止写任何 UI 代码**（硬边界 8；门禁第 6 步机制化把关，不是口头承诺）|
 | 唯一未阻塞工作 | G3-e 收尾（第 7 轮隔离复审 + 环 5 落证）。**M1–M3 / G4 全部阻塞**在外部依赖上：① G2 用户验收（硬边界 8 的 UI 禁令）；② 后端 NEEDS —— #1 `AUTH-LOGIN-TOKENS`（`user` DTO 缺 `covaId`/`phone`/`isArtist`/`isPartner`，M1 登录闭环）、#2 `PLAY-SOURCE-MOBILE`（`app-ios` 不在播放上报 allowlist，M1 上报）、#15 `PRIVATE-AUDIO-HOST-SHAPE`（私有音频主机形态，G3-e 只按守卫开发、不冒充线上）、#4 `ACCOUNT-DELETE`（G4 提审硬要求）|
 | 下一步 | 见 §9/§13：G3-e 第 7 轮复审放行 → 环 5 落证 + 交付清单 + 模拟器验收位；轨道 B 等用户对 G2 全量规格的验收 |
@@ -642,7 +642,25 @@ M7 并发去重 + M4 登出清盘接线 + M3 生产音频会话注册）。
   不在批次进行中抬基线（避免量一棵移动中的树），**收尾时必须**：整轮 `check.sh` EXIT=0
   复核 → 把 `PLAYER_MIN` 抬到当时终值 → 再派第 5 轮隔离复审。
 
-### 环 4 → 环 3 现场快照（2026-09-22 01:25，协调者，供 `/goal resume` 接手）
+### 环 4 → 环 3 现场快照（2026-09-22 03:29 更新，协调者，供 `/goal resume` 接手）
+
+**当前在跑**：**第 8 轮全新隔离复审**，锚点 **`f477114`**，克隆在 `/tmp/r8-clone`、独立
+`/tmp/dd-r8`、模拟器 `iPhone 17 Pro Max`。给它的六个靶子：总闸是否真的总（含反向误杀）、
+R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 矩阵空列与 MIN-R7-4 错误注释
+**尚未修**）、本批**缺失的变异自证**（要求它自己对总闸/toggle/clamp 各做一次）、独立复跑
+`check.sh` 与迭代数、`.paused` 语义口径与 design §9 例外条款。
+
+**第 7 轮结论**：不放行（0 Critical / 1 Major / 4 Minor）。那条 Major 是 11B 自己留下的
+「修一半」（守卫按症状写），已在 `de18a14`+`d956ffc` 收口并按评审要求**在它自己的探针上
+重验**（R7B 绿；R7A/R7D 红在缺陷态与被推翻的前置上；R7C 是口径分歧交第 8 轮判）。
+全文与判读在 `docs/review-g3e-round4.md` §G，证据在 `docs/log/20260921.md` §21–§23。
+
+**第 12 批尚未做完的（§22 已逐条登记，不得静默）**：矩阵空列、可暂停态一处定义、两处错误注释、
+`.env` 历史口径注释、以及**本批没做的变异自证**。
+
+---
+
+### 环 4 → 环 3 现场快照（2026-09-22 01:25，协调者，历史）
 
 **已入库（工作树干净）**
 - `2f22a39` 第 11 批附带项：删掉生产零调用的 `handlerStatus(for:)` 表（取删不取接回）。
