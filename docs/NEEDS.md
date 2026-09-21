@@ -19,6 +19,16 @@
 | 12 | TRACK-SIMILAR-TO-PROJECTION | `GET /api/tracks?similarTo=<id>` 的 `tracks[]` 返回 **similar 投影**（`featured` 数字、仅 snake_case `preview_start/end/play_count/created_at/audio_duration`、多出 `similarityScore`、封套回显 `similarTo`），与同一端点的其余筛选（普通列表投影）不一致（2026-09-17 实测：3 个 seed × 5 条，`featured` 全为 int、camel `preview*` 0 命中；`search/energy/sort/vocalType` 对照仍为普通投影）。客户端已建 `SimilarTrackPageDto` / `SimilarTrackDto` 分别承接 | M1（非阻塞） | 统一 `tracks[]` 投影（建议全部走普通列表投影，或提供版本化投影标识），使同一端点只有一种元素模型 |
 | 13 | SSE-AGENT-PAYLOAD-SCHEMA | `POST /api/studio/agent` 的**请求体字段**与 `thinking/text/error/done/plan_card/run_*` 各事件的**载荷 schema** 未在契约文档化；「坏事件」判定口径亦未定义（客户端暂按 web 源码与推断实现：`thinking/text/error`=`{text}`、`done`=`{}`、`plan_card`=卡投影；坏事件 = `data:` 载荷非合法 JSON，容忍未知/`run_*` 事件名） | M2（非阻塞，客户端已按推断实现并容忍未知字段） | 契约补齐 agent 请求体与各事件载荷 schema，并明确「坏事件」判定口径，使降级触发的「3 个坏事件」有据可依 |
 
+| 14 | PLAY-REPORT-RESPONSE-SCHEMA | `POST /api/tracks/play` 的**响应 schema 未文档化**。客户端 `PlayReportResponseDto{message, recorded, idempotentReplay, authenticated, play}` 是按 web 源码与推断写的**目标形态**，且 `idempotentReplay` 直接驱动客户端的去重分支（把它当服务端事实用）。 | M1（非阻塞：客户端已按可选容忍） | 文档化真实响应 schema 并给一份可回灌的脱敏样本；明确 `idempotentReplay`/`recorded` 的语义与幂等重放时的状态码 |
+| 15 | PRIVATE-AUDIO-HOST-SHAPE | 私有候选音频的**签名地址 host 形状未文档化**。客户端出口守卫要求 host **恰为** `covalink.cn`（`CovaEnvironment.isProductionOrigin`）；若服务端把签名地址落在子域（如 `cdn.covalink.cn`），D7 的「先 Bearer 下载再本地播」会被 `.hostRejected` **永久堵死**。 | M1（解锁前私有候选试听不可用） | 明确候选音频/下载文件的实际 host（同域或子域清单）；若允许子域，需协调者批准收窄后的白名单，客户端不得自行放宽 |
+| 16 | PRIVATE-AUDIO-CONTENT-LENGTH | 私有音频响应若不带 `Content-Length`（chunked 传输），客户端**只能判「非空」，判不出「早断」**——截断文件会被当作有效缓存交付播放。 | M1（非阻塞，与 #6 同源） | 私有音频响应恒带准确 `Content-Length`，或提供校验和/`ETag`/Range 支持（#6），使完成性可判定 |
+| 17 | SESSION-MESSAGE-FIELDS | `GET /api/find-my-song/sessions/:id` 的**消息条目字段键名未文档化**（角色、文本、客户端消息 id 的具体键名与可空性），客户端只能按 web 源码推断解码。 | M2 | 文档化消息条目 schema（含 `clientMessageId` 归属校验所需字段，用于「计划卡归属 `sourceMessage.messageId === clientMessageId` 才解锁开始制作」） |
+| 18 | SESSION-DELETE | **无会话删除端点**（会话列表左滑删除无处可调）。 | M2 | 提供 `DELETE /api/find-my-song/sessions/:id`（幂等），或明确「客户端隐藏删除」的产品口径 |
+| 19 | CREATIONS-SUMMARY | 「我的创作」所需的**聚合摘要字段缺失**（每个会话的候选数/进行中任务/最后更新时间未随列表返回）。 | M3（非阻塞：可由列表页本地聚合降级） | 会话列表返回稳定摘要字段，或提供计数端点 |
+| 20 | DOWNLOADS-LIST | **无「已下载」列表端点**：现有只有 `GET/POST /api/downloads/checkout` 与 `GET /api/downloads/:id/file`，无法呈现已下载曲目清单与空间占用统计。 | M3（且受 D12 合规门禁约束） | 提供已下载清单端点（含文件名/大小/时间），或明确「已下载只读本地缓存」的产品口径 |
+| 21 | FAVORITES-BATCH | **无批量收藏态查询**：`GET /api/favorites` 返回整表，列表/详情页要判断「本屏哪些曲目已收藏」只能全量拉取或逐条查询。 | M1（非阻塞：降级为不显示收藏态或整表拉取） | 支持 `GET /api/favorites?trackIds=`（或返回可建的 id 集合），并明确分页/上限语义 |
+| 22 | ARTIST-PROFILE | **无 AI 音乐人档案端点**：`GET /api/tracks?artistId=` 只能筛曲目，人设页所需的头像/简介/标签无处可取。 | M3 | 提供艺人档案端点（或明确由曲目投影聚合的字段清单） |
+
 ## 已确认可用（无需等待，可并行开发）
 
 - 曲库：`GET /api/tracks`（多维筛选/搜索/分页/排序/similarTo）、`GET /api/tracks/:id`、
