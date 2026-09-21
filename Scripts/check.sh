@@ -44,6 +44,31 @@
 #         同名」猜测归因，任一猜不到就整段跳过（只 echo 一行提示）⇒ 布局漂移即静默免检。
 #         现改为消费编译器自己写出的 <Target>-OutputFileMap.json（机器可读产物），
 #         并做「编译集合 ↔ map ↔ objdir 内 .o」三向全等，归因不可能一律 fail-closed。
+#         ⚠ 可达性据实说明见 9.1 段首（第 3 轮复审实测：篡改 OutputFileMap / 替换 .o 会被
+#           构建自修 ⇒ 那两条攻击形态在本步不可达，属纵深防御，不要当作「已实测拦住」）。
+#   * 环 4 第 3 批（**同一失守面第 3 次复现 → 换判据形态**，手册 §4 第 8 条）：
+#       - G-16（主判据换形态：黑名单 → 白名单）：播放器层（含其**测试 target**）的 import
+#         只允许固定允许清单 PLAYER_ALLOWED_NONTEST_MODULES（测试侧再 +XCTest）；
+#         任何不在清单内的模块（含未来出现的任何新 UI 框架）即红。
+#         为什么必须换形态：G-11 的 L1 只认 SwiftUI/UIKit → 复审判 AVKit 全绿（G-14，扩到 12 项）
+#         → 第 3 轮复审又判 `import WebKit` + `WKWebView(frame:.zero)` + `loadHTMLString` 放进
+#         Sources/CovaPlayer/ **完整门禁 EXIT=0**（`import SafariServices`、`import MessageUI`
+#         各自也 EXIT=0）。根因不是「少列了三个框架」，而是**黑名单靠人列举，永远漏**：
+#         推导基 IOS_ONLY_MODULES 是「iOS-only 框架」集，WebKit/SafariServices/MessageUI 因
+#         macOS 也有而不在其中 ⇒「UI 框架全集」无法由它派生，只能反过来钉「允许清单」。
+#         清单成员全部来自实测（见常量区注释），并加规模/成员下界断言，防止清空或删项放行。
+#         旧黑名单（PLAYER_UI_MODULES，本轮再补 WebKit/SafariServices/MessageUI 三项实证）
+#         保留为**附加防线**，一字不放宽。
+#       - G-17（三层判据一律覆盖**测试 target**，第 3 轮复审实测缺口）：复审把
+#         `import UIKit` + `UIView` 只放进 CovaPlayerTests 后三层皆不可见 ——
+#         L1 只扫 `m_type = "regular"`；符号层 objdir 集合只含产品 target 的 CovaPlayer-t.build
+#         （`CovaPlayerTests-p.build/GateUIKitInTests.o` 里的 `_OBJC_CLASS_$_UIView` 从未被读）；
+#         dylib 层对 UIKit **整名**豁免。现三层都纳入测试 target，且 UIKit 豁免**收窄为
+#         「UIKit 且 weak」**。实测依据（本批干净 clone 产物）：合法态测试二进制的 UIKit 条目是
+#         `/System/Library/Frameworks/UIKit.framework/UIKit (compatibility version 1.0.0,
+#         current version 9127.0.84, weak)`，由 AVFoundation 的 Swift overlay 以 -weak_framework
+#         拖入；一旦本层直接引用即变**强依赖** ⇒ weak 确实承载信号。上一批写进注释的
+#         「weak 与否不承载信号」已被实测否证，本批据实改判（这是收窄，不是放宽）。
 # 任一步失败均非零退出；日志落在 .build/check/ 下（.build/ 不入 git）。
 # 用法：./Scripts/check.sh
 set -euo pipefail
@@ -95,36 +120,94 @@ REQUIRED_STRICT_CONCURRENCY="complete"
 REQUIRED_LANGUAGE_VERSION="6"
 # CovaCore 是纯逻辑层（D3/D9），覆盖率在宿主侧测量 → 不得引用 iOS-only 框架
 # （字面令牌按词边界匹配：无法用 import/* */Foo 之类语法伪装；注释误报属 fail-closed）
-IOS_ONLY_MODULES="UIKit SwiftUI AVFoundation AVKit ARKit RealityKit CoreMotion HealthKit WidgetKit Photos PhotosUI BackgroundTasks CallKit WatchKit SpriteKit MetalKit MapKit RoomPlan"
+# G-16 追加 WebKit / SafariServices / MessageUI：这三个在 macOS 上**也有**，所以历史上没被
+# 归进「iOS-only」集（第 3 轮复审正是从这条缝里过去的）。但 CovaCore 是平台中立的纯逻辑层，
+# 它禁的是「任何 UI / 设备侧框架」，不是「只有 iOS 才有的框架」⇒ 补进来既符合 D3/D9 语义，
+# 也堵住「把 UI 代码放进 CovaCore、让播放器层通过 import CovaCore 间接拿到 UI」这条传递路径
+# （CovaPlayer 唯一允许依赖的包就是 CovaCore）。只追加、不删除 ⇒ 对 CovaCore 是净收紧。
+IOS_ONLY_MODULES="UIKit SwiftUI AVFoundation AVKit ARKit RealityKit CoreMotion HealthKit WidgetKit Photos PhotosUI BackgroundTasks CallKit WatchKit SpriteKit MetalKit MapKit RoomPlan WebKit SafariServices MessageUI"
 # CovaCore 平台声明白名单（.macOS 仅用于宿主侧覆盖率测量，不得用于产品分支）
 REQUIRED_CORE_PLATFORMS=".iOS(.v26),.macOS(.v14)"
-# 播放器层（G3-e）：包名与「禁 UI」判据的**单一词源**（G-14）
+# G-18（第 3 批 Minor-4）：**四个包**的 platforms 都必须钉死到 D1（iOS 26）。
+# 权威来源是 dump-package（`platforms:` 行文本可被整行删除 / 注释 / 拆成多行来绕过 grep 判据，
+# 上一轮就是只有 CovaCore 被等值钉住，其余三个改成 .v15 不触红）。形态 = "name=version" 集合。
+required_platforms_for() {
+  case "$1" in
+    CovaCore)    echo "ios=26.0 macos=14.0" ;;
+    CovaPlayer)  echo "ios=26.0" ;;
+    CovaUI)      echo "ios=26.0" ;;
+    CovaFeature) echo "ios=26.0" ;;
+    *)           echo "" ;;
+  esac
+}
+# 播放器层（G3-e）：包名 + 两套方向的判据 —— 主判据 G-16 白名单（PLAYER_ALLOWED_*），
+# 附加防线 G-14 黑名单（PLAYER_UI_MODULES，三处判据的单一词源）。
 PLAYER_PKG="CovaPlayer"
 PLAYER_PKG_DIR="Packages/CovaPlayer"
-# 行首 import（附加防线的第一段）：在既有 `(@属性 )*import` 基础上**只追加**可识别的前缀形态
-# —— 块注释前缀（`/* c */ import`）、访问级修饰符（public/internal/private/fileprivate/package），
-# 以及带参数的属性（`@_spi(Cova) import` / `@_exported(…) import`；环 4 第 2 批补漏：
-# 实测 `@_spi(Cova) import WidgetKit` 在旧写法下绕过 L1，新写法是旧写法的严格超集）。
-# 不允许 `//` 行注释前缀，故「注释掉的 import」依旧不误红（TD-9 合法工程对照）。
+# 行首 import（附加防线的第一段 + G-16 白名单的锚定段）：在既有 `(@属性 )*import` 基础上
+# **只追加**可识别的前缀形态 —— 块注释前缀（`/* c */ import`）、访问级修饰符
+# （public/internal/private/fileprivate/package）、带参数的属性（`@_spi(Cova) import` /
+# `@_exported(…) import`；环 4 第 2 批补漏：实测 `@_spi(Cova) import WidgetKit` 在旧写法下绕过 L1），
+# 以及本轮补的 `preconcurrency import`（实测旧写法漏检）。
+# 每一类都是**可选组** ⇒ 命中集合只增不减（新 PLAYER_IMPORT_LINE_RE 是旧写法的严格超集）。
+# 不允许 `//` 行注释前缀，故「注释掉的 import」依旧不误红（TD-9 合法工程对照；
+# 实测 Sources/CovaPlayer/NowPlayingController.swift 的文档注释里就有「刻意不引入 UIKit」字样，
+# 整文件词边界扫描会在合法工程误红 ⇒ 播放器层的字面判据必须保持行锚定形态）。
 # 声明式 import（`import class AVKit.AVPlayerViewController`）本就命中段 1（只看行首的
-# `import`），段 2 的词边界扫描在同一行里点名 AVKit ⇒ 也红。
-PLAYER_IMPORT_LINE_RE='^[[:space:]]*(/\*[^*]*\*+([^/*][^*]*\*+)*/[[:space:]]*)*(@[A-Za-z_]+(\([^()]*\))?[[:space:]]+)*(public[[:space:]]+|internal[[:space:]]+|private[[:space:]]+|fileprivate[[:space:]]+|package[[:space:]]+)?import[[:space:]]'
-# ── G-14：禁 UI 的词表。三条判据（L1 字面 import / L3 目标 .o 的 Swift mangling /
-#    L3 测试二进制的框架依赖表）**全部**由本变量派生，不再各写一份字面量 ——
-#    上一轮正是「三层共用一份只有 SwiftUI|UIKit 的词表」被一次 `import AVKit` 整体绕过。
-#    词源取 CovaCore 的 IOS_ONLY_MODULES 中「带 UI 的框架」子集（同一次裁决的口径）。
+# `import`），G-16 的模块名解析取 `class` 之后的第一段 ⇒ 也红。
+# 本轮再补两个可选前缀形态（都是可选组 ⇒ 命中集合只增不减）：
+#   * `*/ import X`：跨行块注释的**收尾行**与 import 同行（旧 RE 看不见，实测可编译）；
+#   * `preconcurrency import X`：旧 RE 的修饰符组里没有它（实测漏检）。
+# 拆成 TOKEN + 尾部两段：TOKEN 供 grep -oE 剥前缀用（BSD sed -E 不接受本 RE 里的 `\(`，
+# 实测报「parentheses not balanced」，故不能用 sed 剥），尾部区分「同行有模块名」与
+# 「模块名在下一行」两种形态（后者实测 Swift 可编译：`import` 换行 + 缩进 + 模块名）。
+PLAYER_IMPORT_TOKEN_RE='^[[:space:]]*((\*[[:space:]]*)*/[[:space:]]*)?(/\*[^*]*\*+([^/*][^*]*\*+)*/[[:space:]]*)*(@[A-Za-z_]+(\([^()]*\))?[[:space:]]+)*(public[[:space:]]+|internal[[:space:]]+|private[[:space:]]+|fileprivate[[:space:]]+|package[[:space:]]+|preconcurrency[[:space:]]+)?import'
+PLAYER_IMPORT_LINE_RE="${PLAYER_IMPORT_TOKEN_RE}[[:space:]]"
+# 行尾即 import（模块名被换行拆开）：旧 L1 完全看不见这种形态，G-16 一并纳入
+PLAYER_IMPORT_CONT_RE="${PLAYER_IMPORT_TOKEN_RE}[[:space:]]*\$"
+# ── G-16（**主判据**）：播放器层 import 白名单。判据方向与黑名单相反 ——
+#    黑名单要人列举「哪些框架算 UI」（已连漏三轮），白名单只需钉住「本层实际用到哪些」，
+#    于是任何新框架（WebKit / SafariServices / MessageUI / 未来任何 UI 框架）默认即红。
+#    成员**全部来自实测**，不是拍脑袋：
+#      $ grep -rE '^[[:space:]]*(@[A-Za-z_]+[[:space:]]+)?(public |internal |private |fileprivate |package )?import ' \
+#          Packages/CovaPlayer/{Sources,Tests}
+#      → 非测试 15 个源文件：AVFoundation(3) CovaCore(6) Foundation(16) MediaPlayer(1)，**无其它**
+#        测试 11 个文件：     AVFoundation(4) CovaCore(9) Foundation(8) MediaPlayer(1) XCTest(10)
+#                             @testable CovaPlayer(11)
+#    ⇒ 允许清单 = 实测集合，**不含任何未使用的模块**（刻意不预先塞 Darwin/Dispatch/os/CoreGraphics/
+#      CoreMedia 这类「以后可能用到」的项：清单里每一项都被真实源码使用 ⇒「删掉任意一项」当场即红，
+#      这比任何下界断言都硬，也正是 Minor-2 要的闭合方式）。将来确需新模块时必须显式改本清单，
+#      该改动随 commit 进入审查；而任何 UI 框架塞进清单会被下方的「允许清单 ∩ UI 词源 = ∅」断言
+#      与 L1 黑名单、符号层、依赖表层同时拦住（四道，不是一道）。
+#    判据面（据实说明，不夸大）：白名单拦的是「编译期模块依赖」（import 语句的各种合法写法），
+#      符号层/依赖表层拦的是「产物里真的引用/链接了 UI 框架符号」。纯字符串反射
+#      （`NSClassFromString("WKWebView")`）与 dlopen 不产生编译期依赖也不产生 UI 符号 ⇒
+#      不在本门禁的拦截面内，那属「蓄意伪装」，与开头「威胁模型边界」一致（要拦它得靠静态
+#      语法级检查或运行时白名单，超出仓内门禁能力）。
+PLAYER_ALLOWED_NONTEST_MODULES="Foundation AVFoundation MediaPlayer CovaCore"
+# 测试 target 在此之上追加：XCTest（框架）+ 被测模块本身（`@testable import CovaPlayer`）
+PLAYER_ALLOWED_TEST_EXTRA_MODULES="XCTest"
+# 下界（Minor-2）：规模与成员都不许缩。REQUIRED_* 是上面实测得到的集合。
+PLAYER_ALLOWED_NONTEST_MIN=4
+PLAYER_ALLOWED_TEST_MIN=5
+PLAYER_ALLOWED_REQUIRED_NONTEST="Foundation AVFoundation MediaPlayer CovaCore"
+PLAYER_ALLOWED_REQUIRED_TEST="Foundation AVFoundation MediaPlayer CovaCore XCTest"
+# ── 附加防线（G-14 黑名单，只追加不放宽）：本轮把第 3 轮复审实测漏掉的三个框架点名补进词源。
+#    三条判据（L1 字面 import / L3 目标 .o 的 Swift mangling / L3 测试二进制的框架依赖表）
+#    **全部**由本变量派生，不再各写一份字面量 —— 上一轮正是「三层共用一份只有 SwiftUI|UIKit
+#    的词表」被一次 `import AVKit` 整体绕过。
+#    为什么不能由 IOS_ONLY_MODULES 推导（Major-1）：那是「iOS-only 框架」集，
+#    WebKit/SafariServices/MessageUI 在 macOS 上也有 ⇒ 不在其中 ⇒「UI 框架全集」无法派生。
 #    **不含**播放器层合法依赖：AVFoundation / MediaPlayer / CoreMedia / Foundation / CovaCore。
 #    三处匹配都是「整名」形态，故前缀不会互相误伤（实测合法工程三处均零命中）：
 #      L1 词边界（`AVFoundation` 不含词 `AVKit`）、L3 长度前缀（`$s12AVFoundation` ≠ `$s5AVKit`、
 #      `Metal` ≠ `MetalKit`）、L3 `<名>.framework` 字面子串（`Photos` 不在词表内，`PhotosUI` 独享）。
-PLAYER_UI_MODULES="SwiftUI UIKit AVKit PhotosUI MapKit MetalKit SpriteKit WidgetKit CallKit WatchKit RealityKit RoomPlan"
-# L3 框架依赖表里必须整名容忍的项：**实测**播放器层测试二进制的合法态就有
-# `/System/Library/Frameworks/UIKit.framework/UIKit (…, weak)`（AVFoundation 的 Swift overlay 以
-# -weak_framework 拖入），纳入即恒红（TD-9）；且真用 UIKit 的合法 App 二进制里 UIKit 同样是
-# weak（实测 Cova.debug.dylib）⇒「weak 与否」不承载信号，只能整名容忍。
-# UIKit 在该层的缺口由另两处承担：L1 字面（含 public/package/块注释前缀形态）与 L3 符号层
-# （`$s5UIKit` + `_OBJC_CLASS_$_UI[A-Z]`，实测合法工程零命中）。
-PLAYER_UI_DYLIB_EXEMPT="UIKit"
+PLAYER_UI_MODULES="SwiftUI UIKit AVKit PhotosUI MapKit MetalKit SpriteKit WidgetKit CallKit WatchKit RealityKit RoomPlan WebKit SafariServices MessageUI"
+# L3 框架依赖表里**只在「该框架且 weak」时**容忍的项（G-17，第 3 轮实测）：
+# 合法态测试二进制确实带 UIKit，但是 weak（AVFoundation 的 Swift overlay 以 -weak_framework 拖入）；
+# 本层一旦出现直接引用即变强依赖 ⇒ 「weak 与否」承载信号，豁免面从「整名」收窄为「名 + weak 属性」。
+# 上一轮的 PLAYER_UI_DYLIB_EXEMPT（整名豁免）与「weak 不承载信号」的依据均已被实测否证。
+PLAYER_UI_DYLIB_WEAK_OK="UIKit"
 # 产物侧判据（L3 符号层）：Swift mangling 里模块名带长度前缀，可精确归属（llvm-nm 输出形如
 # `_$s5AVKit…`）；UIKit 的 ObjC 类只能按类名前缀归属（`_OBJC_CLASS_$_UIView` 等）——实测合法工程
 # （AV*/MP*）零命中。
@@ -138,6 +221,39 @@ fail() {
   exit 1
 }
 
+# ── G-16：白名单自检 —— 清单本身不许被缩/被清空/被塞进 UI 框架（Minor-2 的闭合面）。
+# 三处扫描（3/10 目录级、9/10 编译集合级，均含测试 target）都从这两个变量派生。
+PLAYER_ALLOWED_TEST_MODULES="${PLAYER_ALLOWED_NONTEST_MODULES} ${PLAYER_ALLOWED_TEST_EXTRA_MODULES}"
+# (a) 规模下界
+PLAYER_ALLOWED_NONTEST_N="$(printf '%s\n' "$PLAYER_ALLOWED_NONTEST_MODULES" | wc -w | tr -d ' ')"
+PLAYER_ALLOWED_TEST_N="$(printf '%s\n' "$PLAYER_ALLOWED_TEST_MODULES" | wc -w | tr -d ' ')"
+[ "${PLAYER_ALLOWED_NONTEST_N:-0}" -ge "$PLAYER_ALLOWED_NONTEST_MIN" ] \
+  || fail "G-16 播放器层非测试允许清单规模 ${PLAYER_ALLOWED_NONTEST_N} < 下界 ${PLAYER_ALLOWED_NONTEST_MIN}：清空/裁剪清单不得成为放行手段"
+[ "${PLAYER_ALLOWED_TEST_N:-0}" -ge "$PLAYER_ALLOWED_TEST_MIN" ] \
+  || fail "G-16 播放器层测试允许清单规模 ${PLAYER_ALLOWED_TEST_N} < 下界 ${PLAYER_ALLOWED_TEST_MIN}：清空/裁剪清单不得成为放行手段"
+# (b) 逐成员存在性（「从清单里删一项」当场即红，不依赖是否还有代码用到它）
+for _am in $PLAYER_ALLOWED_REQUIRED_NONTEST; do
+  case " $PLAYER_ALLOWED_NONTEST_MODULES " in
+    *" $_am "*) ;;
+    *) fail "G-16 非测试允许清单缺必需成员 '${_am}'（实测 15 个源文件正在 import 它）：删项即删判据，拒绝执行" ;;
+  esac
+done
+for _am in $PLAYER_ALLOWED_REQUIRED_TEST; do
+  case " $PLAYER_ALLOWED_TEST_MODULES " in
+    *" $_am "*) ;;
+    *) fail "G-16 测试允许清单缺必需成员 '${_am}'（实测测试文件正在 import 它）：删项即删判据，拒绝执行" ;;
+  esac
+done
+# (c) 允许清单与 UI 词源必须互斥（「把 SwiftUI/WebKit 加进白名单」不是可用的绕过路径）
+for _am in $PLAYER_ALLOWED_NONTEST_MODULES $PLAYER_ALLOWED_TEST_EXTRA_MODULES; do
+  case " $PLAYER_UI_MODULES " in
+    *" $_am "*) fail "G-16 允许清单含 UI 词源成员 '${_am}'：白名单被污染即失去判据（G-14 词源为禁）" ;;
+  esac
+done
+# (d) 白名单必须比黑名单「窄」到不含任何 UI 面（由 (c) 保证）；再断言黑名单非空，
+#     防止有人把 PLAYER_UI_MODULES 清空来同时抹掉三条附加防线。
+[ -n "$PLAYER_UI_MODULES" ] || fail "G-14 黑名单 PLAYER_UI_MODULES 为空：三条附加防线同时失效"
+
 # ── G-14：三处判据的词表**全部**从 PLAYER_UI_MODULES 派生（同源），并自检派生一致性。
 # L1：import 行的模块词（grep -w 词边界）
 PLAYER_UI_WORD_RE="$(printf '%s' "$PLAYER_UI_MODULES" | tr ' ' '|')"
@@ -149,26 +265,28 @@ for _ui_m in $PLAYER_UI_MODULES; do
   else PLAYER_UI_MANGLE="${PLAYER_UI_MANGLE}|${_ui_len}${_ui_m}"; fi
 done
 [ -n "$PLAYER_UI_MANGLE" ] || fail "PLAYER_UI_MODULES 为空：禁 UI 判据被清空（G-14 词源自检）"
-PLAYER_UI_SYMBOL_RE='\$s('"$PLAYER_UI_MANGLE"')|_OBJC_CLASS_\$_UI[A-Z]'
-# L3 依赖表层：从同一词源剔除实测容忍项（派生而非重写，改词表不会只改到一处）
-PLAYER_UI_DYLIB_MODULES=""
-for _ui_m in $PLAYER_UI_MODULES; do
-  case " $PLAYER_UI_DYLIB_EXEMPT " in
-    *" $_ui_m "*) continue ;;
-  esac
-  PLAYER_UI_DYLIB_MODULES="${PLAYER_UI_DYLIB_MODULES} ${_ui_m}"
-done
-PLAYER_UI_DYLIB_MODULES="${PLAYER_UI_DYLIB_MODULES# }"   # 去掉累积出的前导空格（仅为可读的判据消息）
-# 词源自检：容忍表必须是词表的子集，否则「从词表删掉某项」会让容忍表静默漂移
-for _ui_e in $PLAYER_UI_DYLIB_EXEMPT; do
+# ObjC 类前缀只能按类名前缀归属：UI*（UIKit）、WK*（WebKit）、SF*（SafariServices）、
+# MF*（MessageUI）—— 实测合法工程（AV*/MP*/NS*/XCTest*）四类前缀零命中。
+PLAYER_UI_OBJC_PREFIXES="UI WK SF MF"
+PLAYER_UI_OBJC_ALT="$(printf '%s' "$PLAYER_UI_OBJC_PREFIXES" | tr ' ' '|')"
+PLAYER_UI_SYMBOL_RE='\$s('"$PLAYER_UI_MANGLE"')|_OBJC_CLASS_\$_('"$PLAYER_UI_OBJC_ALT"')[A-Z]'
+# L3 依赖表层：词源**全量**参与判定（G-17 起不再有「整名豁免」，只在「名 + weak」时容忍）
+PLAYER_UI_DYLIB_MODULES="$PLAYER_UI_MODULES"
+# 词源自检：weak 容忍表必须是词表的子集，否则「从词表删掉某项」会让该表静默漂移
+for _ui_e in $PLAYER_UI_DYLIB_WEAK_OK; do
   case " $PLAYER_UI_MODULES " in
     *" $_ui_e "*) ;;
-    *) fail "PLAYER_UI_DYLIB_EXEMPT 含不在词源里的 '${_ui_e}'：G-14 词表已漂移，请人工复核三处判据" ;;
+    *) fail "PLAYER_UI_DYLIB_WEAK_OK 含不在词源里的 '${_ui_e}'：G-14/G-17 词表已漂移，请人工复核三处判据" ;;
   esac
 done
-# 词源自检：任何一层被清空（例如把整份词表塞进 EXEMPT）都等于删掉该层判据
+# 词源自检：任何一层被清空都等于删掉该层判据
 [ -n "$PLAYER_UI_WORD_RE" ] || fail "L1 字面词表为空（G-14 词源自检）"
-[ -n "$PLAYER_UI_DYLIB_MODULES" ] || fail "L3 框架依赖词表为空：PLAYER_UI_DYLIB_EXEMPT 吞掉了整份词源（G-14）"
+[ -n "$PLAYER_UI_DYLIB_MODULES" ] || fail "L3 框架依赖词表为空（G-14/G-17 词源自检）"
+[ -n "$PLAYER_UI_OBJC_ALT" ] || fail "L3 符号层的 ObjC 类前缀表为空（G-14 词源自检）"
+# G-17：weak 容忍表**规模上界**= 1。目前只有 UIKit 一个经验证的「被 overlay 以 -weak_framework
+# 拖入」的项；把任何别的框架塞进这张表都是在扩大豁免面，必须与实测证据一起走评审，而不是改一行。
+[ "$(printf '%s\n' "$PLAYER_UI_DYLIB_WEAK_OK" | wc -w | tr -d ' ')" -le 1 ] \
+  || fail "PLAYER_UI_DYLIB_WEAK_OK 规模 > 1：G-17 只允许 UIKit 一项以 weak 形态豁免（扩大豁免面需评审）"
 
 # 阈值只允许抬高：任何低于基准的取值一律拒绝执行（fail-closed）
 if [ -n "${COVA_CORE_COVERAGE_MIN:-}" ]; then
@@ -354,6 +472,24 @@ for pkg in $PACKAGES; do
   if grep -q --fixed-strings '.unsafeFlags(' "Packages/$pkg/Package.swift"; then
     fail "Packages/$pkg/Package.swift 含 .unsafeFlags(：可注入 -wmo 等编译旗标，破坏 7/10 与 9/10 的逐文件产物归因（G-15）"
   fi
+  # G-18：平台声明以 dump-package 为权威逐项比对（缺失 / 多一个平台 / 版本被改，三种形态都红）。
+  EXPECT_PLATFORMS="$(required_platforms_for "$pkg")"
+  [ -n "$EXPECT_PLATFORMS" ] || fail "包 $pkg 无平台钉死值：D1 要求四个包都显式声明 platforms"
+  PLAT_N="$(plutil -extract platforms raw -o - "$DUMP_JSON" 2>/dev/null || echo 0)"
+  OBS_PLATFORMS=""
+  pi=0
+  while [ "$pi" -lt "${PLAT_N:-0}" ]; do
+    pname="$(plutil -extract "platforms.$pi.platformName" raw -o - "$DUMP_JSON" 2>/dev/null || true)"
+    pver="$(plutil -extract "platforms.$pi.version" raw -o - "$DUMP_JSON" 2>/dev/null || true)"
+    { [ -n "$pname" ] && [ -n "$pver" ]; } \
+      || fail "Packages/$pkg 的 platforms 第 $pi 项缺 platformName 或 version（dump-package 形态异常）"
+    OBS_PLATFORMS="${OBS_PLATFORMS} ${pname}=${pver}"
+    pi=$((pi + 1))
+  done
+  [ -n "${OBS_PLATFORMS# }" ] || fail "Packages/$pkg 未声明 platforms：部署目标必须由清单钉死（D1）"
+  # 两侧都排序归一后逐字比对（声明顺序不承载语义，成员与版本承载）
+  [ "$(printf '%s\n' ${OBS_PLATFORMS# } | sort | tr '\n' ' ')" = "$(printf '%s\n' ${EXPECT_PLATFORMS} | sort | tr '\n' ' ')" ] \
+    || fail "Packages/$pkg 的 platforms 实为 [${OBS_PLATFORMS# }]，必须恰为 [${EXPECT_PLATFORMS}]（D1 钉死 iOS 26；CovaCore 另需 macOS 14 供宿主侧覆盖率测量）"
 done
 echo "    结构校验通过（4 个本地包、语言模式 6、无远程包/框架/二进制制品/unsafeFlags）"
 
@@ -517,13 +653,14 @@ CORE_PLATFORMS="$(grep -E '^[[:space:]]*platforms:' "$CORE_PACKAGE_SWIFT" | head
   || { echo "    CovaCore 平台声明为 [${CORE_PLATFORMS}]，必须恰为 [${REQUIRED_CORE_PLATFORMS}]（.macOS 仅供宿主侧覆盖率测量）"; violations=1; }
 
 # 播放器层无 UI 不变量（AGENTS 硬边界 8「G1/G2 未验收不写 UI」+ D3/D4 分层的机械化为门禁）。
-# 三层判据（G-11）：
-#   L1 附加防线（字面）：行首 import 正则 —— 段 1 在修复前的 `^[[:space:]]*(@属性 )*import[[:space:]]`
-#      之上**只追加**了「块注释前缀」「访问级修饰符（public/internal/private/fileprivate/package）」
-#      与「带参数的属性（@_spi(X) / @_exported(X)）」三类合法写法（每类都是可选组 ⇒ 命中集合
-#      只增不减）；段 2 由 G-14 的单一词源派生（修复前只有 SwiftUI|UIKit）
-#      ⇒ 命中集合是修复前的超集（只收紧不放宽）；
-#      `//` 行注释前缀不在段 1 内，故「注释掉的 import」依旧不误红（TD-9）。
+# 判据分两层方向（环 4 第 3 批：主判据换成白名单形态）：
+#   ┌ 主判据 G-16 **白名单**：播放器层（含测试 target）的 import 模块名必须落在
+#   │   PLAYER_ALLOWED_NONTEST_MODULES / PLAYER_ALLOWED_TEST_MODULES 内，其余一律红。
+#   │   方向与黑名单相反 ⇒ 不需要任何人再「补一个漏掉的 UI 框架」。
+#   └ 附加防线 G-11/G-14 **黑名单**（一字不放宽，本轮还补了 WebKit/SafariServices/MessageUI）：
+#     L1 字面（行锚定 import 正则 + 单一词源）、L3 符号层（.o 的 mangling + ObjC 类前缀）、
+#     L3 依赖表层（测试二进制的框架依赖表，UIKit 仅在 weak 时容忍）。
+# 支撑层的既有事实：
 #   L2 源集合可信性：符号链接整类禁止 + 扫描域 = 「Packages/CovaPlayer/Sources」∪ dump-package
 #      声明的每个目标源目录（BSD grep -r 与 find -type f 都不跟随符号链接，12 个 .swift 只看得到 11）。
 #   L3 构建产物侧（9/10）：目标 .o 的 Swift mangling 符号引用 + 测试二进制的 dylib 依赖表。
@@ -533,24 +670,144 @@ player_ui_scan() { # 目录（空则跳过）
   { find "$d" -name '*.swift' -type f -not -path '*/.*' -print0 2>/dev/null \
       | xargs -0 grep -HnE "$PLAYER_IMPORT_LINE_RE" 2>/dev/null | grep -wE "$PLAYER_UI_WORD_RE"; } || true
 }
-echo "    禁 UI 词源（G-14，三处判据同源派生）：$(printf '%s\n' "$PLAYER_UI_MODULES" | wc -w | tr -d ' ') 项 [${PLAYER_UI_MODULES}]"
-echo "      L3 框架依赖表整名容忍：[${PLAYER_UI_DYLIB_EXEMPT}]（实测合法工程即存在，见常量区注释）；该层判据词表：${PLAYER_UI_DYLIB_MODULES}"
+# ── G-16：白名单 import 扫描。
+# $1 = 允许清单（空格分隔）  $2 = 同包 target 名集合（包内模块互相 import 恒允许：测试 target
+#      要 `@testable import CovaPlayer`；跨包/包外依赖已由 3/10 的 target 级依赖白名单判定）
+#      其余 = 文件参数
+# 输出每行「<文件>\t<行号>\t<模块名>」；解析不出模块名的 import 行也输出（fail-closed）。
+# 实现口径：
+#   * 行是否算 import 语句：由**既有** PLAYER_IMPORT_LINE_RE（超集见常量区）+ 新增的
+#     PLAYER_IMPORT_CONT_RE（模块名被换行拆开，实测可编译）判定 —— 不用 awk 判锚定，
+#     因为本机 awk（one-true-awk 20200816）对同一 RE 的命中集合与 grep -E **不一致**
+#     （实测漏 `@_spi(Cova) import`、`/* c */ import`，却多命中 `// import UIKit` ⇒ 会同时漏检+误红）。
+#   * 前缀剥离用 grep -oE（BSD sed -E 对本 RE 报「parentheses not balanced」，实测）。
+#   * 声明式 import 的关键字（class/struct/…）先剥掉，再取「第一个标识符段」，
+#     故 `import class WebKit.WKWebView` → WebKit、`import struct Foundation.URL` → Foundation。
+player_import_whitelist_scan() {
+  local allowed own f hit rest lineno content prefix mod nl trimmed
+  allowed=" $1 "
+  own=" $2 "
+  shift 2
+  for f in "$@"; do
+    [ -n "$f" ] || continue
+    [ -f "$f" ] || continue
+    while IFS= read -r hit; do
+      [ -n "$hit" ] || continue
+      rest="${hit#"$f":}"
+      lineno="${rest%%:*}"
+      content="${rest#*:}"
+      case "$lineno" in ''|*[!0-9]*) lineno="" ;; esac
+      prefix=""
+      if [ -n "$lineno" ]; then
+        # 锚定 ⇒ 每行至多一处匹配，可直接取整段（不再走 `| head -1`/`| sed -n 1p`：
+        # 提前退出的下游会让上游收 SIGPIPE，在 pipefail 下返回 141 ⇒ 合法工程随机误红）
+        prefix="$(printf '%s' "$content" | { grep -oE "$PLAYER_IMPORT_LINE_RE" || true; })"
+      fi
+      if [ -n "$prefix" ]; then
+        mod="${content#"$prefix"}"
+      elif [ -n "$lineno" ]; then
+        # import 结尾行：模块名在后续第一个非空、非注释行
+        mod=""
+        while IFS= read -r nl; do
+          trimmed="$(printf '%s' "$nl" | sed -E 's/^[[:space:]]+//')"
+          case "$trimmed" in
+            ''|'//'*|'/*'*|'*'*) continue ;;
+          esac
+          mod="$trimmed"
+          break
+        done < <(sed -n "$((lineno + 1)),$((lineno + 9))p" "$f" 2>/dev/null || true)
+      else
+        mod="$content"      # 行号解析异常：原样交给下面的解析（大概率判为「无法解析」而红）
+      fi
+      mod="$(printf '%s' "$mod" | sed -E \
+        -e 's/^[[:space:]]+//' \
+        -e 's/[[:space:]]*(\/\/|\/\*).*$/ /' \
+        -e 's/^`+//' \
+        -e 's/^(class|struct|enum|protocol|extension|typealias|func|var|let|actor|macro|operator|precedencegroup)[[:space:]]+//' \
+        -e 's/^`+//' \
+        -e 's/[^A-Za-z0-9_].*$//')"
+      if [ -z "$mod" ]; then
+        printf '%s\t%s\t(无法解析的 import 形态)\n' "$f" "${lineno:-?}"
+        continue
+      fi
+      case "$allowed" in
+        *" $mod "*) continue ;;
+      esac
+      case "$own" in
+        *" $mod "*) continue ;;
+      esac
+      printf '%s\t%s\t%s\n' "$f" "${lineno:-?}" "$mod"
+    done < <(grep -HnE "$PLAYER_IMPORT_LINE_RE|$PLAYER_IMPORT_CONT_RE" "$f" 2>/dev/null || true)
+  done
+  return 0
+}
+player_whitelist_scan_dir() { # $1=目录 $2=允许清单 $3=同包 target 名集合
+  local d="$1" allowed="$2" own="$3" f
+  if [ -z "$d" ] || [ ! -d "$d" ]; then return 0; fi
+  set --
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    set -- "$@" "$f"
+  done < <(find "$d" -name '*.swift' \( -type f -o -type l \) -not -path '*/.*' 2>/dev/null | sort)
+  [ "$#" -gt 0 ] || return 0
+  player_import_whitelist_scan "$allowed" "$own" "$@"
+  return 0
+}
+echo "    禁 UI 白名单（G-16 主判据）：非测试 [${PLAYER_ALLOWED_NONTEST_MODULES}] / 测试再 +[${PLAYER_ALLOWED_TEST_EXTRA_MODULES}]"
+echo "    禁 UI 词源（G-14 附加防线，三处判据同源派生）：$(printf '%s\n' "$PLAYER_UI_MODULES" | wc -w | tr -d ' ') 项 [${PLAYER_UI_MODULES}]"
+echo "      L3 框架依赖表仅在「名 + weak」容忍：[${PLAYER_UI_DYLIB_WEAK_OK}]（第 3 轮实测：合法态即 weak，直接引用即变强依赖）；该层判据词表：${PLAYER_UI_DYLIB_MODULES}"
 
 PLAYER_UI_HITS="$(player_ui_scan "$PLAYER_PKG_DIR/Sources")"
-# L2：逐目标扫描（覆盖 Sources/ 之外的第二 target 目录）。范围与被测层一致：非测试目标。
+# L2：逐目标扫描（覆盖 Sources/ 之外的第二 target 目录）。
+# G-17：范围含**测试 target**（修复前只 regular ⇒ 复审把 import UIKit + UIView 放进
+# CovaPlayerTests 时三层皆不可见）。扫描域扩大、判据不变 ⇒ 只收紧不放宽。
 # 注意：清单是 4 列（pkg/type/dir/name），read 的最后一个变量会吞掉其余列 ⇒ 必须读满 4 个。
-PLAYER_UI_HITS_EXTRA=""
+# 同包 target 名集合：包内模块互相 import 恒允许（测试 target 要 @testable import 被测模块）；
+# 「import 一个不在本包清单里的模块」由上面 3/10 的 target 级依赖判定拦，不由本判据拦。
+PLAYER_PKG_TARGET_NAMES=""
 while IFS="$(printf '\t')" read -r m_pkg m_type m_dir m_name; do
-  if [ "$m_pkg" = "$PLAYER_PKG" ] && [ "$m_type" = "regular" ]; then
-    hit="$(player_ui_scan "$m_dir")"
-    if [ -n "$hit" ]; then PLAYER_UI_HITS_EXTRA="${PLAYER_UI_HITS_EXTRA}${hit}"$'\n'; fi
+  if [ "$m_pkg" = "$PLAYER_PKG" ] && [ -n "$m_name" ]; then
+    PLAYER_PKG_TARGET_NAMES="${PLAYER_PKG_TARGET_NAMES} ${m_name}"
   fi
 done < "$TARGET_MANIFEST"
+PLAYER_UI_HITS_EXTRA=""
+PLAYER_WHITELIST_VIOL=""
+PLAYER_WHITELIST_TARGETS=0
+PLAYER_WHITELIST_FILES=0
+while IFS="$(printf '\t')" read -r m_pkg m_type m_dir m_name; do
+  if [ "$m_pkg" != "$PLAYER_PKG" ]; then continue; fi
+  case "$m_type" in
+    regular) wl_allowed="$PLAYER_ALLOWED_NONTEST_MODULES" ;;
+    test)    wl_allowed="$PLAYER_ALLOWED_TEST_MODULES" ;;
+    *) fail "播放器包出现未知 target 类型 '${m_type}'（${m_name}）：白名单判据需按类型补口径" ;;
+  esac
+  hit="$(player_ui_scan "$m_dir")"
+  if [ -n "$hit" ]; then PLAYER_UI_HITS_EXTRA="${PLAYER_UI_HITS_EXTRA}${hit}"$'\n'; fi
+  wlv="$(player_whitelist_scan_dir "$m_dir" "$wl_allowed" "$PLAYER_PKG_TARGET_NAMES")"
+  if [ -n "$wlv" ]; then PLAYER_WHITELIST_VIOL="${PLAYER_WHITELIST_VIOL}${wlv}"$'\n'; fi
+  wl_n="$( { find "$m_dir" -name '*.swift' -type f -not -path '*/.*' 2>/dev/null || true; } | wc -l | tr -d ' ')"
+  PLAYER_WHITELIST_FILES=$((PLAYER_WHITELIST_FILES + ${wl_n:-0}))
+  PLAYER_WHITELIST_TARGETS=$((PLAYER_WHITELIST_TARGETS + 1))
+done < "$TARGET_MANIFEST"
+# 白名单判据自身不得空转：target 数 / 文件数为 0（清单被掏空）都等于没判
+[ "${PLAYER_WHITELIST_TARGETS:-0}" -ge 1 ] \
+  || { echo "    dump-package 未报告 CovaPlayer 的任何 target：白名单扫描空转"; violations=1; }
+[ "${PLAYER_WHITELIST_FILES:-0}" -ge 1 ] \
+  || { echo "    播放器层各 target 的源目录内没有 .swift：白名单扫描空转（清空源目录不得绕过）"; violations=1; }
+if [ -n "$PLAYER_WHITELIST_VIOL" ]; then
+  { printf '%s\n' "$PLAYER_WHITELIST_VIOL" | sed '/^$/d' | head -10 | sed 's/^/      /' || true; }
+  echo "    ↑ G-16 白名单：以上是播放器层（含测试 target）import 了允许清单之外的模块"
+  echo "      非测试允许清单 [${PLAYER_ALLOWED_NONTEST_MODULES}]"
+  echo "      测试允许清单   [${PLAYER_ALLOWED_TEST_MODULES}]"
+  echo "      同包模块（自动允许）[${PLAYER_PKG_TARGET_NAMES# }]"
+  echo "      新增合法依赖必须显式改 Scripts/check.sh 的允许清单，并随 commit 进入审查。"
+  violations=1
+fi
 # 两段扫描的域会重叠（target 目录本就在 Sources 之下）⇒ 去重，避免同一行打印两遍
 PLAYER_UI_HITS="$( { printf '%s\n' "$PLAYER_UI_HITS"; printf '%s\n' "$PLAYER_UI_HITS_EXTRA"; } \
   | sed '/^$/d' | sort -u )"
 if [ -n "$PLAYER_UI_HITS" ]; then
-  printf '%s\n' "$PLAYER_UI_HITS" | head -10 | sed 's/^/    /'
+  { printf '%s\n' "$PLAYER_UI_HITS" | head -10 | sed 's/^/    /' || true; }
   echo "    ↑ CovaPlayer 引入了 UI 框架：设计闸门（G1/G2）未验收前禁止编写 UI 代码"
   violations=1
 fi
@@ -583,7 +840,7 @@ if [ -n "$PLAYER_SWIFT_UNCOVERED" ]; then
 fi
 
 [ "$violations" -eq 0 ] || fail "依赖方向 / 平台中立性 / 播放器无 UI 不变量校验未通过"
-echo "    依赖图与不变量校验通过（CovaCore 无字面 #if 与 iOS-only 令牌；CovaPlayer ${PLAYER_SRC_COUNT} 个源文件且无 UI import：$(printf '%s\n' "$PLAYER_UI_MODULES" | wc -w | tr -d ' ') 项词源）"
+echo "    依赖图与不变量校验通过（CovaCore 无字面 #if 与 iOS-only 令牌；CovaPlayer ${PLAYER_SRC_COUNT} 个源文件：G-16 白名单内 ${PLAYER_WHITELIST_FILES} 个文件（含测试 target）的 import 全部允许，G-14 黑名单 ${PLAYER_UI_MODULES} 零命中）"
 
 echo "==> 4/10 有效构建设置（配置×SDK）+ clean build + 实际编译语言版本 + 产物保真"
 eff() {
@@ -946,6 +1203,11 @@ while IFS="$(printf '\t')" read -r m_pkg m_type m_dir m_name; do
     FL="$(sed -n '1p' "$FL_CANDS")"
   fi
   [ -n "$FL" ] || fail "未找到 ${m_name} 目标的编译文件清单（${m_name}.SwiftFileList）—— 9/10 的分母不可信"
+  # G-17：objdir 集合纳入播放器包的**全部** target（含测试 target）。
+  # 修复前只有 `m_type = "regular"` 会把 objdir 落盘 ⇒ 第 3 轮复审实测
+  # player-obj-dirs.txt 只有 CovaPlayer-t.build/…/arm64，而
+  # CovaPlayerTests-p.build/…/GateUIKitInTests.o 里明摆着 `_OBJC_CLASS_$_UIView`，符号层从未读到它。
+  printf '%s\n' "$(dirname "$FL")" >> "$PLAYER_OBJ_DIRS"
   COMPILED_T="$PLAYER_COMPILED_DIR/$m_type-$m_name.compiled"
   { while IFS= read -r l; do
       [ -n "$l" ] || continue
@@ -968,7 +1230,6 @@ while IFS="$(printf '\t')" read -r m_pkg m_type m_dir m_name; do
       comm -13 "$COMPILED_T" "$SOURCES_T" | head -5 | sed 's/^/      /'
       fail "CovaPlayer 目标 ${m_name} 的编译集合与源目录 .swift 全集不一致（exclude/包外源文件均不允许）"
     fi
-    printf '%s\n' "$(dirname "$FL")" >> "$PLAYER_OBJ_DIRS"
     # G-12 / G-15（产物侧真分母，**无条件生效**）：逐源文件的 .o 是否带 __llvm_covmap ——
     # 有可执行行的文件才有该段（实测：协议 + 仅 case 枚举 + typealias 的文件、仅注释文件的 .o
     # 均无 __llvm_covmap）。于是「被编译且有可执行行」的文件集合可以**由产物证明**，
@@ -978,6 +1239,19 @@ while IFS="$(printf '\t')" read -r m_pkg m_type m_dir m_name; do
     # 让 Xcode 输出 DupCase-<md5>.o / dupCase-<md5>.o，两个 `<basename>.o` 都不存在），
     # 旧门禁就打印「跳过 __llvm_covmap 分母判定」并 **EXIT=0** —— 真分母守卫静默失效（F-10）。
     # 现改为消费 OutputFileMap.json 做三向全等，归因不可能一律 fail-closed。
+    #
+    # ⚠ 各子判据的**可达性**（第 3 轮复审实测，Minor-1；判据一条都不删，只是不再声称拦住）：
+    #   (0) 归因唯一性 / map 存在性        —— **可达**：它拦的是「布局漂移」（工具链换形态、
+    #       per-file 布局被 .unsafeFlags 改成单产物、target 目录被挪动），不是拦「篡改」。
+    #   (1)(2) 编译集合 ↔ map 双向全等      —— **可达**（同上：布局与清单背离时红；.SwiftFileList
+    #       与 map 都由同一次构建写出，二者不一致就是真实的不一致）。
+    #   手工篡改 OutputFileMap.json        —— **本步不可达**：8/10 会重新生成 map（第 3 轮复审
+    #       实测：改完仍 EXIT=0）。留作纵深防御（防「构建没重跑、读到陈旧 map」这种半状态）。
+    #   手工替换 <X>.o                     —— **本步通常不可达**：第 3 轮复审实测红在 8/10 的
+    #       链接期（xcodebuild 失败 ⇒ 根本走不到 9.1）。留作纵深防御：万一链接没触发（增量布局），
+    #       covmap 缺失/区间数变化仍会在 9.3 的真分母比对上暴露。
+    #   (4) objdir 内不得有 map 未认领的 .o —— **可达**（陈旧产物、手工夹带文件、消歧产物），
+    #       但「用假 .o 冒充」这条攻击由链接期承担，不要按「已拦住替换攻击」理解。
     INSTR_T="$PLAYER_COMPILED_DIR/$m_type-$m_name.instrumented"
     OBJMAP_T="$PLAYER_COMPILED_DIR/$m_type-$m_name.objmap"
     : > "$INSTR_T"
@@ -1095,9 +1369,39 @@ PLAYER_UI_COMPILED_HITS="$( { tr '\n' '\0' < "$PLAYER_COMPILED_NONTTEST" \
     | xargs -0 -n 20 grep -HnE "$PLAYER_IMPORT_LINE_RE" 2>/dev/null || true; } \
   | grep -wE "$PLAYER_UI_WORD_RE" || true)"
 if [ -n "$PLAYER_UI_COMPILED_HITS" ]; then
-  printf '%s\n' "$PLAYER_UI_COMPILED_HITS" | head -10 | sed 's/^/    /'
+  { printf '%s\n' "$PLAYER_UI_COMPILED_HITS" | head -10 | sed 's/^/    /' || true; }
   fail "被编译的 CovaPlayer 源文件引入 UI 框架（编译集合逐文件扫描）"
 fi
+# G-17：同一条 L1 兜底也跑在**测试 target 的编译集合**上（修复前只跑非测试集合）。
+PLAYER_UI_COMPILED_HITS_TEST="$( { tr '\n' '\0' < "$PLAYER_COMPILED_TEST" \
+    | xargs -0 -n 20 grep -HnE "$PLAYER_IMPORT_LINE_RE" 2>/dev/null || true; } \
+  | grep -wE "$PLAYER_UI_WORD_RE" || true)"
+if [ -n "$PLAYER_UI_COMPILED_HITS_TEST" ]; then
+  { printf '%s\n' "$PLAYER_UI_COMPILED_HITS_TEST" | head -10 | sed 's/^/    /' || true; }
+  fail "被编译的 CovaPlayer 测试源文件引入 UI 框架（编译集合逐文件扫描，G-17）"
+fi
+# G-16 主判据（编译集合口径）：3/10 的白名单扫的是「声明源目录」，这里扫**实际被编译的文件集合**
+# —— 后者才是产物事实：exclude/包外文件/生成文件都只能从这里露出来。两类 target 都扫。
+player_whitelist_scan_list() { # $1=清单文件 $2=允许清单 $3=同包 target 名集合
+  local listf="$1" allowed="$2" ownames="$3" f
+  set --
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    set -- "$@" "$f"
+  done < "$listf"
+  [ "$#" -gt 0 ] || return 0
+  player_import_whitelist_scan "$allowed" "$ownames" "$@"
+  return 0
+}
+PLAYER_WHITELIST_COMPILED="$( { player_whitelist_scan_list "$PLAYER_COMPILED_NONTTEST" \
+      "$PLAYER_ALLOWED_NONTEST_MODULES" "$PLAYER_PKG_TARGET_NAMES"
+    player_whitelist_scan_list "$PLAYER_COMPILED_TEST" \
+      "$PLAYER_ALLOWED_TEST_MODULES" "$PLAYER_PKG_TARGET_NAMES"; } | sed '/^$/d' | sort -u)"
+if [ -n "$PLAYER_WHITELIST_COMPILED" ]; then
+  { printf '%s\n' "$PLAYER_WHITELIST_COMPILED" | head -10 | sed 's/^/      /' || true; }
+  fail "被编译的 CovaPlayer 文件（含测试 target）import 了 G-16 允许清单之外的模块：非测试 [${PLAYER_ALLOWED_NONTEST_MODULES}] / 测试 [${PLAYER_ALLOWED_TEST_MODULES}]"
+fi
+echo "    G-16 白名单（编译集合口径）：非测试 $(wc -l < "$PLAYER_COMPILED_NONTTEST" | tr -d ' ') + 测试 $(wc -l < "$PLAYER_COMPILED_TEST" | tr -d ' ') 个文件，import 全部落在允许清单内"
 
 # ── 9.2 覆盖率产物发现（零路径硬编码；必须是 8/10 本次运行产出的 profdata）
 PLAYER_PROFS="$LOG_DIR/player-profdata.txt"
@@ -1229,21 +1533,33 @@ awk -v p="$PLAYER_PCT" -v m="$PLAYER_COVERAGE_MIN" 'BEGIN { exit !(p >= m) }' \
 
 # ── 9.5 无 UI 不变量的产物侧判据（L3，权威：编译/链接事实，不受注释与语法变体影响）
 # 两处各自的词表都从 PLAYER_UI_MODULES 派生（G-14）：
-#   符号层 PLAYER_UI_SYMBOL_RE = `$s<长度><模块名>` mangling alternation + UIKit 的 ObjC 类前缀
-#   依赖表层 PLAYER_UI_DYLIB_MODULES = 词源 − 实测整名容忍项（UIKit）
+#   符号层 PLAYER_UI_SYMBOL_RE = `$s<长度><模块名>` mangling alternation + ObjC 类名前缀
+#     （UI*/WK*/SF*/MF* —— 实测 ObjC 类 UI 控制器在 .o 里**只有** `_OBJC_CLASS_$_…`、
+#      没有 `$s<名>` mangling，所以两层必须同时存在）
+#   依赖表层 PLAYER_UI_DYLIB_MODULES = 词源**全量**（G-17 起不再有整名豁免；
+#     只在「名 ∈ PLAYER_UI_DYLIB_WEAK_OK **且** 该行带 weak 属性」时容忍）
 # 两层互补：实测 `import AVKit` + AVPlayerViewController 的 .o 里**只有**
 # `_OBJC_CLASS_$_AVPlayerViewController`（没有 `$s5AVKit`），靠依赖表层的
 # `/System/Library/Frameworks/AVKit.framework/AVKit` 才抓得到；反之只用 Swift 层类型的框架
 # （WidgetKit/RealityKit/RoomPlan…）由符号层负责。
+# G-17：符号层遍历的 objdir 集合现在**包含测试 target 的 objdir**（修复前只非测试）。
+PLAYER_OBJ_DIRS_UNIQ="$LOG_DIR/player-obj-dirs.uniq.txt"
+{ sed '/^$/d' "$PLAYER_OBJ_DIRS" | sort -u > "$PLAYER_OBJ_DIRS_UNIQ"; } || true
+[ -s "$PLAYER_OBJ_DIRS_UNIQ" ] || fail "播放器层没有任何 target 的 objdir 落盘：符号层判据空转（G-17）"
+PLAYER_OBJ_DIR_N="$(wc -l < "$PLAYER_OBJ_DIRS_UNIQ" | tr -d ' ')"
+[ "${PLAYER_OBJ_DIR_N:-0}" -ge "${PLAYER_WHITELIST_TARGETS:-1}" ] \
+  || fail "播放器层 objdir 数 ${PLAYER_OBJ_DIR_N} < target 数 ${PLAYER_WHITELIST_TARGETS}：有 target 的产物未被符号层覆盖（G-17）"
 while IFS= read -r objdir; do
   [ -n "$objdir" ] || continue
   UI_SYMS="$( { find "$objdir" -maxdepth 1 -name '*.o' -print0 2>/dev/null | xargs -0 xcrun llvm-nm -u 2>/dev/null || true; } \
     | grep -E "$PLAYER_UI_SYMBOL_RE" || true)"
   if [ -n "$UI_SYMS" ]; then
+    echo "    objdir：${objdir}"
     { printf '%s\n' "$UI_SYMS" | head -10 | sed 's/^/    /'; } || true
     fail "CovaPlayer 目标的编译产物引用了 UI 框架符号（${objdir}）：设计闸门未验收前禁止编写 UI 代码"
   fi
-done < "$PLAYER_OBJ_DIRS"
+done < "$PLAYER_OBJ_DIRS_UNIQ"
+WEAK_TOLERATED=""
 while IFS= read -r b; do
   [ -n "$b" ] || continue
   BIN_DEPS="$LOG_DIR/player-bin-deps.txt"
@@ -1252,15 +1568,29 @@ while IFS= read -r b; do
   for dy_m in $PLAYER_UI_DYLIB_MODULES; do
     # 字面匹配 `<名>.framework`（-F 不是正则；`Photos` 不在词表内，也不会误伤 `PhotosUI`）
     hit="$( { grep -F "$dy_m.framework" "$BIN_DEPS" || true; } | sed '/^$/d' )"
-    if [ -n "$hit" ]; then
-      DYLIB_HITS="${DYLIB_HITS}    ${dy_m} ← $(printf '%s\n' "$hit" | head -1 | sed 's/^[[:space:]]*//')"$'\n'
-    fi
+    [ -n "$hit" ] || continue
+    case " $PLAYER_UI_DYLIB_WEAK_OK " in
+      *" $dy_m "*)
+        # G-17：豁免条件是「该框架 **且** weak」。第 3 轮实测：合法态测试二进制里 UIKit 只以
+        # `(…, weak)` 出现（AVFoundation 的 Swift overlay 以 -weak_framework 拖入）；
+        # 本层一旦直接引用 UIKit 即变**强依赖** ⇒ weak 承载信号（上一批「weak 不承载信号」的
+        # 依据被实测否证，故本条从「整名豁免」收窄为「名 + weak 豁免」）。
+        # 注：不能用「手工加 -weak_framework」造出合法豁免态 —— `.unsafeFlags(` 已被 2/10 整类禁止。
+        strong="$(printf '%s\n' "$hit" | { grep -viE '(^|[^[:alnum:]])weak([^[:alnum:]]|$)' || true; })"
+        if [ -z "$strong" ]; then
+          WEAK_TOLERATED="${WEAK_TOLERATED} ${dy_m}"
+          continue
+        fi
+        DYLIB_HITS="${DYLIB_HITS}    ${dy_m}（**强依赖**，G-17 起不再豁免）← $(printf '%s\n' "$strong" | head -1 | sed 's/^[[:space:]]*//')"$'\n'
+        continue ;;
+    esac
+    DYLIB_HITS="${DYLIB_HITS}    ${dy_m} ← $(printf '%s\n' "$hit" | head -1 | sed 's/^[[:space:]]*//')"$'\n'
   done
   if [ -n "$DYLIB_HITS" ]; then
     printf '%s' "$DYLIB_HITS"
-    fail "CovaPlayer 测试产物直接依赖 UI 框架（${b}）：播放器层禁 UI（判据词表：${PLAYER_UI_DYLIB_MODULES}）"
+    fail "CovaPlayer 测试产物直接依赖 UI 框架（${b}）：播放器层禁 UI（判据词表：${PLAYER_UI_DYLIB_MODULES}；weak 容忍项：${PLAYER_UI_DYLIB_WEAK_OK}）"
   fi
 done < "$PLAYER_BINS"
-echo "    无 UI 不变量（产物侧）：$(wc -l < "$PLAYER_OBJ_DIRS" | tr -d ' ') 个非测试 target 的 .o 无 UI 符号引用（${PLAYER_UI_MANGLE}），测试二进制无 UI 框架依赖（$(printf '%s' "$PLAYER_UI_DYLIB_MODULES" | wc -w | tr -d ' ') 项，整名容忍：${PLAYER_UI_DYLIB_EXEMPT}）"
+echo "    无 UI 不变量（产物侧）：${PLAYER_OBJ_DIR_N} 个 target objdir（含测试 target）的 .o 无 UI 符号引用（mangling ${PLAYER_UI_MANGLE} / ObjC 类前缀 ${PLAYER_UI_OBJC_PREFIXES}）；测试二进制无 UI 框架强依赖（词表 $(printf '%s' "$PLAYER_UI_DYLIB_MODULES" | wc -w | tr -d ' ') 项，仅容忍 weak 形态：[${WEAK_TOLERATED# }]）"
 
 echo "✅ check.sh 全部通过"
