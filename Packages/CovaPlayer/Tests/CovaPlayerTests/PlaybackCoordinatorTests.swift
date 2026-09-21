@@ -1149,6 +1149,13 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertTrue(engine.emitObserved(.ended, from: episodeOfA), "当前代的 ended 必须投递")
         let advanced = await Signals.wait(target: baseline + 1, counter: nowPlaying.publishSignal)
         XCTAssertTrue(advanced, "前置：第一条 ended 未被消费")
+        // 排干前置（**本轮加固**，见日志）：「多了一次发布」只证明装载**开始**了 ——
+        // `loadCurrent` 每次装载恰好强制同步两次（`.loading` 一次、落地一次），等满两次才代表
+        // 它真的返回、引擎才真的被交给 B（`currentEpisode` 也随之推进）。HEAD 上这条用例
+        // 在 400 迭代里于两处不同断言上各红过，同一个歧义屏障是根因（非本轮引入）。
+        let loadLanded = await Signals.wait(target: baseline + 2, counter: nowPlaying.publishSignal)
+        let landedCount = await nowPlaying.publishCount
+        XCTAssertTrue(loadLanded, "前置：B 的装载未落地（发布 \(landedCount) < \(baseline + 2)）")
         var after = await snapshot()
         XCTAssertEqual(after.item?.id, "b")
         let episodeOfB = engine.currentEpisode
@@ -1161,6 +1168,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
         )
         // 正向屏障：随后一条当代事件必然排在被丢弃者之后被消费（AsyncStream 严格 FIFO），
         // 它被处理完即证明「迟到 ended 已经错过它的机会」—— 不做任何时间猜测（D16⑤）。
+        // 此刻装载已排干，`publishCount + 1` 只可能来自这条屏障事件。
         let barrier = await nowPlaying.publishCount
         XCTAssertTrue(engine.emitObserved(.duration(seconds: 77), from: episodeOfB))
         let settled = await Signals.wait(target: barrier + 1, counter: nowPlaying.publishSignal)
@@ -1343,13 +1351,355 @@ final class PlaybackCoordinatorTests: XCTestCase {
     }
 
     /// R1 的另一半：`.loading` 状态下引擎里还没有装载当前项时，就绪事件也不得声称在播。
+    ///
+    /// F-7 改了一处**前置**期望：整队替换后没有任何装载在途，因此状态是「已选曲、待播」
+    /// （`.paused`）而不是 `.loading`（枚举定义 = 正在装载当前项）。本用例的**断言强度不变**：
+    /// 引擎没持有当前项时，就绪事件依旧不得伪造播放。
     func testReadyEventCannotClaimPlayingWhileNothingIsLoadedInTheEngine() async {
         _ = await subject.replaceQueue(TestItems.makeMany(["a", "b"]))
         var after = await snapshot()
-        XCTAssertEqual(after.state, .loading, "前置：整队替换后处于装载态")
+        XCTAssertEqual(after.state, .paused, "F-7 前置：整队替换后无装载在途 → 不再是 .loading")
         await subject.receive(.playing)
         after = await snapshot()
         XCTAssertNotEqual(after.state, .playing, "R1：引擎未装载当前项时就绪事件不得伪造播放")
-        XCTAssertEqual(after.state, .loading)
+        XCTAssertEqual(after.state, .paused)
+    }
+
+    // MARK: - 环 4 · 状态机组 R9：续体守卫（缺陷 F-1 … F-8）
+
+    /// F-1（Major，评审探针 `testA01`/`testA02`；反向对照 `testA03` 绿 ⇒ 窗口缺陷）：
+    /// 用户显式 `pause()` 落在装载在途的窗口里时，装载续体把暂停翻回 `.playing`
+    /// 并向锁屏发布 `isPlaying = true`。上一轮只封了事件路径（M10），装载续体这条路径仍开放。
+    ///
+    /// 修复口径：装载续体必须过 `continuationIsCurrent`（代际 + 引擎归属 + **用户意图**）。
+    /// 暂停**不作废**装载本身 —— 条目照常进引擎，只是不命令出声、不上报这一集次。
+    func testPauseDuringInFlightLoadIsNotOverturnedByTheLoadContinuation() async {
+        let preparer = GatedSourcePreparer(gating: ["priv"])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, reporter: reporter, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        // 认证会话：让「上报」真的会提交（未认证时是挂起，0 次提交就不构成证据）。
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p1")))
+        _ = await subject.replaceQueue(
+            [TestItems.make("priv", source: .bearerRequired(TestItems.audioURL()))]
+        )
+        let startTask = Task { await subject.start() }
+        let opened = await Signals.wait(target: 1, counter: preparer.requestSignal)
+        XCTAssertTrue(opened, "前置：本地化未进入在途，本用例无从验证续体翻状态")
+        var mid = await subject.currentSnapshot()
+        XCTAssertEqual(mid.state, .loading, "前置：此刻确实有装载在途")
+
+        await subject.pause()
+        mid = await subject.currentSnapshot()
+        XCTAssertEqual(mid.state, .paused)
+
+        // 放行 → 装载续体回来。`start()` 返回即是屏障：它只能在续体跑完之后返回（同一 actor）。
+        let returnedBefore = await preparer.returnedCount()
+        await preparer.release("priv")
+        let returned = await Signals.wait(target: returnedBefore + 1, counter: preparer.returnedSignal)
+        XCTAssertTrue(returned, "前置：在途装载未返回")
+        _ = await startTask.value
+
+        let after = await subject.currentSnapshot()
+        XCTAssertEqual(after.state, .paused, "F-1：在途装载不得把用户的暂停翻回播放")
+        XCTAssertEqual(after.item?.id, "priv")
+        XCTAssertEqual(engine.count(of: "play"), 0, "F-1：暂停中的装载绝不命令引擎出声")
+        let submitted = await submitter.callCount
+        XCTAssertEqual(submitted, 0, "F-1：没有播放就不许上报这一集次")
+        let published = await nowPlaying.lastPublished
+        XCTAssertEqual(published?.isPlaying, false, "F-1：锁屏不得收到 isPlaying=true")
+        XCTAssertEqual(engine.loads.map(\.id), ["priv"], "F-1：装载本身照常完成（暂停 ≠ 作废装载）")
+
+        // 正向对照（TD-9）：闸门不得把活路径也关掉 —— 续播直接出声，且不必重新装载。
+        await subject.resume()
+        let resumed = await subject.currentSnapshot()
+        XCTAssertEqual(resumed.state, .playing, "F-1：用户恢复后照常播放")
+        XCTAssertEqual(engine.count(of: "load"), 1, "F-1：暂停保留已完成的装载")
+        XCTAssertEqual(engine.count(of: "play"), 1)
+    }
+
+    /// F-2（Major，评审探针 `testB01`/`testB02`：一次 skip 实测跳了两首、失败扣在新曲头上）：
+    /// 迟到的 `.failed` **完全无归因** —— `EngineEventGate` 的代际只在 `engine.load` 真正发生时
+    /// 推进，`prepareSource` 挂起期间旧项事件照样过闸，协调器侧又什么都不比对。
+    ///
+    /// 修复口径：守卫 (a)(b) —— 引擎还没被交给当代条目时，它上报的失败必然属于
+    /// 已被取代的那一件 → 整条丢弃（不计数、不污染 lastFailure、不跳曲）。
+    func testLateFailureWhileNextLoadIsPreparingNeitherSkipsTwiceNorChargesNewEpisode() async {
+        let preparer = GatedSourcePreparer(gating: ["b"])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        _ = await subject.replaceQueue(TestItems.makeMany(["a", "b", "c"]))
+        _ = await subject.start()
+        var before = await subject.currentSnapshot()
+        XCTAssertEqual(before.item?.id, "a", "前置：a 已装载并在播")
+
+        let nextTask = Task { await subject.next() }
+        let opened = await Signals.wait(target: 2, counter: preparer.requestSignal)
+        XCTAssertTrue(opened, "前置：b 的装载未进入在途（引擎里装的还是 a）")
+
+        // a 的迟到失败：此刻引擎从未见过 b（`prepareSource` 仍挂起）。
+        await subject.receive(.failed(PlayerFailure(kind: .network)))
+        await preparer.release("b")
+        let outcome = await nextTask.value
+
+        XCTAssertEqual(
+            outcome, .advanced(to: 1, item: TestItems.make("b"), wrapped: false),
+            "F-2：一次 skip 只能跳一首"
+        )
+        let after = await subject.currentSnapshot()
+        XCTAssertEqual(after.item?.id, "b", "F-2：迟到的失败不得把队列再推一格")
+        XCTAssertEqual(after.index, 1)
+        XCTAssertNotEqual(after.item?.id, "c")
+        XCTAssertEqual(after.failureStreak, 0, "F-2：旧项的迟到失败不得扣到新曲头上")
+        XCTAssertNil(after.lastFailure, "F-2：不得污染 lastFailure（UI 提示会张冠李戴）")
+        XCTAssertFalse(after.isFailureTerminal)
+        XCTAssertEqual(after.state, .playing)
+        XCTAssertEqual(engine.loads.map(\.id), ["a", "b"], "F-2：不得为伪失败去装载 c")
+        before = await subject.currentSnapshot()
+        XCTAssertEqual(before.queueCount, 3, "F-2：队列本身不被触碰")
+    }
+
+    /// F-3（Major，评审探针 `testC02`/`testC03`）：`apply(.moved)` 用 step 捕获的旧 `index`
+    /// 却重新读 `queue.current` → 返回 `.advanced(to: 1, item: c)` 而 c 实际在 index 2。
+    /// P2 修好了 `beginCurrentIndex`，`.moved` 漏改；锁屏收到「成功 + 错误落点」（UI 高亮错行）。
+    ///
+    /// 修复口径：落点一律按**当下队列**投影（`advanceOutcome`），且 `to:` 与 `item:` 同刻读取。
+    func testAdvancedOutcomeAgreesWithLiveSnapshotWhenQueueMovesUnderTheLoad() async {
+        let preparer = GatedSourcePreparer(gating: ["b"])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        _ = await subject.start(items: TestItems.makeMany(["a", "b", "c", "d"]))
+        let nextTask = Task { await subject.next() }
+        let opened = await Signals.wait(target: 2, counter: preparer.requestSignal)
+        XCTAssertTrue(opened, "前置：b 的装载未进入在途")
+
+        // 重入：装载在途期间用户直接落到 d（B 的装载就此作废）。
+        let moved = await subject.start(at: 3)
+        XCTAssertEqual(moved, .advanced(to: 3, item: TestItems.make("d"), wrapped: false))
+        await preparer.release("b")
+        let outcome = await nextTask.value
+
+        let snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.index, 3, "前置：真实落点是 d")
+        XCTAssertEqual(snap.item?.id, "d")
+        guard case .advanced(to: let index, item: let item, let wrapped) = outcome else {
+            return XCTFail("落点确实前进到了 d，应回 `.advanced`：\(outcome)")
+        }
+        XCTAssertEqual(index, snap.index, "F-3：`to:` 必须等于同一时刻快照的 index")
+        XCTAssertEqual(item.id, snap.item?.id, "F-3：`item:` 必须等于同一时刻快照的 item")
+        XCTAssertFalse(wrapped)
+        XCTAssertEqual(outcome, .advanced(to: 3, item: TestItems.make("d"), wrapped: false))
+    }
+
+    /// F-3 + F-4 的合流（评审探针 `testC03`）：装载链上的**嵌套失败**会让外层 `.moved`
+    /// 拿着 step 的旧索引回吐 `.advanced`，而链的终点其实是「停止 + 终态」。
+    func testNestedLoadFailuresSurfaceAsStoppedNotAsAMismatchedLandingPoint() async {
+        let bad = ["a", "b", "c", "d"].map {
+            TestItems.make($0, source: .bearerRequired(TestItems.audioURL()))
+        }
+        _ = await subject.replaceQueue(bad)
+        let outcome = await subject.next()
+
+        let snap = await snapshot()
+        XCTAssertEqual(snap.index, 3)
+        XCTAssertEqual(snap.item?.id, "d", "三次装载失败 → 连击达上限，停在最后一项等待处置")
+        XCTAssertEqual(snap.failureStreak, 3)
+        XCTAssertEqual(snap.state, .stopped)
+        XCTAssertTrue(snap.isFailureTerminal)
+        XCTAssertEqual(engine.count(of: "load"), 0, "需本地化而无本地化器：一次都不许进引擎")
+        XCTAssertEqual(
+            outcome, .stopped,
+            "F-3/F-4：链上失败收敛为终态时不得回吐 `.advanced(to: 1, item: d)` 这种错行落点"
+        )
+    }
+
+    /// F-4（Major，评审探针 `testC01`）：已收敛为 `.stopped` + 失败终态时 `start()` 仍返回
+    /// `.advanced(to: 0, item: a)`。P1 堵住了「状态谎报」，「**结果值谎报**」在上一层。
+    func testStartOnFailureTerminalQueueReportsStoppedInsteadOfAdvanced() async {
+        let bad = [TestItems.make("priv", source: .bearerRequired(TestItems.audioURL()))]
+        _ = await subject.replaceQueue(bad)
+
+        let first = await subject.start()
+        var snap = await snapshot()
+        XCTAssertEqual(snap.state, .stopped, "前置：单元素队列无处可跳 → 停止")
+        XCTAssertTrue(snap.isFailureTerminal)
+        XCTAssertEqual(first, .stopped, "F-4：装载链收敛为终态时 start() 不得回吐 .advanced")
+
+        // 用户重试（design §9 的处置路径）：再次失败 → 依旧是 `.stopped`，不是 `.advanced(to: 0)`。
+        let retry = await subject.start()
+        XCTAssertEqual(retry, .stopped, "F-4：重试仍失败必须如实回 .stopped")
+        snap = await snapshot()
+        XCTAssertEqual(snap.state, .stopped)
+        XCTAssertTrue(snap.isFailureTerminal)
+        XCTAssertEqual(snap.item?.id, "priv", "终态仍停在坏项上供 UI 提示（既有裁决不得退化）")
+
+        // 正向对照（TD-9）：装得上的时候必须照旧回 `.advanced`，且与快照同刻自洽。
+        _ = await subject.replaceQueue(TestItems.makeMany(["a"]))
+        let ok = await subject.start()
+        snap = await snapshot()
+        XCTAssertEqual(ok, .advanced(to: 0, item: TestItems.make("a"), wrapped: false))
+        XCTAssertEqual(snap.state, .playing)
+        if case .advanced(to: let index, item: let item, _) = ok {
+            XCTAssertEqual(index, snap.index, "F-3：成功路径的落点同样与快照自洽")
+            XCTAssertEqual(item.id, snap.item?.id)
+        } else {
+            XCTFail("成功起播应回 `.advanced`：\(ok)")
+        }
+    }
+
+    /// F-5（Major，评审探针 `testD01`）：装载在途时 `seek(toTarget:)` 没有代际 / 引擎账本判据
+    /// → 把跳转写进仍装着旧条目的引擎，且快照 position 谎报（装载完成后引擎从 0 起播，
+    /// position 却停在 42）。
+    func testSeekDuringInFlightLoadIsRejectedAndNeverWritesIntoStaleEngine() async {
+        let preparer = GatedSourcePreparer(gating: ["priv"])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        _ = await subject.replaceQueue(
+            [TestItems.make("priv", source: .bearerRequired(TestItems.audioURL())), TestItems.make("b")]
+        )
+        let startTask = Task { await subject.start() }
+        let opened = await Signals.wait(target: 1, counter: preparer.requestSignal)
+        XCTAssertTrue(opened, "前置：装载未进入在途")
+
+        let rejected = await subject.seek(to: 42)
+        XCTAssertEqual(rejected, .rejected(.noCurrentItem), "F-5：当前项尚未进引擎 → 此刻无从跳转")
+        XCTAssertTrue(engine.seeks.isEmpty, "F-5：绝不把 seek 写进仍装着旧条目的引擎")
+        var mid = await subject.currentSnapshot()
+        XCTAssertEqual(mid.position, 0, "F-5：快照不得谎报进度")
+
+        await preparer.release("priv")
+        _ = await startTask.value
+        let after = await subject.currentSnapshot()
+        XCTAssertEqual(after.item?.id, "priv")
+        XCTAssertEqual(after.state, .playing)
+        XCTAssertEqual(after.position, 0, "F-5：装载完成后引擎从 0 起播，进度必须如实")
+        XCTAssertTrue(engine.seeks.isEmpty)
+
+        // 正向对照（TD-9）：装载落地后同样的跳转照常生效（闸门不得把活路径关掉）。
+        let ok = await subject.seek(to: 42)
+        XCTAssertEqual(ok, .applied(position: 42, clamped: .none, then: nil))
+        XCTAssertEqual(engine.seeks, [42])
+        mid = await subject.currentSnapshot()
+        XCTAssertEqual(mid.position, 42)
+    }
+
+    /// F-6（Minor）：成功装载**不得**归零 `failureStreak` —— design §9 的「连续」数的是
+    /// 连续失败的曲目，装载成功 ≠ 播放成功（归零会让 `testThreeConsecutiveFailures…`
+    /// 那种「三项各自装载成功、播放全部失败」的既定裁决永远到不了上限，属**非缺陷**，
+    /// 详见日志 F-6 段）。真正错的是终态**标记**：恢复装载已经成功，决策层还在谎报终态。
+    func testSuccessfulRecoveryLoadClearsTerminalFlagWithoutBreakingFailureRun() async {
+        _ = await subject.replaceQueue(TestItems.makeMany(["a", "b", "c", "d"]))
+        _ = await subject.start()
+        for _ in 0..<3 { await subject.receive(.failed(PlayerFailure(kind: .network))) }
+        var snap = await snapshot()
+        XCTAssertTrue(snap.isFailureTerminal, "前置：连续 3 次失败进入终态")
+        XCTAssertEqual(snap.state, .stopped)
+
+        // 用户显式跳下一首：装载成功（引擎真的装着 d）→ 终态标记必须随之解除。
+        let outcome = await subject.next()
+        snap = await snapshot()
+        XCTAssertEqual(snap.item?.id, "d")
+        XCTAssertEqual(snap.state, .playing)
+        XCTAssertEqual(outcome, .advanced(to: 3, item: TestItems.make("d"), wrapped: false))
+        XCTAssertFalse(
+            snap.isFailureTerminal,
+            "F-6：恢复装载已成功，决策层不得继续声称自动推进已停止"
+        )
+        XCTAssertEqual(
+            snap.failureStreak, 3,
+            "F-6：连击的「连续」只在引擎确认播放时断开 —— 装载成功不算播成功"
+        )
+        await subject.receive(.playing)
+        snap = await snapshot()
+        XCTAssertEqual(snap.failureStreak, 0, "引擎确认播放 → 连击归零（既有裁决不得退化）")
+    }
+
+    /// F-7（Minor）：`replaceQueue` 置 `.loading` 却无任何装载在途，与枚举定义相悖，
+    /// 并与 F-2 复合（迟到事件被当成当前集次）。
+    ///
+    /// 新不变量：**`.loading` ⟺ 真有装载在途**（整队替换 / 清队 / 释放都只是「待播」）。
+    func testLoadingStateAlwaysMeansALoadIsActuallyInFlight() async {
+        let preparer = GatedSourcePreparer(gating: ["priv"])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        _ = await subject.replaceQueue(
+            [TestItems.make("priv", source: .bearerRequired(TestItems.audioURL())), TestItems.make("b")]
+        )
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(
+            snap.state, .paused,
+            "F-7：整队替换后没有任何装载在途 → `.loading`（=正在装载当前项）是谎报"
+        )
+        XCTAssertEqual(snap.item?.id, "priv", "已选曲这一事实不变")
+
+        let startTask = Task { await subject.start() }
+        let opened = await Signals.wait(target: 1, counter: preparer.requestSignal)
+        XCTAssertTrue(opened, "前置：装载未进入在途")
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .loading, "F-7：真正在途的装载才配 `.loading`")
+
+        // 与 F-2 的复合面：此刻引擎从未见过当前项，迟到的失败必须整条丢弃。
+        await subject.receive(.failed(PlayerFailure(kind: .network)))
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.item?.id, "priv", "F-2/F-7：伪失败不得把队列推走")
+        XCTAssertNil(snap.lastFailure)
+        XCTAssertEqual(snap.failureStreak, 0)
+
+        await preparer.release("priv")
+        _ = await startTask.value
+        snap = await subject.currentSnapshot()
+        XCTAssertNotEqual(snap.state, .loading, "F-7：装载返回后不得残留 `.loading`")
+        XCTAssertEqual(snap.state, .playing)
+
+        // 空队列仍落 `.idle`（既有裁决不得退化）。
+        _ = await subject.replaceQueue([])
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .idle)
+    }
+
+    /// F-8（Minor，评审探针 `testG01`）：`PlayerEngine` 契约的「load 失败经 `.failed` 表达」
+    /// 在 `loadCurrent` 里不被消费 —— 引擎说装载失败，续体照样 `state = .playing` 并**提交一次
+    /// 播放上报**（少报/多报同族的口径偏差）。
+    ///
+    /// 如实说明：当前生产不可达（`AudioURL` 只允许 https/file，`.bearerRequired` 被前置拦截），
+    /// 属**纵深防御缺口**，因此仍按 Major 的同一把守卫修掉。
+    func testEngineReportedLoadFailureIsConsumedByItsOwnLoadAndNeverClaimsPlaying() async {
+        let gated = GatedLoadEngine()
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p1")))
+        let subject = PlaybackCoordinator(
+            engine: gated, clock: clock, reporter: reporter, nowPlaying: nowPlaying
+        )
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p1")))
+        _ = await subject.replaceQueue(TestItems.makeMany(["a"]))
+        let startTask = Task { await subject.start() }
+        let entered = await Signals.wait(target: 1, counter: gated.enteredLoad)
+        XCTAssertTrue(entered, "前置：engine.load 未进入在途，本用例无从验证契约上报")
+        var mid = await subject.currentSnapshot()
+        XCTAssertEqual(mid.state, .loading, "前置：装载在途（引擎账本尚未记账）")
+
+        // 契约路径：`load(_:)` 不抛错，失败经 `.failed` 表达 —— 它必须被这次装载消费。
+        await subject.receive(.failed(PlayerFailure(kind: .mediaInvalid)))
+        gated.releaseLoad()
+        let returned = await Signals.wait(target: 1, counter: gated.returnedLoad)
+        XCTAssertTrue(returned, "前置：装载未返回")
+        let outcome = await startTask.value
+
+        mid = await subject.currentSnapshot()
+        XCTAssertNotEqual(mid.state, .playing, "F-8：引擎说装载失败，就不许声称正在播")
+        XCTAssertEqual(mid.state, .stopped)
+        XCTAssertTrue(mid.isFailureTerminal, "F-8：单元素队列无处可跳 → 收敛为终态")
+        XCTAssertEqual(mid.failureStreak, 1, "F-8：这条失败确实属于当代，必须计数")
+        XCTAssertEqual(outcome, .stopped)
+        XCTAssertEqual(gated.count(of: "play"), 0, "F-8：失败的装载上不得命令引擎出声")
+        XCTAssertEqual(gated.count(of: "setRate"), 0)
+        XCTAssertEqual(gated.loads.map(\.id), ["a"], "前置：装载确实发生过（不是没走到引擎）")
+        let submitted = await submitter.callCount
+        XCTAssertEqual(submitted, 0, "F-8：没播起来就不许提交播放上报（多报形态）")
+        let key = await reporter.activeEpisodeKey()
+        XCTAssertNil(key, "F-8：未成功的装载不得占用集次幂等键")
     }
 }

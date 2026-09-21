@@ -144,6 +144,124 @@ final class ScriptedEngine: PlayerEngine, @unchecked Sendable {
     }
 }
 
+// MARK: - 「装载在途」可控的引擎桩（F-8 的触发面）
+
+/// 可控引擎桩：`load` 进入后**真的挂起**，直到测试点名放行。
+///
+/// 用途：`PlayerEngine` 契约规定「`load(_:)` 不抛错：失败一律以 `.failed` 事件表达」
+/// （见 `PlayerEngine.swift`）。协调器此刻正等在 `await engine.load` 上、引擎账本尚未
+/// 记账，只有测试能把这条失败投进归约入口 —— 没有本桩就没有确定性现场（F-8）。
+///
+/// 等待带**真实时间上界**（`releaseTimeout`）：忘记放行时用例变红而不是挂死；
+/// 上界不参与任何行为判定（D16⑤）。
+final class GatedLoadEngine: PlayerEngine, @unchecked Sendable {
+    /// 第 n 次 `load` 已进入引擎（装载正在途）。
+    let enteredLoad = SignalCounter()
+    /// 第 n 次 `load` 已返回给协调器。
+    let returnedLoad = SignalCounter()
+    /// 放行计数：每次 `releaseLoad()` 放行一次在途装载。
+    let releases = SignalCounter()
+
+    private let lock = NSLock()
+    private let pairing = AsyncStream.makeStream(of: PlayerEvent.self)
+    private var _calls: [String] = []
+    private var _loads: [PlaybackItem] = []
+    private var _seeks: [Double] = []
+    private var _rates: [Double] = []
+    private var _time: Double = 0
+    private var _duration: Double?
+    private var _releaseCount = 0
+    private var loadSequence = 0
+    private let releaseTimeout: TimeInterval
+
+    init(releaseTimeout: TimeInterval = 10) {
+        self.releaseTimeout = releaseTimeout
+    }
+
+    var events: AsyncStream<PlayerEvent> { pairing.stream }
+
+    func load(_ item: PlaybackItem) async {
+        record("load")
+        let turn = mutate {
+            _loads.append(item)
+            loadSequence += 1
+            return loadSequence
+        }
+        enteredLoad.bump()
+        // 真挂起点：协调器停在 `await engine.load` 里，测试得以在这段窗口内归约事件。
+        _ = await Signals.wait(target: turn, counter: releases, timeout: releaseTimeout)
+        returnedLoad.bump()
+    }
+
+    func play() async { record("play") }
+    func pause() async { record("pause") }
+
+    func seek(to seconds: Double) async {
+        record("seek")
+        mutate {
+            _seeks.append(seconds)
+            _time = seconds
+        }
+    }
+
+    func setRate(_ rate: Double) async {
+        record("setRate")
+        mutate { _rates.append(rate) }
+    }
+
+    func currentRate() async -> Double { snapshot { _rates.last ?? 1 } }
+    func currentTime() async -> Double { snapshot { _time } }
+    func currentDuration() async -> Double? { snapshot { _duration } }
+
+    func stopAndRelease() {
+        record("release")
+        mutate { _releaseCount += 1 }
+    }
+
+    // MARK: 测试驱动面
+
+    /// 放行一次在途装载（`load` 就此返回给协调器）。
+    func releaseLoad() {
+        releases.bump()
+    }
+
+    /// 直接投递（不经闸门）：与 `ScriptedEngine.emit` 同口径。
+    func emit(_ event: PlayerEvent) {
+        pairing.continuation.yield(event)
+    }
+
+    func finishStream() {
+        pairing.continuation.finish()
+    }
+
+    var calls: [String] { snapshot { _calls } }
+    var loads: [PlaybackItem] { snapshot { _loads } }
+    var seeks: [Double] { snapshot { _seeks } }
+    var releaseCount: Int { snapshot { _releaseCount } }
+    var callCount: Int { snapshot { _calls.count } }
+
+    func count(of call: String) -> Int {
+        snapshot { _calls.filter { $0 == call }.count }
+    }
+
+    private func record(_ call: String) {
+        mutate { _calls.append(call) }
+    }
+
+    @discardableResult
+    private func mutate<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    private func snapshot<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}
+
 // MARK: - Now Playing 桩
 
 /// 信号计数器：「等信号再断言」的最小原语（D16⑤ 禁止用让步/时间猜测做断言）。

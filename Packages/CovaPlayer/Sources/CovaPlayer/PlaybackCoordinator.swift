@@ -6,6 +6,10 @@ public enum PlaybackState: String, Equatable, Sendable, CaseIterable, CustomStri
     /// 无队列 / 未选曲。
     case idle
     /// 正在装载当前项（含私有音频本地化中）。
+    ///
+    /// **不变量（F-7）**：`.loading` ⟺ `inFlightLoad != nil`，即「确有一次装载跨在挂起点」。
+    /// 整队替换、清队列、释放都不再打 `.loading`（它们只是「待播」，没有任何装载在途），
+    /// 于是「装载态」重新成为一个可采信的归因判据。
     case loading
     case playing
     case paused
@@ -122,6 +126,12 @@ public enum SeekClamp: String, Equatable, Sendable {
 }
 
 public enum SeekRejection: String, Equatable, Sendable, CustomStringConvertible {
+    /// 没有可跳转的当前项，**或**当前项尚未进引擎（装载在途 / 引擎里仍是旧条目）。
+    ///
+    /// 两种情形对锁屏的答复相同（「此刻无从跳转」）：`NowPlayingStatusMapping` 把它映射成
+    /// `.noSuchContent`。刻意不复用 `.tornDown`（那是「播放器已释放」的终态，语义更重）。
+    /// 想再细分需要一个 `.notLoaded` 分支，但那会打破 `NowPlayingController.swift` 里
+    /// 对 `SeekRejection` 的穷尽 switch（不属本组所有权），故按现状收敛（见日志 F-5 段）。
     case noCurrentItem
     case nonFiniteTarget
     case tornDown
@@ -231,6 +241,26 @@ public actor PlaybackCoordinator {
     /// 这是「状态 = `.playing`」的必要条件（缺陷 P1/P1b：装载失败后队列回绕到同一坏项，
     /// 旧实现据此声称正在播，而引擎里根本没有条目）。
     private var engineEpisodeItemID: String?
+    /// **用户意图**（守卫条件 (c)）：`true` = 用户此刻要听当前项。
+    ///
+    /// 只有 `pause()` / 进入失败终态 / 释放 / 整队换代才置 `false`，`start` / `resume` /
+    /// 推进装载置 `true`。装载续体据此决定「声称 `.playing`」还是「落在 `.paused`」——
+    /// 引擎的就绪上报不得翻回播放（缺陷 M10 的装载侧，F-1）。
+    private var userWantsPlayback = false
+    /// **在途装载台账**（守卫条件 (a)(b) 的载体）。
+    ///
+    /// `nil` = 此刻没有任何装载在途（于是 `state == .loading` 只会出现在真正装载在途时，
+    /// F-7 的口径）；非 nil 时 `handedToEngine` 区分「还在准备源」与「已交给引擎」：
+    /// 引擎从未见过当前条目时，它上报的一切（含 `.failed`）都属于**已被取代的那一件**（F-2）。
+    private struct InFlightLoad {
+        let generation: UInt64
+        /// 已调用 `engine.load`（引擎此刻装着的就是当代条目 → 它的上报可归因到当代）。
+        var handedToEngine = false
+        /// 装载在途期间引擎上报的失败：契约「load 失败经 `.failed` 表达」的落点，
+        /// 由当代装载续体消费，绝不让它把状态写成 `.playing`（F-8）。
+        var failure: PlayerFailure?
+    }
+    private var inFlightLoad: InFlightLoad?
 
     public init(
         engine: any PlayerEngine,
@@ -290,6 +320,7 @@ public actor PlaybackCoordinator {
         if previous.generation != context.generation || switchedAccounts || context.owner == nil {
             await discardPendingReports()
             engine.stopAndRelease()
+            // `clearQueueAndStop` 内已作废在途装载台账（守卫 (a)）。
             await clearQueueAndStop()
         }
         // 上报器共用同一会话视图：未认证 → 挂起；登出/换号 → 丢弃未决。
@@ -310,10 +341,14 @@ public actor PlaybackCoordinator {
         await closeEpisodeIfNeeded()
         let change = queue.replace(items, startingAt: start)
         // 队列整队换了 → 在途装载全部作废，且新当前项尚未进引擎（R1 / R2 账本）。
-        loadGeneration &+= 1
-        engineEpisodeItemID = nil
+        invalidateInFlightLoad()
         resetItemTimingState()
-        state = queue.current == nil ? .idle : .loading
+        // **`replaceQueue` 不自动播放**（既有裁决）：意图落在「暂停」侧，否则任何一次
+        // 整队替换都会在 `loadCurrent` 里被当成「用户要听」而擅自起播。
+        userWantsPlayback = false
+        // F-7 的诚实口径：整队替换后**没有任何装载在途**，因此 `.loading`（= 正在装载当前项）
+        // 是谎报；引擎里也没有可播的东西，状态只能是「已选曲、待播」。
+        state = queue.current == nil ? .idle : .paused
         await publishNowPlaying(force: true)
         return change
     }
@@ -349,6 +384,9 @@ public actor PlaybackCoordinator {
         let wasPlaying = state == .playing || state == .buffering || state == .loading
         let change = queue.remove(at: index)
         guard wasCurrent, case .applied(let effect) = change else { return change }
+        // 被移除的正是「装载在途的那一件」→ 整条在途装载作废：它回来时既不得回写引擎、
+        // 也不得把已被删掉的曲目声称成正在播（守卫 (a) 的另一半：换代必须推进台账）。
+        invalidateInFlightLoad()
         await closeEpisodeIfNeeded()
         switch effect {
         case .removed(_, _, let current):
@@ -357,7 +395,6 @@ public actor PlaybackCoordinator {
                 duration = nil
                 position = 0
                 engine.stopAndRelease()
-                engineEpisodeItemID = nil
                 await publishNowPlaying(force: true)
                 return change
             }
@@ -366,7 +403,6 @@ public actor PlaybackCoordinator {
             } else {
                 resetItemTimingState()
                 // 引擎里装着的是**被删掉的那一项**：从现在起没有当前项被装载（R1 账本）。
-                engineEpisodeItemID = nil
                 await publishNowPlaying(force: true)
             }
         default:
@@ -430,18 +466,44 @@ public actor PlaybackCoordinator {
         isFailureTerminal = false
         failureStreak = 0
         lastFailure = nil
+        // 用户显式起播 = 意图成立（守卫条件 (c) 的置位点）。
+        userWantsPlayback = true
         await loadCurrent(autoplay: true)
-        // 装载可能已被取代（用户中途换曲 / 已释放）→ 结果按**当下真实落点**报告，
-        // 不回吐在途前捕获的那一项（缺陷 P2 的「结果谎报」面）。
+        // 装载可能已被取代（用户中途换曲 / 暂停 / 已释放）→ 结果按**当下真实落点**报告，
+        // 不回吐在途前捕获的那一项（缺陷 P2 的「结果谎报」面 + F-4 的「终态谎报」）。
+        return advanceOutcome(wrapped: false)
+    }
+
+    /// 推进结果的**自洽投影**（F-3 / F-4）：`to:` 与 `item:` 取自**同一时刻**的队列快照，
+    /// 且状态已收敛为停止 / 终态时绝不回吐 `.advanced`。
+    ///
+    /// `loadCurrent` 跨多个挂起点，返回时队列可能已被用户换掉、也可能整条链已失败收敛；
+    /// 在途期间捕获的索引只是历史事实，不能当作「此刻落在哪」的答案交给 UI 与锁屏
+    /// （`NowPlayingStatusMapping` 把 `.advanced` 一律映射成 `.success`，落点错了就是高亮错行）。
+    private func advanceOutcome(wrapped: Bool) -> AdvanceOutcome {
         guard !tornDown else { return .rejected(.tornDown) }
-        guard let item = queue.current, let index = queue.currentIndex else {
+        // `index` 与 `item` 必须来自**同一时刻**的队列投影：本函数非 async，两次读取之间
+        // 没有挂起点，actor 不可能被重入 —— 于是 `item` 必然就躺在 `index` 上。
+        // （F-3 的病根正是「step 捕获的旧索引」+「await 之后重读的当前项」拼成一个不存在的落点。）
+        guard let index = queue.currentIndex, let item = queue.current else {
             return .rejected(.emptyQueue)
         }
-        return .advanced(to: index, item: item, wrapped: false)
+        switch state {
+        case .stopped:
+            // 装载链已收敛为停止（失败终态 / 末项播完）：如实回 `.stopped`。
+            return .stopped
+        case .idle:
+            return .rejected(.emptyQueue)
+        case .playing, .paused, .buffering, .loading:
+            return .advanced(to: index, item: item, wrapped: wrapped)
+        }
     }
 
     public func pause() async {
         guard !tornDown else { return }
+        // F-1：显式暂停**先**落意图，再动状态机 —— 在途装载的续体据此选择 `.paused`，
+        // 而不是无条件声称 `.playing`。
+        userWantsPlayback = false
         guard state == .playing || state == .buffering || state == .loading else {
             await engine.pause()
             return
@@ -455,6 +517,8 @@ public actor PlaybackCoordinator {
     public func resume() async {
         guard !tornDown else { return }
         guard queue.current != nil else { return }
+        // 用户显式续播 = 意图成立（守卫条件 (c) 的置位点）。
+        userWantsPlayback = true
         if state == .stopped || isFailureTerminal {
             isFailureTerminal = false
             failureStreak = 0
@@ -534,7 +598,13 @@ public actor PlaybackCoordinator {
 
     private func seek(toTarget raw: Double) async -> SeekOutcome {
         guard !tornDown else { return .rejected(.tornDown) }
-        guard queue.current != nil else { return .rejected(.noCurrentItem) }
+        guard let claimed = queue.current?.id else { return .rejected(.noCurrentItem) }
+        // F-5：seek 与「声称播放」共用同一条续体守卫 —— 装载在途时引擎里装的还是**旧条目**，
+        // 把跳转写进去既打错对象又让快照谎报进度（`position = 42` 而引擎从 0 起播）。
+        // 此处不要求播放意图：暂停中拖进度条是正常操作。
+        guard continuationIsCurrent(
+            generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: false
+        ) else { return .rejected(.noCurrentItem) }
         guard let result = SeekArithmetic.clamp(target: raw, duration: effectiveDuration) else {
             return .rejected(.nonFiniteTarget)
         }
@@ -552,37 +622,72 @@ public actor PlaybackCoordinator {
     // MARK: - 事件归约（引擎 → 状态）
 
     /// 归约一条引擎事件。公开以便**零竞态**单测：测试直接投递事件序列并断言状态。
+    ///
+    /// **每个分支都先过 `continuationIsCurrent`**（环 4 R9）：引擎事件不带曲目身份，
+    /// 迟到的上报只能靠「代际 + 引擎账本 + 用户意图」三条判据归因，不得凭「事件来了」
+    /// 就改状态（F-2：一次 skip 被迟到的失败跳成两首，且连击扣到新曲头上）。
     public func receive(_ event: PlayerEvent) async {
         guard !tornDown else { return }
         switch event {
         case .playing:
             // M10：`.playing` 是引擎的「就绪 / 缓冲恢复」类上报，不是用户意图。
-            // 采信条件与 `.paused` 侧对称（且更严）：
-            //   ① 当前本就处于「在播 / 缓冲 / 装载」三态之一 —— 用户显式暂停、终态停止后
-            //      不得被引擎悄悄翻回播放（否则锁屏会发布 isPlaying=true）；
-            //   ② 引擎里确实装载着当前项（R1：状态不得超出实际装载）。
+            // 采信条件（F-1 起改为「装载侧同一把守卫」）：
+            //   ① 没有装载在途 —— 在途期间引擎里是旧条目，它说什么都不能翻成播放；
+            //   ② 引擎里确实装载着当前项（R1：状态不得超出实际装载）；
+            //   ③ 用户此刻要听（显式暂停、失败终态之后不得被引擎悄悄翻回播放，
+            //      否则锁屏会发布 isPlaying=true）；
+            //   ④ 当前本就处于「在播 / 缓冲 / 装载」三态之一。
             guard state == .playing || state == .buffering || state == .loading else { return }
-            guard engineEpisodeItemID == queue.current?.id else { return }
+            guard continuationIsCurrent(
+                generation: nil, claimingEngineItem: queue.current?.id, requiresPlaybackIntent: true
+            ) else { return }
             state = .playing
             failureStreak = 0
+            lastFailure = nil
             isFailureTerminal = false
             await reportEpisodeIfNeeded()
             await publishNowPlaying(force: true)
         case .paused:
+            guard continuationIsCurrent(
+                generation: nil, claimingEngineItem: queue.current?.id, requiresPlaybackIntent: false
+            ) else { return }
             if state == .playing { state = .paused }
             await publishNowPlaying(force: true)
         case .buffering:
-            if state == .playing || state == .loading { state = .buffering }
+            guard state == .playing else { return }
+            guard continuationIsCurrent(
+                generation: nil, claimingEngineItem: queue.current?.id, requiresPlaybackIntent: true
+            ) else { return }
+            state = .buffering
             await publishNowPlaying(force: false)
         case .position(let seconds):
+            // 迟到的位置上报不得挪动新集次的进度条（引擎侧 `EngineEventGate` 是第一道，
+            // 这里是决策层的第二道：引擎从未被交给当前项时一律丢弃）。
+            guard continuationIsCurrent(
+                generation: nil, claimingEngineItem: queue.current?.id,
+                kind: .observation, requiresPlaybackIntent: false
+            ) else { return }
             applyEnginePosition(seconds)
             await publishNowPlaying(force: false)
         case .duration(let seconds):
+            guard continuationIsCurrent(
+                generation: nil, claimingEngineItem: queue.current?.id,
+                kind: .observation, requiresPlaybackIntent: false
+            ) else { return }
             await applyEngineDuration(seconds)
             await publishNowPlaying(force: true)
         case .ended:
             _ = await handleItemEnded()
         case .failed(let failure):
+            // F-2 / F-8：先归因，再记账。归因到「当代装载在途且已交给引擎」的失败由
+            // 装载续体消费（它才知道该条目到底有没有真的进引擎）。
+            guard failureIsAttributableToCurrentEpisode(failure) else { return }
+            if var inFlight = inFlightLoad, inFlight.generation == loadGeneration,
+               inFlight.handedToEngine, engineEpisodeItemID == nil {
+                inFlight.failure = failure
+                self.inFlightLoad = inFlight
+                return
+            }
             await handleFailure(failure)
         }
     }
@@ -613,8 +718,7 @@ public actor PlaybackCoordinator {
     public func teardown() async {
         guard !tornDown else { return }
         tornDown = true
-        loadGeneration &+= 1
-        engineEpisodeItemID = nil
+        invalidateInFlightLoad()
         detachFromEngine()
         await closeEpisodeIfNeeded()
         await discardPendingReports()
@@ -643,31 +747,50 @@ public actor PlaybackCoordinator {
     private func apply(_ step: PlayQueue.Step) async -> AdvanceOutcome {
         queue.apply(step)
         switch step {
-        case .moved(let index, let wrapped):
+        case .moved(_, let wrapped):
             await closeEpisodeIfNeeded()
             await loadCurrent(autoplay: true)
-            guard let item = queue.current else { return .rejected(.emptyQueue) }
-            return .advanced(to: index, item: item, wrapped: wrapped)
-        case .repeated(let index):
-            guard let item = queue.current else { return .rejected(.emptyQueue) }
-            guard engineEpisodeItemID == item.id else {
-                // 引擎里根本没有这一项（装载失败 / 已被释放）→ 声称 `.playing` 就是谎报。
+            // `.moved` 携带的索引只是 step 计算那一刻的事实：装载期间用户可能又换了曲，
+            // 失败链也可能已经走得更远（F-3）。落点一律按**当下队列**投影。
+            return advanceOutcome(wrapped: wrapped)
+        case .repeated:
+            // 引擎账本 + 用户意图都要过守卫（R1 / F-6）：引擎里根本没有这一项时，
+            // 「重播当前项」就是无中生有 → 收敛为「停止 + 终态」，等用户处置。
+            guard let claimed = queue.current?.id,
+                  continuationIsCurrent(
+                    generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: true
+                  ) else {
                 return await haltBecauseNothingIsLoaded()
             }
             position = 0
             await engine.seek(to: 0)
             await engine.play()
+            // 两个 await 之后再复核一次（F-1 的同一把守卫）：期间用户完全可能已经暂停或
+            // 换曲，此时状态必须交还给事实，而不是把 `.playing` 补写在用户的暂停之后。
+            guard continuationIsCurrent(
+                generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: true
+            ) else {
+                await engine.pause()
+                return advanceOutcome(wrapped: false)
+            }
             state = .playing
+            // F-6：`.playing` 不得跑在「失败终态」账本前面 —— 引擎既然重新播起了这一项，
+            // 自动推进的失败链就已由用户的处置打断。`failureStreak` 的「连续」口径不动
+            // （装载/重播成功 ≠ 播放成功，断点在引擎确认播放的那一刻）。
+            isFailureTerminal = false
             // P5（api-contracts §5「一次实际播放一个幂等键」）：单曲循环下的每一次完整播放
             // 都是一次实际播放 → 先关闭上一集次（产生新幂等键），再上报。少报同样是口径偏差。
             await closeEpisodeIfNeeded()
             await reportEpisodeIfNeeded()
             await publishNowPlaying(force: true)
-            return .repeated(at: index, item: item)
+            // F-3：`at:` / `item:` 与快照同刻（`index` 是 step 捕获的，可能已过期）。
+            return repeatedOutcome()
         case .held:
             return .held
         case .stopped:
             await closeEpisodeIfNeeded()
+            // `.off` 末项播完：用户「继续听」的意图随队列尾结束（守卫条件 (c) 的复位点）。
+            userWantsPlayback = false
             state = .stopped
             await engine.pause()
             await publishNowPlaying(force: true)
@@ -682,11 +805,27 @@ public actor PlaybackCoordinator {
         }
     }
 
+    /// `.one` 重播的自洽投影（F-3）：`at:` 与 `item:` 取**同一时刻**的队列快照，
+    /// 状态已收敛为停止时不得再回吐 `.repeated`。
+    private func repeatedOutcome() -> AdvanceOutcome {
+        guard !tornDown else { return .rejected(.tornDown) }
+        guard let index = queue.currentIndex, let item = queue.current else {
+            return .rejected(.emptyQueue)
+        }
+        switch state {
+        case .stopped: return .stopped
+        case .idle: return .rejected(.emptyQueue)
+        case .playing, .paused, .buffering, .loading:
+            return .repeated(at: index, item: item)
+        }
+    }
+
     /// 一致性收敛（状态必须与实际装载一致）：「回绕 / 重播当前项」落到一个引擎里
     /// 根本不存在的项目上时，绝不进入 `.playing`，而是停止自动推进并进入终态，
     /// 等用户处置（design §9「停止并提示」；由 `resume()` / `start()` 显式重试恢复）。
     private func haltBecauseNothingIsLoaded() async -> AdvanceOutcome {
         isFailureTerminal = true
+        userWantsPlayback = false
         state = .stopped
         position = 0
         engineEpisodeItemID = nil
@@ -701,18 +840,26 @@ public actor PlaybackCoordinator {
         // 「上一项的迟到 ended」与「同项的重复 ended」**不在这里判**：裸 `.ended` 不带归因，
         // 在此丢弃会误杀正常推进（`testItemEndUnderOffWalksThenStops` 钉住）。归因事实只在
         // 引擎侧存在，故由 `EngineEventGate` 在事件进流之前丢弃（见 `PlayerEngine.swift`）。
+        // 决策层这里补的是**另一半**归因：装载在途 / 引擎未持有当前项时不得推进（F-2 同族），
+        // 那类 `ended` 只可能来自已被取代的条目，且引擎闸门管不到「装载续体自己正在 await」的窗口。
         guard state == .playing || state == .buffering else { return .held }
+        guard continuationIsCurrent(
+            generation: nil, claimingEngineItem: queue.current?.id, requiresPlaybackIntent: true
+        ) else { return .held }
         let step = queue.step(direction: .forward, trigger: .itemEnded, under: loopMode)
         return await apply(step)
     }
 
     private func handleFailure(_ failure: PlayerFailure) async {
+        // F-2 的终态腿：已经收敛为终态时，迟到的失败不得再计数、不得再跳曲。
+        guard !isFailureTerminal else { return }
         lastFailure = failure
         guard failure.countsTowardFailureStreak else { return }
         if failureStreak < configuration.consecutiveFailureLimit { failureStreak += 1 }
         guard failureStreak < configuration.consecutiveFailureLimit else {
             // 第 3 次：进入终态，停止自动推进（design §9「连续 3 次失败停止并提示」）。
             isFailureTerminal = true
+            userWantsPlayback = false
             state = .stopped
             await closeEpisodeIfNeeded()
             await engine.pause()
@@ -729,58 +876,91 @@ public actor PlaybackCoordinator {
 
     /// 装载当前项（含私有音频本地化前置，D7）。
     ///
-    /// **代际守卫**：本函数跨 `prepareSource` / `engine.load` 两个挂起点，期间用户完全可以
-    /// skip 或 teardown。每次装载占一个代际，回写前先比对：过期就整条丢弃（不回写引擎、
-    /// 不改状态、不记失败、不发上报、不发布元数据）。
+    /// **每个回写点都走 `continuationIsCurrent`**（守卫 a+b+c，见该函数注释）：本函数跨
+    /// `prepareSource` / `engine.load` / `engine.play` 多个挂起点，期间用户完全可以
+    /// skip、暂停、释放播放器。过期或违背意图就整条丢弃（不回写引擎、不改状态、
+    /// 不记失败、不发上报、不发布元数据）。
     private func loadCurrent(autoplay: Bool) async {
         guard !tornDown else { return }
         guard let item = queue.current else {
             // 无当前项也要作废在途装载，否则它回来时会把状态复活。
-            loadGeneration &+= 1
-            engineEpisodeItemID = nil
+            invalidateInFlightLoad()
             state = .idle
             return
         }
         loadGeneration &+= 1
         let generation = loadGeneration
+        inFlightLoad = InFlightLoad(generation: generation)
+        // 台账的生命周期用 defer 钉死：本函数有 7 个提前返回，漏掉任何一个都会让
+        // 「装载在途」永久成立，从而把所有后续 seek / 事件归约误杀（守卫 (a) 的另一半）。
+        defer { finishLoad(generation) }
         // 换件的瞬间，引擎里就没有可播的东西了 —— 直到当代装载真正返回。
         engineEpisodeItemID = nil
+        userWantsPlayback = autoplay
         state = .loading
         position = 0
         duration = item.duration
         await publishNowPlaying(force: true)
-        guard isCurrent(generation) else { return }
+        guard continuationIsCurrent(
+            generation: generation, claimingEngineItem: nil, requiresPlaybackIntent: false
+        ) else { return }
 
         let prepared: PlaybackItem
         if let preparer = sourcePreparer {
             switch await preparer.prepareSource(for: item, session: session) {
             case .success(let ready):
-                guard isCurrent(generation) else { return }
+                guard continuationIsCurrent(
+                    generation: generation, claimingEngineItem: nil, requiresPlaybackIntent: false
+                ) else { return }
                 prepared = ready
             case .failure(let error):
                 // 过期装载的失败同样不得污染新集次（连击计数 / lastFailure）。
-                guard isCurrent(generation) else { return }
+                guard continuationIsCurrent(
+                    generation: generation, claimingEngineItem: nil, requiresPlaybackIntent: false
+                ) else { return }
                 await handleFailure(PlayerFailure(kind: Self.kind(for: error), message: error.description))
                 return
             }
         } else if item.requiresLocalization {
             // 未注入本地化器时，绝不把 Bearer 地址交给播放器（D7 硬规则）。
-            guard isCurrent(generation) else { return }
+            guard continuationIsCurrent(
+                generation: generation, claimingEngineItem: nil, requiresPlaybackIntent: false
+            ) else { return }
             await handleFailure(PlayerFailure(kind: .localizationRequired, message: "缺少私有音频本地化器"))
             return
         } else {
             prepared = item
         }
+        // 交给引擎：从这一刻起，引擎上报的失败属于当代（F-2 的归因分界）。
+        if inFlightLoad?.generation == generation {
+            inFlightLoad?.handedToEngine = true
+        }
         await engine.load(prepared)
-        guard isCurrent(generation) else { return }
+        guard continuationIsCurrent(
+            generation: generation, claimingEngineItem: nil, requiresPlaybackIntent: false
+        ) else { return }
+        if let failure = inFlightLoad?.failure, inFlightLoad?.generation == generation {
+            // F-8：契约「load 失败经 `.failed` 表达」在这里被真正消费 ——
+            // 引擎账本尚未记账，所以「无处可跳」会由 `apply(.repeated)` 的闸门收敛成终态。
+            inFlightLoad?.failure = nil
+            await handleFailure(failure)
+            return
+        }
+        // 引擎账本先落，再谈播放状态（R1）。
         engineEpisodeItemID = prepared.id
-        if autoplay {
+        // 引擎确实装着当前项 = 「自动推进的失败连击」已被用户的处置打断（F-6）。
+        isFailureTerminal = false
+        if autoplay && userWantsPlayback {
             state = .playing
             await engine.play()
             await engine.setRate(playbackRate)
-            guard isCurrent(generation) else { return }
+            guard continuationIsCurrent(
+                generation: generation, claimingEngineItem: prepared.id, requiresPlaybackIntent: true
+            ) else { return }
             await reportEpisodeIfNeeded()
         } else {
+            // F-1：装载期间用户显式暂停 —— 条目照常进引擎，但绝不命令出声、
+            // 不声称 `.playing`、不上报这一集次。
             state = .paused
         }
         await publishNowPlaying(force: true)
@@ -789,6 +969,98 @@ public actor PlaybackCoordinator {
     /// 当代装载是否仍未被取代（取代 = 新一轮 `loadCurrent` / 无当前项 / teardown）。
     private func isCurrent(_ generation: UInt64) -> Bool {
         generation == loadGeneration && !tornDown
+    }
+
+    // MARK: - 内部：续体守卫（环 4 R9：F-1 / F-2 / F-5 / F-7 / F-8 的同一条不变量）
+
+    /// 守卫 (a) 的两种严格度。
+    private enum ContinuationKind {
+        /// **宣称类**续体（装载回写 / 声称播放 / 写引擎 / 推进 / seek）：装载在途期间
+        /// 引擎里可能还是旧条目 → 除本代际的装载本身外一律不采信。
+        case claim
+        /// **观测类**续体（`position` / `duration`）：`engine.load` 已在途时，引擎里装的
+        /// 就是当代条目，它上报的事实属于当代 —— 只排除 `prepareSource` 阶段（F-2 的分界）。
+        case observation
+    }
+
+    /// **唯一的续体采信判据**：任何跨挂起点回来的「装载 / 播放 / 事件归约」续体，
+    /// 在回写状态、命令引擎、记失败账、动进度账或发布锁屏之前，必须同时满足三条：
+    ///
+    /// - (a) **装载代际**：`generation` 仍是当代且未释放；传 `nil` 表示本续体不源自
+    ///   `loadCurrent`，于是按 `kind` 决定对在途装载的严格度；
+    /// - (b) **引擎归属**：引擎里实际装着被宣称的那一项（见 `engineOwns(_:kind:)`），
+    ///   且当代没有收到过引擎上报的失败；
+    /// - (c) **用户意图**：未被显式暂停、未进入失败终态（仅在宣称播放时要求）。
+    ///
+    /// 收敛成一个命名守卫的原因：这三条曾在五个续体点各写一份、各漏一处
+    /// （M10 只封了事件路径 → F-1 的装载路径仍开放；P2 只封了代际 → F-2/F-5/F-8 仍开放）。
+    /// 新增续体点时只允许调用本函数，不允许就地重写条件。
+    private func continuationIsCurrent(
+        generation: UInt64?,
+        claimingEngineItem claimed: String?,
+        kind: ContinuationKind = .claim,
+        requiresPlaybackIntent: Bool
+    ) -> Bool {
+        // (a) 装载代际 / 生命周期
+        if let generation {
+            guard inFlightLoad?.generation == generation, isCurrent(generation) else { return false }
+        } else {
+            guard !tornDown else { return false }
+            if kind == .claim {
+                guard inFlightLoad == nil else { return false }
+            }
+        }
+        // (b) 引擎归属（含「本代际的 load 已失败」）
+        if let claimed {
+            guard inFlightLoad?.failure == nil, engineOwns(claimed, kind: kind) else { return false }
+        }
+        // (c) 用户意图
+        if requiresPlaybackIntent {
+            guard userWantsPlayback, !isFailureTerminal else { return false }
+        }
+        return true
+    }
+
+    /// 守卫 (b)：引擎此刻装着的是不是这一项。
+    ///
+    /// `observation` 口径放宽到「正在被交给它」：`engine.load` 已在途时引擎里装的就是它，
+    /// 观测者上报的是当代条目；`claim` 口径要求装载已经真正返回并记账（R1）。
+    private func engineOwns(_ itemID: String, kind: ContinuationKind) -> Bool {
+        if engineEpisodeItemID == itemID { return true }
+        guard kind == .observation else { return false }
+        guard let inFlight = inFlightLoad,
+              inFlight.handedToEngine,
+              inFlight.generation == loadGeneration else { return false }
+        return queue.current?.id == itemID
+    }
+
+    /// 引擎上报的失败能否归因到**当前集次**（F-2）。
+    ///
+    /// 迟到失败的现实形态：用户已 skip，新一轮装载还挂在 `prepareSource` 上，引擎里装的
+    /// 仍是上一件 —— 上一件的失败此时到达。裸 `.failed` 不带身份，协调器唯一能用的判据
+    /// 就是「引擎有没有被交给当代条目」+「引擎账本装着谁」。
+    private func failureIsAttributableToCurrentEpisode(_ failure: PlayerFailure) -> Bool {
+        guard !tornDown else { return false }
+        guard queue.current != nil else { return false }
+        if let inFlight = inFlightLoad {
+            // 装载在途：只有「已交给引擎」的阶段上报才属于当代，交由装载续体消费（F-8）。
+            return inFlight.generation == loadGeneration && inFlight.handedToEngine
+        }
+        // 无装载在途：引擎里必须确实装着当前项。
+        return engineEpisodeItemID != nil && engineEpisodeItemID == queue.current?.id
+    }
+
+    /// 队列换代 / 释放：在途台账与用户意图一并作废（F-7：`loading`  ⟹ 真有装载在途）。
+    private func invalidateInFlightLoad() {
+        loadGeneration &+= 1
+        inFlightLoad = nil
+        engineEpisodeItemID = nil
+        userWantsPlayback = false
+    }
+
+    /// 结束本代际的在途台账（被取代的装载不得清掉新一轮的台账）。
+    private func finishLoad(_ generation: UInt64) {
+        if inFlightLoad?.generation == generation { inFlightLoad = nil }
     }
 
     static func kind(for error: PlayerError) -> PlayerFailure.Kind {
@@ -875,9 +1147,8 @@ public actor PlaybackCoordinator {
     private func clearQueueAndStop() async {
         reportedEpisodeItemID = nil
         _ = queue.removeAll()
-        // 队列清空 = 在途装载全部作废，引擎账本同步归零（R1 / R2）。
-        loadGeneration &+= 1
-        engineEpisodeItemID = nil
+        // 队列清空 = 在途装载全部作废，引擎账本同步归零（R1 / R2 / F-7）。
+        invalidateInFlightLoad()
         lastTimeSyncStamp = nil
         position = 0
         duration = nil
