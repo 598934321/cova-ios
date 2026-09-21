@@ -859,7 +859,15 @@ public actor PlaybackCoordinator {
             guard continuationIsCurrent(
                 generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: true
             ) else {
-                await engine.pause()
+                // R9-1（第 9 轮验收轮 Major）：**被取代 ≠ 该摁引擎**。取代有三种来源 ——
+                // 用户暂停（意图假）、用户换曲/移除（新一代装载在途）、用户另起一播（新一代在途）。
+                // 旧写法无条件 `engine.pause()`，于是后两种里「用户刚刚起播的另一首」被一次
+                // **已被取代的** ⏭ 摁停，而读数仍写 `.playing`、那次 ⏭ 还回 `.advanced(新曲)`。
+                // 只有「引擎里仍恰好是这次 ⏭ 宣称的那一项、且没有新一代装载」时摁才是对的
+                // （即用户暂停那一支；此时 pause 幂等）。
+                if inFlightLoad == nil, engineEpisodeItemID == claimed {
+                    await engine.pause()
+                }
                 return advanceOutcome(wrapped: false)
             }
             state = .playing

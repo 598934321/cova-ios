@@ -1902,6 +1902,35 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(submitted, 0, "R7D：没播起来就不许提交播放上报")
     }
 
+    /// 缺陷 R9-1（**Major**，第 9 轮验收轮；本批修）：被取代的重播腿**无条件** `engine.pause()`，
+    /// 把用户刚刚起播的另一首摁停（用户从未暂停），且读数仍 `.playing`、那次 ⏭ 还回 `.advanced`。
+    /// 构造：单元素 `.one` 正在响时发 ⏭（重播腿在 `engine.seek` 的 actor hop 上挂起），
+    /// 挂起窗口里用户另起一播（新一代装载，`inFlightLoad` 同步置位）⇒ 重播腿恢复时必须**看见**
+    /// 新一代在途而不摁引擎。
+    func testSupersededReplayLegMustNotPauseTheUsersNewPlayback() async {
+        let engine = ScriptedEngine()
+        let subject = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: nowPlaying)
+        await subject.setLoopMode(.one)
+        _ = await subject.start(items: TestItems.makeMany(["a"]))
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "前置：正在响")
+        let pausesBefore = engine.count(of: "pause")
+
+        let replay = Task { await subject.next() }
+        // 重播腿此刻挂在 `engine.seek` 的 actor hop 上；协调器 actor 空出来 ⇒ 用户另起一播。
+        let restarted = Task { await subject.start() }
+        _ = await restarted.value
+        _ = await replay.value
+
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "R9-1：被取代的 ⏭ 不得把新起播摁成暂停/停止")
+        XCTAssertEqual(
+            engine.count(of: "pause"), pausesBefore,
+            "R9-1：被取代的重播腿不许碰引擎（用户从未暂停）"
+        )
+        XCTAssertEqual(snap.isFailureTerminal, false, "R9-1")
+    }
+
     /// 缺陷 R8B-1（**Major**，第 8 轮 b 复审；第 13 批修）：「引擎装着当前项 + 正在响 +
     /// 在途台账未收」是一段**真实窗口** —— `loadCurrent` 写完 `engineEpisodeItemID` 后还要
     /// await 播放/上报/回显（上报是真网络 await）才收台账。旧 (a) 腿把「台账开着」读成
