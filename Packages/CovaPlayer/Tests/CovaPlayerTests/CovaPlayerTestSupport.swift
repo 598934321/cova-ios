@@ -26,6 +26,9 @@ actor FakeClock: CovaClock {
 // MARK: - 引擎桩
 
 /// 脚本化引擎：记录调用、按需投递事件（零 AVFoundation、零音频硬件）。
+///
+/// 与生产适配器**同一套代际口径**（`EngineEventGate`）：`load` / `stopAndRelease` 推进代际，
+/// 观测者形态的事件走 `emitObserved(_:from:)`，于是「上一项的迟到通知」可以被确定性回放。
 final class ScriptedEngine: PlayerEngine, @unchecked Sendable {
     private let lock = NSLock()
     private let pairing = AsyncStream.makeStream(of: PlayerEvent.self)
@@ -36,12 +39,16 @@ final class ScriptedEngine: PlayerEngine, @unchecked Sendable {
     private var _time: Double = 0
     private var _duration: Double?
     private var _releaseCount = 0
+    private var gate = EngineEventGate()
 
     var events: AsyncStream<PlayerEvent> { pairing.stream }
 
     func load(_ item: PlaybackItem) async {
         record("load")
-        mutate { _loads.append(item) }
+        mutate {
+            _loads.append(item)
+            _ = gate.advance()
+        }
     }
 
     func play() async { record("play") }
@@ -57,7 +64,9 @@ final class ScriptedEngine: PlayerEngine, @unchecked Sendable {
 
     func setRate(_ rate: Double) async {
         record("setRate")
-        mutate { _rates.append(rate) }
+        mutate {
+            _rates.append(rate)
+        }
     }
 
     func currentRate() async -> Double { snapshot { _rates.last ?? 1 } }
@@ -67,13 +76,35 @@ final class ScriptedEngine: PlayerEngine, @unchecked Sendable {
 
     func stopAndRelease() {
         record("release")
-        mutate { _releaseCount += 1 }
+        mutate {
+            _releaseCount += 1
+            _ = gate.advance()
+        }
     }
 
     // MARK: 测试驱动面
 
+    /// 直接投递（不经闸门）：用于「协调器收到这条事件后如何归约」的纯状态测试。
     func emit(_ event: PlayerEvent) {
         pairing.continuation.yield(event)
+    }
+
+    /// 当前装载代际（`load` 之后它就是观测者块捕获的那个值）。
+    var currentEpisode: UInt64 { snapshot { gate.episode } }
+
+    /// 观测者形态的事件：与 `AVPlayerEngine.deliverObserved` 同一判据
+    /// —— 过期代际与同代重复 `.ended` 在进事件流之前就被丢弃。返回是否真的投递了。
+    @discardableResult
+    func emitObserved(_ event: PlayerEvent, from episode: UInt64) -> Bool {
+        let allowed = mutate { gate.accepts(event, from: episode) }
+        guard allowed else { return false }
+        pairing.continuation.yield(event)
+        return true
+    }
+
+    /// 直读闸门判定（不投递），用于把「丢弃」本身变成可断言的事实。
+    func gateAccepts(_ event: PlayerEvent, from episode: UInt64) -> Bool {
+        mutate { gate.accepts(event, from: episode) }
     }
 
     func finishStream() {
@@ -99,10 +130,11 @@ final class ScriptedEngine: PlayerEngine, @unchecked Sendable {
         mutate { _calls.append(call) }
     }
 
-    private func mutate(_ body: () -> Void) {
+    @discardableResult
+    private func mutate<T>(_ body: () -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
-        body()
+        return body()
     }
 
     private func snapshot<T>(_ body: () -> T) -> T {
@@ -374,6 +406,61 @@ actor StubSourcePreparer: PlaybackSourcePreparing {
             return .failure(error)
         }
     }
+}
+
+/// **在途可控**的源准备器：指定 id 的条目在 `prepareSource` 里挂起，直到测试点名放行。
+///
+/// 用途：把「装载在途时用户换曲 / 释放播放器」这类 actor 重入窗口变成**可开关的门**，
+/// 从而确定性复现过期回写（缺陷 P2），不需要任何时间猜测（D16⑤）。
+///
+/// 两个信号：
+/// - `requestSignal`：进入 `prepareSource`（在途已开始）；
+/// - `returnedSignal`：闸门放行后**即将返回**给协调器 —— 用作「续体已入队」的前置条件。
+actor GatedSourcePreparer: PlaybackSourcePreparing {
+    let requestSignal = SignalCounter()
+    let returnedSignal = SignalCounter()
+    private let gated: Set<String>
+    private let failures: [String: PlayerError]
+    private(set) var requests: [String] = []
+    private var waiters: [String: CheckedContinuation<Void, Never>] = [:]
+    private var released: Set<String> = []
+
+    init(gating ids: [String], failing: [String: PlayerError] = [:]) {
+        gated = Set(ids)
+        failures = failing
+    }
+
+    func prepareSource(
+        for item: PlaybackItem,
+        session: PlaybackSessionContext
+    ) async -> Result<PlaybackItem, PlayerError> {
+        requests.append(item.id)
+        requestSignal.bump()
+        if gated.contains(item.id) {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if released.contains(item.id) {
+                    continuation.resume()
+                } else {
+                    waiters[item.id] = continuation
+                }
+            }
+        }
+        returnedSignal.bump()
+        if let error = failures[item.id] { return .failure(error) }
+        return .success(item)
+    }
+
+    /// 放行指定条目的在途装载（被挂起的 `prepareSource` 就此返回给协调器）。
+    func release(_ id: String) {
+        released.insert(id)
+        if let waiter = waiters.removeValue(forKey: id) {
+            waiter.resume()
+        }
+    }
+
+    var callCount: Int { requests.count }
+    var requestedIDs: [String] { requests }
+    func returnedCount() -> Int { returnedSignal.value }
 }
 
 /// 封面挂载桩：可控制耗时与否（用信号式等待，不做时间猜测）。

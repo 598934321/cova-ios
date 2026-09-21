@@ -308,4 +308,61 @@ final class CovaPlayerFacadeTests: XCTestCase {
         let releases = engine.releaseCount
         XCTAssertGreaterThan(releases, 0)
     }
+
+    /// 缺陷 M11：门面声明的「teardown 后永久下线」旧实现**未落地**（`tornDown` 从不赋值、从不读取），
+    /// teardown 后一次 `resume()` 就把全部远端 target 重挂回系统单例、并重新激活已 deactivate 的会话。
+    func testTeardownPermanentlyRetiresFacadeWiring() async {
+        let engine = ScriptedEngine()
+        let system = StubAudioSessionSystem()
+        let player = CovaPlayer(engine: engine, clock: FakeClock(), audioSystem: system)
+        _ = await player.start(items: TestItems.makeMany(["a"]))
+        XCTAssertTrue(player.isActivated)
+        let configuredBefore = system.configurationCount
+        let handlersBefore = player.nowPlaying.registeredHandlerCount
+        XCTAssertEqual(handlersBefore, MPNowPlayingController.managedCommandNames.count, "前置：远端 target 已挂上")
+
+        await player.teardown()
+        let loadsBeforeTeardown = engine.loads.count
+        let handlersAfterTeardown = player.nowPlaying.registeredHandlerCount
+        XCTAssertEqual(handlersAfterTeardown, 0)
+        XCTAssertTrue(player.isTornDown, "M11：下线标志必须是可观测的事实")
+
+        // 逐个尝试复活（评审探针形态：resume + toggle + next + start + 显式激活）。
+        await player.resume()
+        _ = await player.toggle()
+        _ = await player.next()
+        _ = await player.start()
+        _ = await player.start(items: TestItems.makeMany(["b"]))
+        try? await player.activateForPlayback()
+        await player.setSourcePreparer(StubSourcePreparer())
+
+        let handlers = player.nowPlaying.registeredHandlerCount
+        XCTAssertEqual(handlers, 0, "M11：teardown 后不得再把远端 target 挂回系统单例")
+        let configured = system.configurationCount
+        XCTAssertEqual(configured, configuredBefore, "M11：teardown 后不得重新激活已反激活的音频会话")
+        XCTAssertFalse(player.isActivated)
+        let preparerInjected = player.fetcher != nil
+        XCTAssertFalse(preparerInjected, "M11：下线后注入本地化器不得改变任何装配")
+        let snapshot = await player.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .idle)
+        XCTAssertEqual(snapshot.queueCount, 0)
+        let loads = engine.loads
+        XCTAssertEqual(loads.count, loadsBeforeTeardown, "M11：下线后引擎不得再收到装载")
+    }
+
+    /// M11 的正向对照（TD-9）：未 teardown 时同一批入口都照常工作。
+    func testFacadeWiringStaysLiveWithoutTeardown() async throws {
+        let system = StubAudioSessionSystem()
+        let player = CovaPlayer(engine: ScriptedEngine(), clock: FakeClock(), audioSystem: system)
+        _ = await player.start(items: TestItems.makeMany(["a"]))
+        await player.resume()
+        let snapshot = await player.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .playing)
+        XCTAssertFalse(player.isTornDown)
+        let handlers = player.nowPlaying.registeredHandlerCount
+        XCTAssertEqual(handlers, MPNowPlayingController.managedCommandNames.count)
+        let configured = system.configurationCount
+        XCTAssertEqual(configured, 1)
+        await player.teardown()
+    }
 }

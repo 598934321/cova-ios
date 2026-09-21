@@ -161,6 +161,142 @@ final class AVPlayerEngineTests: XCTestCase {
         XCTAssertNil(duration, "无 item 时不得编造时长")
         engine.stopAndRelease()
     }
+
+    // MARK: - 环 4 修复 R4：观测者事件的装载代际闸门（缺陷 P4）
+
+    /// 闸门本身的规则表（纯状态机，零 AVFoundation）：代际 + 「同代至多一条 ended」。
+    func testEventGateRuleTable() {
+        var gate = EngineEventGate()
+        XCTAssertEqual(gate.episode, 0, "从未装载 = 第 0 代")
+        XCTAssertTrue(gate.isCurrent(0))
+        XCTAssertFalse(gate.accepts(.ended, from: 9), "不存在的代际不得放行")
+
+        let first = gate.advance()
+        XCTAssertEqual(first, 1)
+        XCTAssertTrue(gate.accepts(.position(seconds: 5), from: first))
+        XCTAssertTrue(gate.accepts(.ended, from: first), "当代的第一条 ended 必须放行")
+        XCTAssertFalse(gate.accepts(.ended, from: first), "同代重复 ended 必须丢弃")
+        XCTAssertTrue(gate.accepts(.failed(PlayerFailure(kind: .network)), from: first), "非 ended 事件不受「一集一次」约束")
+
+        let second = gate.advance()
+        XCTAssertNotEqual(second, first)
+        XCTAssertFalse(gate.accepts(.ended, from: first), "已被取代的条目：任何事件都不得再进事件流")
+        XCTAssertFalse(gate.isCurrent(first))
+        XCTAssertTrue(gate.accepts(.ended, from: second), "换件后重新起算：新代的 ended 必须放行")
+        XCTAssertFalse(gate.accepts(.ended, from: second))
+        XCTAssertEqual(gate.episode, second)
+    }
+
+    /// 生产适配器确实走这道闸门：迟到 / 重复的观测者回调根本进不了事件流。
+    func testObserverDeliveriesAreGatedByLoadEpisode() async {
+        let engine = AVPlayerEngine()
+        let collector = EventCollector()
+        let pump = Task { await collector.consume(engine.events, until: .any, target: 1) }
+
+        await engine.load(localizedItem(missingFileURL(), id: "first"))
+        let firstEpisode = engine.currentEpisode
+        XCTAssertGreaterThan(firstEpisode, 0, "装载后代际必须已推进（观测者块捕获的就是它）")
+        XCTAssertTrue(engine.deliverObserved(.ended, from: firstEpisode), "当代 ended 必须投递")
+        XCTAssertFalse(engine.deliverObserved(.ended, from: firstEpisode), "同代重复 ended 必须丢弃")
+
+        await engine.load(localizedItem(missingFileURL(), id: "second"))
+        let secondEpisode = engine.currentEpisode
+        XCTAssertNotEqual(secondEpisode, firstEpisode, "换件必须推进装载代际")
+        XCTAssertFalse(engine.deliverObserved(.ended, from: firstEpisode), "上一件迟到的 ended 不得进事件流")
+        XCTAssertFalse(
+            engine.deliverObserved(.position(seconds: 12), from: firstEpisode),
+            "上一件迟到的位置上报不得把新项的进度条挪走"
+        )
+        XCTAssertTrue(engine.deliverObserved(.ended, from: secondEpisode), "新件的播完是另一件事")
+
+        engine.stopAndRelease()
+        let releasedEpisode = engine.currentEpisode
+        XCTAssertGreaterThan(releasedEpisode, secondEpisode, "释放同样推进代际（在途回调随之作废）")
+        XCTAssertFalse(engine.deliverObserved(.ended, from: secondEpisode), "释放后的在途回调不得复活事件流")
+
+        let arrived = await collector.waitFor(.any, target: 1)
+        XCTAssertTrue(arrived, "被放行的当代事件必须真的到达事件流")
+        let collected = await collector.all
+        XCTAssertFalse(
+            collected.contains { event in
+                if case .position(let seconds) = event, seconds == 12 { return true }
+                return false
+            },
+            "过期代际的位置上报不得出现在事件流里（deliverObserved 是观测者回调的唯一入口）"
+        )
+        pump.cancel()
+    }
+
+    /// 被拒绝的装载（D7 第二道闸）不推进代际：此时引擎里仍是上一件在播，其事件依然是事实。
+    func testRejectedLoadKeepsPreviousEpisodeDeliverable() async {
+        let engine = AVPlayerEngine()
+        await engine.load(localizedItem(missingFileURL(), id: "first"))
+        let firstEpisode = engine.currentEpisode
+        await engine.load(bearerItem())
+        XCTAssertEqual(engine.currentEpisode, firstEpisode, "拒绝装载 = 没有换件，代际不得推进")
+        XCTAssertTrue(
+            engine.deliverObserved(.position(seconds: 7), from: firstEpisode),
+            "上一件仍在引擎里，它的事件必须继续投递"
+        )
+        engine.stopAndRelease()
+    }
+
+    // MARK: - 环 4 修复 R5：就绪事件必须尊重播放意图（缺陷 M10）
+
+    /// 纯映射穷举：`readyToPlay` / `likelyToKeepUp` 在「用户已暂停」时**不得**上报 `.playing`。
+    func testReadinessMappingFollowsPlaybackIntent() {
+        let ready = AVPlayerItem.Status.readyToPlay
+        XCTAssertEqual(
+            AVPlayerEngine.observedEvents(forKeyPath: "playbackLikelyToKeepUp", status: ready, duration: .invalid, playing: true),
+            [.playing], "正向对照：意图为在播时缓冲恢复照常说『在播』"
+        )
+        XCTAssertEqual(
+            AVPlayerEngine.observedEvents(forKeyPath: "playbackLikelyToKeepUp", status: ready, duration: .invalid, playing: false),
+            [.paused], "M10：暂停后缓冲恢复不得翻回播放"
+        )
+        XCTAssertEqual(
+            AVPlayerEngine.observedEvents(forKeyPath: "status", status: ready, duration: .invalid, playing: false),
+            [.paused], "M10：readyToPlay 同理"
+        )
+        let timed = CMTime(seconds: 42, preferredTimescale: 1000)
+        XCTAssertEqual(
+            AVPlayerEngine.observedEvents(forKeyPath: "status", status: ready, duration: timed, playing: false),
+            [.paused, .duration(seconds: 42)], "时长上报不受意图影响（它不是播放状态）"
+        )
+        // 非就绪类映射保持原口径（不得被本条修复顺带改掉）。
+        XCTAssertEqual(
+            AVPlayerEngine.observedEvents(forKeyPath: "status", status: .unknown, duration: .invalid, playing: false),
+            [.buffering]
+        )
+        XCTAssertEqual(
+            AVPlayerEngine.observedEvents(forKeyPath: "status", status: .failed, duration: .invalid, playing: true).count,
+            1, "failed 只带一条事件"
+        )
+        XCTAssertEqual(
+            AVPlayerEngine.observedEvents(forKeyPath: "playbackBufferEmpty", status: ready, duration: timed, playing: true),
+            [.buffering]
+        )
+        XCTAssertTrue(
+            AVPlayerEngine.observedEvents(forKeyPath: "bogusKeyPath", status: ready, duration: timed, playing: true).isEmpty
+        )
+        XCTAssertEqual(AVPlayerEngine.readinessEvent(playing: true), .playing)
+        XCTAssertEqual(AVPlayerEngine.readinessEvent(playing: false), .paused)
+    }
+
+    /// 意图账本：`play()` 置真、`pause()` / 释放置真 → 假；KVO 分支读的就是它。
+    func testPlaybackIntentIsTrackedAcrossPlayPauseAndRelease() async {
+        let engine = AVPlayerEngine()
+        XCTAssertFalse(engine.currentPlaybackIntent, "未起播前不得假设用户要听")
+        await engine.load(localizedItem(missingFileURL(), id: "intent"))
+        await engine.play()
+        XCTAssertTrue(engine.currentPlaybackIntent)
+        await engine.pause()
+        XCTAssertFalse(engine.currentPlaybackIntent, "M10：显式暂停必须抹掉播放意图")
+        await engine.play()
+        XCTAssertTrue(engine.currentPlaybackIntent)
+        engine.stopAndRelease()
+        XCTAssertFalse(engine.currentPlaybackIntent, "释放后不存在任何在播意图")
+    }
 }
 
 /// 事件收集器：把「等到第 n 条事件」变成信号等待（D16⑤），超时只负责把挂死转成变红。

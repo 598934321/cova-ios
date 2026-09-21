@@ -13,12 +13,16 @@ public struct PlayQueue: Equatable, Sendable {
     // MARK: - 结果类型
 
     /// 结构性失败原因（越界 / 空 / 找不到 / 未选曲）。
+    ///
+    /// `.tornDown` 是**唯一由上层产生的原因**：`PlayQueue` 本身没有生命周期概念，
+    /// 该 case 只被 `PlaybackCoordinator` 用作「释放后一律拒绝」的返回值（缺陷 P3 的裁决）。
     public enum Failure: String, Equatable, Sendable, CustomStringConvertible {
         case emptyQueue
         case noCurrentIndex
         case indexOutOfRange
         case unknownItem
         case invalidDestination
+        case tornDown
 
         public var description: String {
             switch self {
@@ -27,6 +31,7 @@ public struct PlayQueue: Equatable, Sendable {
             case .indexOutOfRange: return "索引越界"
             case .unknownItem: return "队列中不存在该曲目"
             case .invalidDestination: return "目标位置非法"
+            case .tornDown: return "播放器已释放"
             }
         }
     }
@@ -231,7 +236,12 @@ public struct PlayQueue: Equatable, Sendable {
             if mode.wrapsToFirst { return wrap(from: index) }
             return .stopped
         case .itemFailed:
-            // 失败必须离开当前项（含 `.one`），否则对同一坏源无限重试。
+            // **失败口径（与「播完」刻意不对称，P1c 的裁决）**：失败永远**尝试**离开当前项 ——
+            // `.off` 末项播完即停，但末项失败回绕首项继续（design §9「自动跳下一首」）；
+            // `.one` 下失败也不原地重试坏源，同样按回绕前进。
+            // 唯一例外是**单元素队列**：无处可跳 → `wrap` 只能给出 `.repeated(当前)`，
+            // 由 `PlaybackCoordinator.apply(.repeated)` 的一致性闸门收敛为「停止 + 终态」
+            // （引擎里没有可播条目时绝不声称 `.playing`）。
             return wrap(from: index)
         case .userInitiated:
             return mode.wrapsToFirst ? wrap(from: index) : .held

@@ -82,7 +82,11 @@ public final class CovaPlayer {
     /// 激活：接上引擎事件流、启动音频会话、注册锁屏命令。
     ///
     /// 不在 `init` 里做：门面构建必须廉价（App 冷启动路径与单测都不应触碰系统会话）。
+    ///
+    /// **teardown 是终态**（M11）：释放后重新接线会造出「远端 target 重挂 + 已 deactivate 的会话
+    /// 再激活」的僵尸态（协调器那边已经拒绝一切请求），因此本方法与 `ensureActivated` 一并下线。
     public func activateForPlayback() async throws {
+        guard !tornDown else { return }
         guard !activated else { return }
         await coordinator.attach()
         try await audioSession.start()
@@ -93,14 +97,18 @@ public final class CovaPlayer {
 
     public var isActivated: Bool { activated }
 
+    /// 是否已永久下线（`teardown()` 之后恒真）。
+    public var isTornDown: Bool { tornDown }
+
     /// 绑定会话（D8：登出/换号 → 推进 generation → 丢未决上报 + 清私有音频 + 停播放）。
     public func bindSession(_ session: PlaybackSessionContext) async {
         await coordinator.bindSession(session)
         await reporter.bindSession(session)
     }
 
-    /// 注入私有音频本地化器（M1 拿到真实凭证提供器后调用）。
+    /// 注入私有音频本地化器（M1 拿到真实凭证提供器后调用）。teardown 后拒绝（M11）。
     public func setSourcePreparer(_ preparer: any PlaybackSourcePreparing) async {
+        guard !tornDown else { return }
         fetcher = preparer as? any PrivateAudioFetching
         await coordinator.injectCollaborators(reporter: nil, nowPlaying: nil, sourcePreparer: preparer)
     }
@@ -118,7 +126,7 @@ public final class CovaPlayer {
     }
 
     private func ensureActivated() async {
-        guard !activated else { return }
+        guard !tornDown, !activated else { return }
         await coordinator.attach()
         try? await audioSession.start()
         await nowPlaying.registerCommands()
@@ -199,7 +207,12 @@ public final class CovaPlayer {
     }
 
     /// 释放全部系统资源（幂等）。
+    ///
+    /// 置位 `tornDown` 后门面**永久下线**（M11）：任何再次激活的路径（`resume` / `start` /
+    /// `activateForPlayback`）都不会重挂远端 target、不会再激活已反激活的音频会话。
     public func teardown() async {
+        guard !tornDown else { return }
+        tornDown = true
         activated = false
         nowPlaying.setCommandsEnabled(false)
         await coordinator.teardown()

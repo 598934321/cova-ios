@@ -242,11 +242,27 @@ final class PlayQueueTests: XCTestCase {
         XCTAssertEqual(step(["a", "b", "c"], at: 2, direction: .backward, trigger: .userInitiated, mode: .off), .moved(to: 1, wrapped: false))
     }
 
-    func testFailureNeverRepeatsCurrentItem() {
+    /// 失败口径（P1c 钉死的三向一致：注释 = 测试名 = 实现）：
+    /// **只要队列还有别处可跳，失败就离开当前项**（`.one` 也不例外，否则对同一坏源无限重试）；
+    /// **单元素队列无处可跳** → 只能 `.repeated(当前)`，其「谎报播放」由协调器的一致性闸门收敛。
+    func testFailureLeavesCurrentItemWheneverTheQueueHasSomewhereToGo() {
         // `.one` 下失败也必须离开坏项，否则无限重试同一坏源。
-        XCTAssertEqual(step(["a"], at: 0, direction: .forward, trigger: .itemFailed, mode: .one), .repeated(at: 0))
+        XCTAssertEqual(step(["a"], at: 0, direction: .forward, trigger: .itemFailed, mode: .one), .repeated(at: 0),
+                       "单元素队列：无处可跳 → 唯一可能的目标是当前项本身（协调器据此进入终态，而不是假装在播）")
+        XCTAssertEqual(step(["a"], at: 0, direction: .forward, trigger: .itemFailed, mode: .off), .repeated(at: 0))
+        XCTAssertEqual(step(["a"], at: 0, direction: .forward, trigger: .itemFailed, mode: .all), .repeated(at: 0))
         XCTAssertEqual(step(["a", "b"], at: 1, direction: .forward, trigger: .itemFailed, mode: .one), .moved(to: 0, wrapped: true))
         XCTAssertEqual(step(["a", "b"], at: 1, direction: .forward, trigger: .itemFailed, mode: .off), .moved(to: 0, wrapped: true))
+    }
+
+    /// 失败与播完在 `.off` 末项**刻意不对称**（评审 P1c 要求钉死的口径）：
+    /// 播完 = 队列到头即停；失败 = 回绕首项继续跳（design §9「自动跳下一首」）。
+    func testOffTailEndedStopsButFailedWrapsToFirst() {
+        XCTAssertEqual(step(["a", "b"], at: 1, direction: .forward, trigger: .itemEnded, mode: .off), .stopped)
+        XCTAssertEqual(step(["a", "b"], at: 1, direction: .forward, trigger: .itemFailed, mode: .off), .moved(to: 0, wrapped: true))
+        // `.all` 下两者同构（都回绕），说明不对称只属于 `.off` 的末项。
+        XCTAssertEqual(step(["a", "b"], at: 1, direction: .forward, trigger: .itemEnded, mode: .all), .moved(to: 0, wrapped: true))
+        XCTAssertEqual(step(["a", "b"], at: 1, direction: .forward, trigger: .itemFailed, mode: .all), .moved(to: 0, wrapped: true))
     }
 
     func testStepOnEmptyQueueIsRejected() {
@@ -285,5 +301,24 @@ final class PlayQueueTests: XCTestCase {
         // 停止后用户显式 next 仍是 .held（不再前进），previous 可回退。
         XCTAssertEqual(atTail.step(direction: .forward, trigger: .userInitiated, under: .off), .held)
         XCTAssertEqual(atTail.step(direction: .backward, trigger: .userInitiated, under: .off), .moved(to: 0, wrapped: false))
+    }
+
+    // MARK: - 环 4 新增：`.tornDown`（teardown 终态的拒绝原因）
+
+    /// 队列数学本身**永不**返回 `.tornDown`（它没有生命周期概念）：该 case 只由
+    /// `PlaybackCoordinator` 用作「释放后一律拒绝」的返回值（缺陷 P3 的裁决）。
+    /// 这里钉它的 rawValue 与文案，并对照「空队列 ≠ 已释放」不被混淆。
+    func testTornDownIsCoordinatorOnlyRejectionAndNeverComesFromQueueMath() {
+        XCTAssertEqual(PlayQueue.Failure.tornDown.rawValue, "tornDown")
+        XCTAssertEqual(PlayQueue.Failure.tornDown.description, "播放器已释放")
+        var subject = PlayQueue()
+        for mode in LoopMode.allCases {
+            XCTAssertEqual(
+                subject.step(direction: .forward, trigger: .itemFailed, under: mode),
+                .rejected(.emptyQueue),
+                "正向对照：空队列是「队列空」，不得被误判成「已释放」"
+            )
+        }
+        XCTAssertEqual(subject.replace([]), .applied(.replaced(count: 0, current: nil)))
     }
 }
