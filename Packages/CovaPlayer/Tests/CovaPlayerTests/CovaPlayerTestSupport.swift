@@ -724,6 +724,53 @@ actor StubArtworkAttacher: NowPlayingArtworkAttaching {
     }
 }
 
+/// **闸门可控**的封面挂载器（环 4 · 第 9 批：Major-1「迟到的封面回写」那条腿的触发面）。
+///
+/// 与 `GatedSourcePreparer` 同一形态：`attachArtwork` 一进入就 bump `enteredSignal`，
+/// 然后**在闸门上挂起**，直到测试调 `release()`。于是「挂载任务确实在途」与
+/// 「放行之前它绝不会自己跑完」都是可核对的事实，不需要让步也不需要计时器（D16⑤）。
+/// `release()` 是粘性的：实现走偏时新调用直通 ⇒ 测试变红而不是挂死。
+actor GatingArtworkAttacher: NowPlayingArtworkAttaching {
+    /// 已进入挂载的次数（= 在途封面任务数的前置事实）。
+    let enteredSignal = SignalCounter()
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var requests: [String] = []
+    private let outcome: Bool
+
+    init(result: Bool = true) {
+        outcome = result
+    }
+
+    var callCount: Int { requests.count }
+
+    func attachArtwork(for metadata: NowPlayingMetadata) async -> Bool {
+        requests.append(metadata.itemID)
+        enteredSignal.bump()
+        await waitUntilReleased()
+        return outcome
+    }
+
+    private func waitUntilReleased() async {
+        if released { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            if released {
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
+        }
+    }
+
+    /// 放行全部在途（粘性）。
+    func release() {
+        released = true
+        let pending = waiters
+        waiters = []
+        for continuation in pending { continuation.resume() }
+    }
+}
+
 // MARK: - 条目工厂
 
 enum TestItems {

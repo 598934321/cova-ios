@@ -161,6 +161,10 @@ public final class CovaPlayer {
     /// 说不出「系统现在听谁的」。
     public var ownsSharedCommandSurface: Bool { nowPlaying.ownsSharedCommandSurface }
 
+    /// 本门面的控制器是否仍是共享**信息面**（`MPNowPlayingInfoCenter` 的字典与 `playbackState`）
+    /// 的最后写入者（Major-1）。与上一条是两台账：命令位与锁屏读数可以分属两个实例。
+    public var ownsSharedInfoSurface: Bool { nowPlaying.ownsSharedInfoSurface }
+
     /// 绑定会话（D8：登出/换号 → 推进 generation → 丢未决上报 + 清私有音频 + 停播放）。
     ///
     /// 缺陷 F-13：这一支以前只丢上报、停引擎、清队列 —— **盘上的私有音频一个字节都没动过**，
@@ -309,7 +313,11 @@ public final class CovaPlayer {
         tornDown = true
         activated = false
         isRemoteCommandSurfaceRegistered = false
-        nowPlaying.setCommandsEnabled(false)
+        // Major-1：这里过去先 `nowPlaying.setCommandsEnabled(false)` —— 那一句本身**就是**一次
+        // 塑形，会把所有权抢到本门面名下（min-6 的「谁最后写谁负责」），于是被顶掉的旧门面
+        // 一次 teardown 就能把现任门面的 11 条命令位整体关掉。塑形动作交给
+        // `nowPlaying.teardown()` 里那条按所有权分形的同步退出路径：持有者关掉全部并摘净，
+        // 非持有者只清算自己名下那一套。
         await coordinator.teardown()
         await reporter.teardown()
         await audioSession.stop()
@@ -330,7 +338,10 @@ public final class CovaPlayer {
         // 仍为 true、锁屏还显示着已死门面的曲名、`playbackState` 仍是 playing ——
         // 系统把命令投给一个已经不存在的播放器。
         // 这里只能是同步路径（deinit 不能 await）：`retireSystemSurfacesSynchronously()` 与
-        // `teardown()` 走的是同一批退出动作（摘 target / 关命令位 / 清 Now Playing 字典）。
+        // `teardown()` 走的是**同一个**函数（摘 target / 关命令位 / 清 Now Playing 字典）。
+        // Major-1：那三件事都按**所有权**分形 —— 本门面已经不是共享面的持有者时（例：一次登录
+        // 重新装配出新门面、旧门面晚于新门面才释放），只清算自己名下那一套，绝不把当前持有者的
+        // 锁屏控制与显示整体下线。旧实现无条件塑形，正是「A 的析构打死 B」的形状。
         // 音频会话那一侧的观测者 token 由 `AVAudioSessionAdapter.deinit` 兜底摘除
         // （门释放 → 适配器释放 → 兜底生效；`AudioSessionGate.stop()` 是常规路径，deinit 是漏路径的兜底）。
         nowPlaying.retireSystemSurfacesSynchronously()

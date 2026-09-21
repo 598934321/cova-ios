@@ -645,4 +645,215 @@ final class NowPlayingCommandTests: XCTestCase {
         await ownerController.teardown()
         await jumper.teardown()
     }
+
+    // MARK: - 环 4 · 第 9 批 Major-1：退出必须按**所有权**分形（非持有者不得塑形持有者的共享面）
+
+    /// 一条与当前显示同形的元数据（`isPlaying = true` → `playbackState == .playing`，可读回）。
+    private func metadata(id: String, title: String, artwork: AudioURL? = nil) -> NowPlayingMetadata {
+        NowPlayingMetadata(
+            itemID: id, title: title, artist: "艺人",
+            duration: 10, elapsed: 1, isPlaying: true, artworkURL: artwork
+        )
+    }
+
+    /// Major-1（显式退出腿）：被顶掉的那个实例 `teardown()` 时，只许清算自己名下那一套 ——
+    /// 当前持有者的**命令位**与 **target** 一条都不许被牵连，所有权也不许被改动。
+    ///
+    /// 旧形态（第 7 批 MAJ-7 引入）：退出路径对进程单例无条件执行
+    /// `isEnabled = false` + `removeTarget(nil)`，于是「A 注册 → B 接手 → A 退出」把 B 的
+    /// 锁屏控制整体下线。M1 的常规再装配（旧门面晚于新门面才释放）必命中这一形状。
+    func testNonHolderTeardownLeavesHoldersCommandSurfaceIntact() async {
+        let outgoing = MPNowPlayingController(router: router)
+        let incoming = MPNowPlayingController(router: router)
+        await outgoing.teardown()
+        await incoming.teardown()
+        await outgoing.registerCommands()
+        outgoing.setCommandsEnabled(true)
+        await incoming.registerCommands()
+        incoming.setCommandsEnabled(true)
+        XCTAssertTrue(incoming.ownsSharedCommandSurface, "前置条件：第二个实例已接手共享命令面")
+        XCTAssertFalse(outgoing.ownsSharedCommandSurface, "前置条件：第一个实例是被顶掉的那一位")
+        let commandsBefore = MPNowPlayingController.controllableCommands(MPNowPlayingController.sharedCenter())
+        XCTAssertTrue(commandsBefore.allSatisfy(\.isEnabled), "前置条件：持有者把命令位开着")
+
+        await outgoing.teardown()
+
+        let commands = MPNowPlayingController.controllableCommands(MPNowPlayingController.sharedCenter())
+        XCTAssertEqual(commands.count, MPNowPlayingController.managedCommandNames.count)
+        XCTAssertTrue(
+            commands.allSatisfy(\.isEnabled),
+            "Major-1：非持有者退出不得把当前持有者的命令位整体关掉"
+        )
+        XCTAssertEqual(
+            outgoing.registeredHandlerCount,
+            0,
+            "自己名下那 11 条必须摘净 —— 系统不持有 target，跳过即悬垂（本仓红线）"
+        )
+        XCTAssertEqual(
+            incoming.registeredHandlerCount,
+            MPNowPlayingController.managedCommandNames.count,
+            "Major-1：持有者的 target 账不得被非持有者的退出牵连"
+        )
+        XCTAssertTrue(incoming.ownsSharedCommandSurface, "非持有者的退出不得改变所有权（它说了不算）")
+        await incoming.teardown()
+    }
+
+    /// Major-1 的边界（TD-43 的「做不到」不覆盖这条）：非持有者名下**仍有已挂载**的 target 时
+    /// （第二个实例只写了 `isEnabled`、没有重新注册），退出仍必须按自己的 token 摘净。
+    ///
+    /// 「跳过塑形」不等于「跳过摘除」：这一条存在的理由就是旧注释担心的那个悬垂形态 ——
+    /// 只按 token 摘，既不牵连别人，也不给自己留悬垂。
+    func testNonHolderWithStillMountedTargetsDetachesThemByTokenOnExit() async {
+        let mounted = MPNowPlayingController(router: router)
+        let jumper = MPNowPlayingController(router: router)
+        await mounted.teardown()
+        await jumper.teardown()
+        await mounted.registerCommands()
+        mounted.setCommandsEnabled(true)
+        XCTAssertEqual(
+            mounted.registeredHandlerCount,
+            MPNowPlayingController.managedCommandNames.count,
+            "前置条件：target 已挂上系统单例"
+        )
+
+        // 只写命令位（不重新注册）→ 形状负责人易主，而 `mounted` 的 target 仍挂在系统上。
+        jumper.setCommandsEnabled(true)
+        XCTAssertFalse(mounted.ownsSharedCommandSurface, "前置条件：mounted 已不是持有者")
+        XCTAssertTrue(jumper.ownsSharedCommandSurface, "前置条件：jumper 接手了共享面")
+
+        await mounted.teardown()
+        XCTAssertEqual(
+            mounted.registeredHandlerCount,
+            0,
+            "Major-1：非持有者也必须摘净自己挂上的 target（零悬垂）"
+        )
+        XCTAssertTrue(
+            jumper.ownsSharedCommandSurface,
+            "Major-1：摘自己的 target 不得顺手把所有权也摘走"
+        )
+        await jumper.teardown()
+    }
+
+    /// Major-1（隐式退出腿，也就是复审实测打红的那条）：**非持有者被析构**之后，
+    /// 当前持有者的三件共享面事实必须原封不动 —— 命令位仍开着、target 仍在、锁屏读数仍是它的。
+    ///
+    /// 三条各判一件事，缺一即回归：
+    /// - `isEnabled`：旧实现无条件关掉全部 11 条（复审读数：`playCommand.isEnabled` true → false）；
+    /// - target 账：持有者仍是满额 11 条，且共享面仍归它；
+    /// - `MPNowPlayingInfoCenter`：那是**另一个**进程单例，A 不是最后写它的人就没资格擦
+    ///   （旧实现连这个也清，等于把 B 的锁屏那行字也打死）。
+    func testNonHolderDeallocationLeavesCurrentHoldersSurfacesIntact() async {
+        let center = MPNowPlayingController.sharedCenter()
+        let infoCenter = MPNowPlayingInfoCenter.default()
+        let incoming = MPNowPlayingController(router: router)
+        await incoming.teardown()
+
+        // `var` + 显式置 nil：`let` 会把生命周期续到作用域末尾，那样 deinit 根本不会在断言之前跑
+        // （CovaPlayerFacadeTests 的 `runFacadeUntilDeallocation` 就是靠作用域来析构的）。
+        var outgoing: MPNowPlayingController? = MPNowPlayingController(router: router)
+        weak let witness = outgoing
+        await outgoing?.registerCommands()
+        outgoing?.setCommandsEnabled(true)
+        await outgoing?.publish(metadata(id: "outgoing", title: "被顶掉的旧门面"))
+        XCTAssertTrue(outgoing?.ownsSharedCommandSurface == true, "前置条件：A 先成为持有者")
+
+        await incoming.registerCommands()
+        incoming.setCommandsEnabled(true)
+        await incoming.publish(metadata(id: "incoming", title: "现任门面"))
+        XCTAssertTrue(incoming.ownsSharedCommandSurface, "前置条件：B 接手了命令面")
+        XCTAssertTrue(incoming.ownsSharedInfoSurface, "前置条件：锁屏那行字现在是 B 写的")
+        XCTAssertFalse(outgoing?.ownsSharedCommandSurface == true, "前置条件：A 已被顶掉")
+        XCTAssertFalse(outgoing?.ownsSharedInfoSurface == true, "前置条件：A 也不是信息面的最后写入者")
+
+        outgoing = nil
+        XCTAssertNil(witness, "前置条件：旧控制器必须真的已经析构（否则本条判据是空断言）")
+
+        let commands = MPNowPlayingController.controllableCommands(center)
+        XCTAssertEqual(commands.count, MPNowPlayingController.managedCommandNames.count)
+        XCTAssertTrue(
+            commands.allSatisfy(\.isEnabled),
+            "Major-1：非持有者的 deinit 不得把持有者的命令位整体下线（复审实测的那条）"
+        )
+        XCTAssertEqual(
+            incoming.registeredHandlerCount,
+            MPNowPlayingController.managedCommandNames.count,
+            "Major-1：B 的 target 不得被 A 的 deinit 摘掉"
+        )
+        XCTAssertTrue(incoming.ownsSharedCommandSurface, "Major-1：A 的 deinit 不得改动所有权")
+        XCTAssertEqual(
+            infoCenter.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String,
+            "现任门面",
+            "Major-1：A 的 deinit 不得擦掉 B 正在显示的内容"
+        )
+        XCTAssertEqual(infoCenter.playbackState, .playing, "Major-1：同理，B 的播放态读数也不许被改成 stopped")
+        await incoming.teardown()
+    }
+
+    /// 反向腿（TD-9 对照，也是「别把 MAJ-7 修回头」）：**持有者**自己析构时，共享面仍须整体下线 ——
+    /// 旁边活着一个从未碰过共享面的第二个实例，不构成跳过塑形的理由。
+    func testHolderDeallocationStillRetiresEverySharedSurface() async {
+        let center = MPNowPlayingController.sharedCenter()
+        let infoCenter = MPNowPlayingInfoCenter.default()
+        let bystander = MPNowPlayingController(router: router)
+        await bystander.teardown()
+
+        var holder: MPNowPlayingController? = MPNowPlayingController(router: router)
+        weak let witness = holder
+        await holder?.registerCommands()
+        holder?.setCommandsEnabled(true)
+        await holder?.publish(metadata(id: "holder", title: "持有者门面"))
+        XCTAssertTrue(holder?.ownsSharedCommandSurface == true, "前置条件：它就是持有者")
+        XCTAssertTrue(holder?.ownsSharedInfoSurface == true, "前置条件：它也是最后写信息面的人")
+        XCTAssertTrue(center.playCommand.isEnabled, "前置条件：命令位开着")
+
+        holder = nil
+        XCTAssertNil(witness, "前置条件：持有者必须真的已经析构")
+
+        let commands = MPNowPlayingController.controllableCommands(center)
+        XCTAssertTrue(
+            commands.allSatisfy { $0.isEnabled == false },
+            "MAJ-7：持有者析构仍须关掉全部 11 条命令位（Major-1 不得把它修回头）"
+        )
+        XCTAssertTrue(infoCenter.nowPlayingInfo?.isEmpty ?? true, "MAJ-7：持有者析构仍须擦掉自己的显示")
+        XCTAssertEqual(infoCenter.playbackState, .stopped)
+        XCTAssertEqual(bystander.registeredHandlerCount, 0, "对照：旁观者从没挂上过 target")
+        await bystander.teardown()
+    }
+
+    /// Major-1 的信息面腿（过期回写）：封面是在途任务里取回来的，取回来时信息面**已换人**，
+    /// 那一路就不许再把「自己那一份字典」整体写回单例（否则 B 的显示被一份死元数据盖掉）。
+    ///
+    /// 闸门在测试手里（`GatingArtworkAttacher`）⇒ 「回写发生在换人之后」是可核对的事实，
+    /// 不是时序猜测（D16⑤）。
+    func testStaleArtworkMergeDoesNotOverwriteCurrentInfoSurfaceHolder() async {
+        let infoCenter = MPNowPlayingInfoCenter.default()
+        let attacher = GatingArtworkAttacher()
+        let slow = MPNowPlayingController(router: router, artworkAttacher: attacher)
+        let successor = MPNowPlayingController(router: router)
+        await slow.teardown()
+        await successor.teardown()
+        await slow.publish(metadata(id: "stale", title: "会被盖掉的旧门面", artwork: TestItems.audioURL()))
+        let entered = await Signals.wait(target: 1, counter: attacher.enteredSignal)
+        XCTAssertTrue(entered, "前置条件：封面挂载已进入在途（闸门未放行）")
+
+        await successor.publish(metadata(id: "successor", title: "现任显示"))
+        XCTAssertTrue(successor.ownsSharedInfoSurface, "前置条件：信息面已换人")
+        XCTAssertFalse(slow.ownsSharedInfoSurface, "前置条件：那一路的 owner 已不再是它")
+
+        await attacher.release()
+        await slow.waitForArtworkTask()
+        let calls = await attacher.callCount
+        XCTAssertEqual(calls, 1, "前置条件：那一路确实跑完了（不是没测到）")
+        XCTAssertEqual(
+            infoCenter.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String,
+            "现任显示",
+            "Major-1 同一族：迟到的封面回写不得盖掉当前持有者的读数"
+        )
+        XCTAssertNil(
+            slow.lastPublishedInfo?[MPNowPlayingController.artworkAttachedKey],
+            "既已放弃回写，本层账目也不得自称挂上了封面"
+        )
+        await slow.teardown()
+        await successor.teardown()
+    }
 }

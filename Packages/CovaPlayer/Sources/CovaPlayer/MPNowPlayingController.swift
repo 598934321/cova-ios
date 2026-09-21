@@ -10,8 +10,9 @@ import Foundation
 /// 1. 注册命令 handler；2. 把 `MPRemoteCommandEvent` 翻译成 `NowPlayingCommand`；
 /// 3. 把 `NowPlayingStatus` 翻译成 `MPRemoteCommandHandlerStatus`；4. 写 Now Playing 信息字典。
 ///
-/// **teardown 必须移除全部 target**：系统不持有 handler target（Apple 明确「targets are not
-/// retained」），残留即悬垂 —— 本仓红线。
+/// **退出必须摘净自己挂上的 target**：系统不持有 handler target（Apple 明确「targets are not
+/// retained」），残留即悬垂 —— 本仓红线。仍持有共享命令面时顺手摘净全部（`removeTarget(nil)`），
+/// 已被别人接手时只按自己的 token 摘（Major-1：不碰当前持有者的那条）。
 public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sendable {
     private let lock = NSLock()
     private let router: NowPlayingCommandRouter
@@ -69,8 +70,36 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
 
     private static let sharedSurfaceLedger = SharedSurfaceLedger()
 
+    /// `MPNowPlayingInfoCenter` 那份**读数**的认领账（与命令面分开记，见 `claimInfoSurface`）。
+    ///
+    /// 为什么必须是两台账：`MPRemoteCommandCenter` 的 `isEnabled`/target 与
+    /// `MPNowPlayingInfoCenter` 的字典/`playbackState` 是**两个**进程单例，最后动它们的人
+    /// 可以完全不同（B 接手了命令注册，但锁屏上那行字还是 A 最后写的）。合成一台账的话，
+    /// 一次 `publish` 就会把命令面的塑形权也顺手抢走 —— 那等于把 Major-1 从 deinit
+    /// 挪到 publish 上重演一遍。
+    private static let sharedInfoSurfaceLedger = SharedSurfaceLedger()
+
     /// 本实例最近一次认领共享面的票据（nil = 从未注册过命令、或已随退出释放）。
     private var sharedSurfaceClaim: UInt64?
+
+    /// 本实例最近一次认领**信息面**（Now Playing 字典 / `playbackState`）的票据。
+    private var infoSurfaceClaim: UInt64?
+
+    /// 「系统里此刻挂着谁的 handler target」这一件事的账（MAJ-R5-2 的假阴性那一半）。
+    ///
+    /// 只有 `registerCommands()` 认领它 —— 写 `isEnabled` 不认领：一个 handler 都没挂、
+    /// 只碰过命令位的实例，**不是** target 的持有人。旧实现把这两种身份合成一台账
+    /// （min-6 的「谁最后塑形谁负责」），于是退出路径会按错的人决定要不要
+    /// `removeTarget(nil)` + 关命令位：
+    /// - 假阳性：被顶掉者 teardown 把现任的 target 摘光，而现任仍自称持有；
+    /// - 假阴性：只写过 `isEnabled` 的实例抢到所有权，它析构时把仍活着的持有者的
+    ///   11 条 target 一次摘光。
+    /// `ownsSharedCommandSurface` 的语义**不变**（min-6 的塑形事实、既有测试原样保留），
+    /// 这里只是把「退出时谁有权塑形整台单例」这条判据换到真正挂着 target 的人身上。
+    private static let mountedTargetLedger = SharedSurfaceLedger()
+
+    /// 本实例最近一次认领「挂着 target」的票据（nil = 从未注册过、或已随退出释放）。
+    private var mountedTargetClaim: UInt64?
 
     /// 进程内认领共享命令面的**总次数**（系统侧事实面：> 1 就意味着有第二个实例动过单例）。
     public static var sharedSurfaceClaimCount: UInt64 { sharedSurfaceLedger.claimCount }
@@ -84,11 +113,39 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
         return Self.sharedSurfaceLedger.currentHolder == claim
     }
 
+    /// 本实例是否仍是共享**信息面**（锁屏那行字与 `playbackState`）的最后写入者（Major-1）。
+    ///
+    /// 「最后写的人负责擦」是 `deinit` 敢不敢清 `MPNowPlayingInfoCenter` 的唯一判据：
+    /// 别人已经接手了还去清，就是把 Major-1 的「A 析构打死 B」再演一遍。
+    public var ownsSharedInfoSurface: Bool {
+        guard let claim = lockedInfoSurfaceClaim() else { return false }
+        return Self.sharedInfoSurfaceLedger.currentHolder == claim
+    }
+
+    /// 系统里此刻挂着的 handler target 是不是本实例的（MAJ-R5-2：退出塑形的唯一依据）。
+    ///
+    /// 与 `ownsSharedCommandSurface` 刻意分开：后者回答「最后一次 `isEnabled` 是谁写的」，
+    /// 这条回答「命令真有人接单吗、接单的是不是我」。**只有挂着 target 的人退出时**才有必要、
+    /// 也有资格关掉整台单例的命令位并 `removeTarget(nil)` 摘净。
+    public var ownsMountedCommandTargets: Bool {
+        guard let claim = lockedMountedTargetClaim() else { return false }
+        return Self.mountedTargetLedger.currentHolder == claim
+    }
+
     /// 认领共享面（注册命令、以及任何一次写 `isEnabled` 都算：写的人就是现在的形状负责人）。
     private func claimSharedCommandSurface() {
         let ticket = Self.sharedSurfaceLedger.claim()
         lock.lock()
         sharedSurfaceClaim = ticket
+        lock.unlock()
+    }
+
+    /// 认领信息面（`publish` 是「我来显示我的内容」：写这份单例的人就是现在的显示负责人。
+    /// `clear` **不**认领 —— 它只收走自己显示过的东西，见其注释）。
+    private func claimInfoSurface() {
+        let ticket = Self.sharedInfoSurfaceLedger.claim()
+        lock.lock()
+        infoSurfaceClaim = ticket
         lock.unlock()
     }
 
@@ -101,10 +158,49 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
         if let claim { Self.sharedSurfaceLedger.release(claim) }
     }
 
+    /// 认领「挂着 target」（只有 `registerCommands()` 会做：它先 `removeTarget(nil)` 清场、
+    /// 再挂自己那 11 条 ⇒ 从这一刻起系统听的就是它）。
+    private func claimMountedTargets() {
+        let ticket = Self.mountedTargetLedger.claim()
+        lock.lock()
+        mountedTargetClaim = ticket
+        lock.unlock()
+    }
+
+    /// 退掉「挂着 target」的账（仅当自己仍是持有人）。
+    private func releaseMountedTargets() {
+        lock.lock()
+        let claim = mountedTargetClaim
+        mountedTargetClaim = nil
+        lock.unlock()
+        if let claim { Self.mountedTargetLedger.release(claim) }
+    }
+
+    private func lockedMountedTargetClaim() -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mountedTargetClaim
+    }
+
+    /// 同上，信息面。
+    private func releaseInfoSurface() {
+        lock.lock()
+        let claim = infoSurfaceClaim
+        infoSurfaceClaim = nil
+        lock.unlock()
+        if let claim { Self.sharedInfoSurfaceLedger.release(claim) }
+    }
+
     private func lockedSharedSurfaceClaim() -> UInt64? {
         lock.lock()
         defer { lock.unlock() }
         return sharedSurfaceClaim
+    }
+
+    private func lockedInfoSurfaceClaim() -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return infoSurfaceClaim
     }
 
     public init(router: NowPlayingCommandRouter, artworkAttacher: (any NowPlayingArtworkAttaching)? = nil) {
@@ -195,8 +291,11 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
     /// 只是**自我申报**（MediaPlayer 不公开 `targets`，系统侧读数不可得：TD-39）。
     /// 现在每次注册都认领共享面（进程内单调票据）：「我被别人顶掉了」从静默失守
     /// 变成 `ownsSharedCommandSurface` / `sharedSurfaceClaimCount` 两个问得出的事实。
+    /// MAJ-R5-2 另补一条：注册同时认领「挂着 target」（`ownsMountedCommandTargets`）——
+    /// 退出时谁有权塑形整台单例，只看这一条，不看「最后一次 `isEnabled` 是谁写的」。
     public func registerCommands() async {
         claimSharedCommandSurface()
+        claimMountedTargets()
         let center = Self.sharedCenter()
         for name in Self.managedCommandNames {
             guard let command = Self.command(in: center, named: name) else { continue }
@@ -329,6 +428,8 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
     }
 
     public func publish(_ metadata: NowPlayingMetadata) async {
+        // 写信息面即认领信息面：与 `setCommandsEnabled` 同一条规矩（谁最后塑形，谁负责）。
+        claimInfoSurface()
         let info = Self.infoDictionary(for: metadata)
         let center = MPNowPlayingInfoCenter.default()
         center.playbackState = metadata.isPlaying ? .playing : .paused
@@ -390,6 +491,10 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
     }
 
     private func mergeArtworkAttached() {
+        // 过期回写（Major-1 的同一族）：封面是在途任务里取回来的，取回来时**信息面可能已经换人**
+        // （第二个门面 publish 过）。这时把「自己那一份字典」整体写回去，就是用一份
+        // 已经不属于任何播放器的元数据盖掉当前显示 —— 跳过，连本层账也不改。
+        guard ownsSharedInfoSurface else { return }
         lock.lock()
         var info = lastPublishedInfo ?? [:]
         info[Self.artworkAttachedKey] = true
@@ -401,8 +506,15 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
     /// 封面挂载标记的字典键（自定义键；系统忽略未知键，仅测试可见）。
     public static let artworkAttachedKey = "CovaArtworkAttached"
 
+    /// 擦掉 Now Playing 读数（**只在仍是信息面负责人时**写，见 Major-1）。
+    ///
+    /// 与 `publish` 相反：`publish` 是「我来显示我的内容」（写即认领），`clear` 是「把我显示的内容收走」。
+    /// 已经换人显示之后再由后来者擦一次，就是把 A 的收尾变成对 B 的显示的攻击 —— 与 `deinit`
+    /// 那条同一个判据、同一个理由。信息面仍归本实例时它才擦，并且**不认领**：
+    /// `teardown()` 因此对非持有者天然无害。
     public func clear() async {
         takeArtworkTask()?.cancel()
+        guard ownsSharedInfoSurface else { return }
         let center = MPNowPlayingInfoCenter.default()
         center.nowPlayingInfo = [:]
         center.playbackState = .stopped
@@ -410,40 +522,92 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
 
     public func teardown() async {
         await clear()
-        retireSharedCommandTargets()
-        releaseSharedCommandSurface()
-        completeTeardown()
+        // 与 `deinit` 兜底**同一个**实现（MAJ-7 要求两条路径收敛到同一终态；第 9 批起它是字面意义上的
+        // 同一个函数，不再是「两条各写一遍、其中一条对」）。
+        retireSystemSurfacesSynchronously()
     }
 
-    /// 摘净系统侧 target（`teardown()` 与 deinit 兜底共用；同步、幂等）。
-    private func retireSharedCommandTargets() {
+    /// 摘净系统侧 target（同步、幂等）。
+    ///
+    /// 只有**仍持有共享命令面**的实例才有资格做「一次摘掉全部 target」：它同时是那个
+    /// 替别人收尾的人（`registerCommands()` 接手时也是先 `removeTarget(nil)`，见 Major-1 的论证）。
+    private func retireAllSharedCommandTargets() {
         for command in Self.controllableCommands(Self.sharedCenter()) {
             command.removeTarget(nil)
         }
     }
 
+    /// 按**自己登记的 token** 逐条摘 target（Major-1：非持有者的退出面）。
+    ///
+    /// `MPRemoteCommand.removeTarget(_:)` 收的是 `addTarget` 交回来的那个不透明 target 句柄，
+    /// 因此这条路**只**摘掉自己挂上去的那 11 条，别人（当前持有者）的 target 一条都不碰。
+    /// 账目同时清零：调用后 `handlerTargets` 为空，`registeredHandlerCount` 归零。
+    private func retireOwnCommandTargets() {
+        let own = lockedTakeHandlerTargets()
+        let center = Self.sharedCenter()
+        for (name, token) in own {
+            Self.command(in: center, named: name)?.removeTarget(token)
+        }
+    }
+
+    /// 取出并清空本层 token 账（同步临界区；NSLock 不进 async 上下文）。
+    private func lockedTakeHandlerTargets() -> [(name: String, token: Any)] {
+        lock.lock()
+        defer { lock.unlock() }
+        let taken = handlerTargets.map { (name: $0.key, token: $0.value) }
+        handlerTargets = [:]
+        return taken
+    }
+
     /// **同步**退掉系统面（MAJ-7：门面 `deinit` 只能走这条路，deinit 里不能 await）。
     ///
-    /// 与 `teardown()` 收敛到同一终态：命令位关闭 → target 摘净 → Now Playing 字典清空 +
-    /// `playbackState = .stopped` → 本层 target 账清零。三条都是必要的：
+    /// 与 `teardown()` 是**同一个**实现，收敛到的终态按**所有权**分形（Major-1 / MAJ-R5-2）：
+    ///
+    /// - **系统里挂着的 target 就是自己的**（`ownsMountedCommandTargets`）：整台单例归自己负责 ——
+    ///   关掉全部 11 条命令位 + `removeTarget(nil)` 摘净 + 退位。
+    /// - **不是**（自己的 target 已被接手者清场，或自己从没注册过）：只清算自己名下那一套 ——
+    ///   按自己的 token 摘 target，**不碰** `isEnabled`。旧实现在这里无条件塑形，于是
+    ///   「A 注册 → B 接手 → A 析构」把 B 的锁屏控制整体下线（复审实测：
+    ///   `center.playCommand.isEnabled` 由 true 变 false）；而按「谁最后写 `isEnabled`」判据的话，
+    ///   一个 handler 都没挂的实例也能在析构时把仍活着的持有者摘光（MAJ-R5-2 的假阴性）。
+    /// - 信息面（`MPNowPlayingInfoCenter`）同一条判据、各记各的账（`ownsSharedInfoSurface`）：
+    ///   最后写它的人才擦它 —— 别人正在显示的曲名不是自己该擦的。
+    ///
+    /// 原三条不变量都还在：
     /// - `removeTarget` **不许**以任何理由跳过 —— 系统不持有 target，留着就是「命令还在被投给
-    ///   一个已经死掉的播放器」；
+    ///   一个已经死掉的播放器」。非持有者走 token 形态，同样一条不剩；旧版「非持有者跳过就会悬垂」
+    ///   的两难并不成立：`registerCommands()` 接手时已对全部受管命令 `removeTarget(nil)`，
+    ///   被顶掉者名下早已没有遗留 target（TD-43 的「做不到」不覆盖这条）。
     /// - 清 Now Playing 字典是同一件事的另一半：不清，锁屏会继续显示已释放门面的曲名与
-    ///   「正在播放」；
-    /// - `isEnabled` 一并关闭，否则控制中心仍把按钮画成可点。
+    ///   「正在播放」—— 而**由谁清**就是本次修的那一半。
+    /// - `isEnabled` 一并关闭，否则控制中心仍把按钮画成可点（同上：只在仍是负责人时关）。
+    /// - 在途封面任务必须一起取消：否则它会在字典已清空之后再把封面写回去（复活已死门面）。
     ///
     /// 幂等：`teardown()` 之后再释放、或从未 `teardown()` 就释放，结果相同。
     func retireSystemSurfacesSynchronously() {
-        for command in Self.controllableCommands(Self.sharedCenter()) {
-            command.isEnabled = false
+        // MAJ-R5-2：命令位的塑形与摘净全部 target 的**唯一**依据是「此刻挂着 target 的是不是我」
+        // —— 「最后一次写 `isEnabled` 的人」那条账（min-6 的 `ownsSharedCommandSurface`）不授予
+        // 这个权力，否则一个 handler 都没挂的实例就能在析构时把仍活着的持有者摘光。
+        let ownsTargets = ownsMountedCommandTargets
+        let ownsInfo = ownsSharedInfoSurface
+        if ownsTargets {
+            for command in Self.controllableCommands(Self.sharedCenter()) {
+                command.isEnabled = false
+            }
+            retireAllSharedCommandTargets()
+        } else {
+            retireOwnCommandTargets()
         }
-        retireSharedCommandTargets()
-        // 在途封面任务必须一起取消：否则它会在字典已清空之后再把封面写回去（复活已死门面）。
+        // 在途封面任务必须一起取消（自己名下那一条，与所有权无关）。
         takeArtworkTask()?.cancel()
-        let center = MPNowPlayingInfoCenter.default()
-        center.nowPlayingInfo = nil
-        center.playbackState = .stopped
+        if ownsInfo {
+            let center = MPNowPlayingInfoCenter.default()
+            center.nowPlayingInfo = nil
+            center.playbackState = .stopped
+        }
         releaseSharedCommandSurface()
+        releaseMountedTargets()
+        releaseInfoSurface()
         completeTeardown()
     }
 

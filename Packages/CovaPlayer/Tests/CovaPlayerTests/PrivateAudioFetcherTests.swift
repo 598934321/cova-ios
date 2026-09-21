@@ -3,6 +3,33 @@ import CovaCore
 import Foundation
 @testable import CovaPlayer
 
+/// 一次性「调用者结果 + 完成信号」盒（环 4 · 第 9 批：MAJ-1 取消用例的**确定性会合点**）。
+///
+/// 为什么需要它（flake 根因，详见 `docs/log/20260921.md` §16.3）：原来那两条用例等的是
+/// 桩侧的「传输终止」**边沿**信号，而该边沿只在「取消恰好唤醒了一个已登记的续体」时才发出；
+/// 取消落在「出口已入场、续体还没登记」这个窗口里时，那一路照样以取消收尾（每条生产断言都过），
+/// 边沿却永远丢掉 ⇒ 等待方只能等满上界转变红（500 迭代实测挂 6 次 / 1 次，每次 ≈10.0s）。
+/// 本盒子记录的是「调用者真的拿到了结果」：写值与 bump 由同一条返回路径相邻发出 ⇒ 不可能丢。
+/// 等待一律走 `Signals.wait`（有真实上界，到期返回 false 让测试**变红**，不静默通过）。
+private final class CallOutcomeBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<AudioURL, PlayerError>?
+    let finished = SignalCounter()
+
+    func record(_ outcome: Result<AudioURL, PlayerError>) {
+        lock.lock()
+        stored = outcome
+        lock.unlock()
+        finished.bump()
+    }
+
+    var outcome: Result<AudioURL, PlayerError>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+}
+
 /// 私有音频本地化（D7 硬规则）：出口守卫、落盘式写入、完成性校验、owner 隔离与清理。
 ///
 /// 零网络：传输一律走 `StubPrivateAudioTransport`（桩只写沙盒文件），
@@ -925,6 +952,13 @@ final class PrivateAudioFetcherTests: XCTestCase {
     /// 合流用的无结构 `Task` **不继承**调用者取消，`await task.value` 也不查取消，
     /// 于是下载照跑、文件照提交、结果照投递。本用例把三件事逐一钉住：
     /// 传输那一路确实终止、沙盒里没有任何交付物、调用者拿不到可播地址。
+    ///
+    /// **会合点**（第 9 批，flake 根因见 `docs/log/20260921.md` §16.3）：等的是
+    /// 「调用者拿到了结果」这个**蕴含**关系，而不是桩侧那一次「终止」边沿信号 ——
+    /// `awaitTransfer` 唯一能返回的路径是 `await task.value` 醒来，即无结构传输任务**已经完成**；
+    /// 出口没放行又不终止时就永不完成 ⇒ 上界耗尽变红（不挂死、也不静默通过）。
+    /// 合作型出口的终止事后再由桩自己的账目复核：`completedCount == 0`（没有一次完成）
+    /// 且 `inFlightCount == 0`（没有一路还挂着）⇒ 那一路只能是以「取消」收尾的。
     func testUpperLayerCancellationTerminatesInFlightTransfer() async throws {
         let directory = TemporaryDirectory()
         defer { directory.remove() }
@@ -932,7 +966,8 @@ final class PrivateAudioFetcherTests: XCTestCase {
         let fetcher = makeFetcherOn(in: directory, transport: transport)
         let shared = request()
 
-        let caller = Task { await fetcher.localizedURL(for: shared) }
+        let box = CallOutcomeBox()
+        let caller = Task { box.record(await fetcher.localizedURL(for: shared)) }
         let entered = await Signals.wait(target: 1, counter: transport.enteredSignal)
         XCTAssertTrue(entered, "前置条件：传输必须真的在途（否则什么都没测到）")
         let inflightBefore = await fetcher.inflightTransferCount
@@ -940,13 +975,16 @@ final class PrivateAudioFetcherTests: XCTestCase {
 
         caller.cancel()
         // 等待有上界：取消没传导时这里变红，而不是把测试挂死（D16⑤）。
-        let terminated = await Signals.wait(target: 1, counter: transport.terminatedSignal)
-        XCTAssertTrue(terminated, "MAJ-1：上层取消必须终止合流中的下载（旧行为：caller.isCancelled 而下载照跑）")
+        let settled = await Signals.wait(target: 1, counter: box.finished)
+        XCTAssertTrue(
+            settled,
+            "MAJ-1：上层取消必须终止合流中的下载（旧行为：caller.isCancelled 而下载照跑 → 调用者永不返回）"
+        )
         // 兜底放行：只有「已经变红」的实现才需要它来解锁（TD-35 的教训）。
         // 正确实现下这一路已由取消决出，`settle` 首次生效原则让这里的放行成为空操作。
         await transport.release()
 
-        let outcome = await caller.value
+        let outcome = try XCTUnwrap(box.outcome, "前置条件：会合点已到，结果必然写好了")
         guard case .failure(let error) = outcome else {
             return XCTFail("被取消的调用绝不许拿到可播地址：\(outcome)")
         }
@@ -957,6 +995,8 @@ final class PrivateAudioFetcherTests: XCTestCase {
         XCTAssertEqual(inflightAfter, 0, "终止后的传输必须从登记表摘除")
         let completed = await transport.completedCount
         XCTAssertEqual(completed, 0, "桩侧也必须观测到「没有一次完成」")
+        let parked = await transport.inFlightCount
+        XCTAssertEqual(parked, 0, "MAJ-1：桩侧也不得还挂着那一路（终止 = 它已把取消错误交回去）")
         let leftovers = (try? FileManager.default.contentsOfDirectory(
             atPath: PrivateAudioPath.temporaryDirectory(base: directory.url).path
         )) ?? []
@@ -965,40 +1005,70 @@ final class PrivateAudioFetcherTests: XCTestCase {
 
     /// MAJ-1 的合流腿：同一 key 的多个调用者共享那一路真实传输（去重本身由
     /// `testConcurrentSameKeyRequestsTriggerExactlyOneTransfer` 钉住），因此**任何一方**退出时
-    /// 都不许留下「别人替它决定的一份字节」。本用例刻意把两个调用者一起取消：
-    /// 于是「加入者是否已经走到合流分支」不再影响结论（不依赖调度顺序，D16⑤），
-    /// 判据仍然是硬的两条 —— 谁都没拿到地址、盘上一个文件都没有。
+    /// 都不许留下「别人替它决定的一份字节」。
+    ///
+    /// 第 9 批把两件原来靠「刻意不依赖调度」糊过去的事改成**确定性地钉住**：
+    /// 1. 加入者必须**已经走上合流分支**才动手取消（用凭证读取次数作会合点，与
+    ///    `testMergedSameKeyRequestsCommitOneConsistentPayload` 同一手法）—— 否则「加入者
+    ///    另起第二路」这种真缺陷会被「两路都恰好被取消」掩盖；
+    /// 2. 会合点用「两个调用者都拿到了结果」（上一条用例的蕴含关系），不再等桩侧的
+    ///    一次性终止边沿（flake 根因，见 `docs/log/20260921.md` §16.3）。
+    /// 判据仍然是硬的那几条 —— 谁都没拿到地址、一次出站、盘上一个文件都没有。
     func testCancellationByBothMergedCallersDeliversNoPlayableURL() async throws {
         let directory = TemporaryDirectory()
         defer { directory.remove() }
         let transport = CancellablePrivateAudioTransport()
-        let fetcher = makeFetcherOn(in: directory, transport: transport)
+        let credentials = SignallingCredentialProvider()
+        let fetcher = makeFetcherOn(in: directory, transport: transport, credentials: credentials)
         let shared = request()
 
-        let first = Task { await fetcher.localizedURL(for: shared) }
+        let firstBox = CallOutcomeBox()
+        let first = Task { firstBox.record(await fetcher.localizedURL(for: shared)) }
         let entered = await Signals.wait(target: 1, counter: transport.enteredSignal)
         XCTAssertTrue(entered, "前置条件：第一路已进入传输")
         let merged = await fetcher.inflightTransferCount
         XCTAssertEqual(merged, 1, "登记表里就该有一条在途传输")
-        let second = Task { await fetcher.localizedURL(for: shared) }
+
+        let firstReads = credentials.callCount
+        XCTAssertGreaterThanOrEqual(firstReads, 1, "前置条件：先交付方读过自己的凭证")
+        let secondBox = CallOutcomeBox()
+        let second = Task { secondBox.record(await fetcher.localizedURL(for: shared)) }
+        let joined = await Signals.wait(target: firstReads + 1, counter: credentials.calls)
+        XCTAssertTrue(joined, "前置条件：加入者必须已进入 `localizedURL`")
+        // 一次 actor 回合：加入者从凭证返回到读登记表之间没有任何挂起点，而那一路仍关在
+        // 出口里（没放行 → 不可能完成并把自己从登记表摘掉）⇒ 它只能骑上既有那一路。
+        let registry = await fetcher.inflightTransferCount
+        XCTAssertEqual(registry, 1, "加入者只能在既有那一路上传输（登记表有且仅有一条）")
+        let completedBeforeCancel = await transport.completedCount
+        XCTAssertEqual(completedBeforeCancel, 0, "前置条件：那一路仍未收尾")
 
         first.cancel()
         second.cancel()
-        let terminated = await Signals.wait(target: 1, counter: transport.terminatedSignal)
-        XCTAssertTrue(terminated, "MAJ-1：合流后调用者的取消必须终止那一路真实传输（无结构任务不继承取消）")
+        let firstSettled = await Signals.wait(target: 1, counter: firstBox.finished)
+        XCTAssertTrue(
+            firstSettled,
+            "MAJ-1：合流后调用者的取消必须终止那一路真实传输（无结构任务不继承取消 → 调用者永不返回）"
+        )
         await transport.release() // 兜底解锁（见上一条用例的注释）
-        let a = await first.value
-        let b = await second.value
+        let secondSettled = await Signals.wait(target: 1, counter: secondBox.finished)
+        XCTAssertTrue(secondSettled, "MAJ-1：加入者也必须退出，既拿不到地址也不许另起一路")
+
+        let a = try XCTUnwrap(firstBox.outcome, "前置条件：会合点已到")
         guard case .failure(let errorA) = a else { return XCTFail("取消方不得拿到地址：\(a)") }
         XCTAssertEqual(errorA, .cancelled)
+        let b = try XCTUnwrap(secondBox.outcome, "前置条件：会合点已到")
         guard case .failure(let errorB) = b else { return XCTFail("合流方同样不得拿到地址：\(b)") }
         XCTAssertEqual(errorB, .cancelled)
+        let calls = await transport.callCount
+        XCTAssertEqual(calls, 1, "两个调用者共享的就是那一次出站，不得各起一路")
         let committed = await fetcher.cachedFileCount()
         XCTAssertEqual(committed, 0, "被作废的传输不得留下交付物")
         let inflight = await fetcher.inflightTransferCount
         XCTAssertEqual(inflight, 0, "终止后的传输必须从登记表摘除")
         let completed = await transport.completedCount
         XCTAssertEqual(completed, 0)
+        let parked = await transport.inFlightCount
+        XCTAssertEqual(parked, 0, "MAJ-1：桩侧也不得还挂着那一路")
     }
 
     /// MAJ-1 的第二腿（最难的那种形态）：出口**不理会**任务取消时，取消仍不得产出交付物。

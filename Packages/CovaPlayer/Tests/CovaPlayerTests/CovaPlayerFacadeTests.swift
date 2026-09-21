@@ -704,6 +704,131 @@ final class CovaPlayerFacadeTests: XCTestCase {
         await first.teardown()
     }
 
+    /// Major-1（门面腿，也是 M1 的真实形状）：**一次登录重新装配** —— 旧门面晚于新门面才释放。
+    ///
+    /// 复审实测的机理：非持有者门面的 `deinit` 走 `retireSystemSurfacesSynchronously()`，
+    /// 而它对进程单例**无条件**执行 `isEnabled = false` + `removeTarget(nil)`，
+    /// 于是「A 注册 → B 接手 → A 析构」把 B 的锁屏控制整体打死。今日单门面装配无故障，
+    /// 但登录/换号再装配必命中 ⇒ 这条判据必须长在门面层，而不是只长在控制器层。
+    ///
+    /// 三条共享面事实各自判一件事，缺一即回归：命令位、B 的 target 与所有权、锁屏读数。
+    /// 末尾另加一条**行为**腿（B 仍能受理并生效锁屏命令并回显），防止「按钮还在、却没人接单」。
+    func testNonHolderFacadeDeallocationLeavesTheLiveFacadeInControl() async throws {
+        let center = MPNowPlayingController.sharedCenter()
+        let infoCenter = MPNowPlayingInfoCenter.default()
+        var outgoing: CovaPlayer? = CovaPlayer(
+            engine: ScriptedEngine(),
+            clock: FakeClock(),
+            audioSystem: StubAudioSessionSystem()
+        )
+        weak let witness = outgoing
+        try await outgoing?.activateForPlayback()
+        _ = await outgoing?.start(items: TestItems.makeMany(["outgoing-facade"]))
+        XCTAssertTrue(outgoing?.ownsSharedCommandSurface == true, "前置条件：A 是共享命令面的持有者")
+
+        let incoming = CovaPlayer(
+            engine: ScriptedEngine(),
+            clock: FakeClock(),
+            audioSystem: StubAudioSessionSystem()
+        )
+        try await incoming.activateForPlayback()
+        _ = await incoming.start(items: TestItems.makeMany(["incoming-facade"]))
+        XCTAssertFalse(outgoing?.ownsSharedCommandSurface == true, "前置条件：B 接手，A 已被顶掉")
+        XCTAssertTrue(incoming.ownsSharedCommandSurface, "前置条件：B 是现在的持有者")
+        XCTAssertTrue(incoming.ownsSharedInfoSurface, "前置条件：锁屏那行字现在是 B 写的")
+        let ownTitle = "曲目-incoming-facade"
+        XCTAssertEqual(
+            infoCenter.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String,
+            ownTitle,
+            "前置条件：B 的读数已在单例上"
+        )
+
+        // 关键动作：**只有旧的先析构**（`let` 会把生命周期续到作用域末尾，故这里显式置 nil）。
+        outgoing = nil
+        XCTAssertNil(witness, "前置条件：旧门面必须真的已经析构（否则本条判据是空断言）")
+
+        let commands = MPNowPlayingController.controllableCommands(center)
+        XCTAssertEqual(commands.count, MPNowPlayingController.managedCommandNames.count)
+        XCTAssertTrue(
+            commands.allSatisfy(\.isEnabled),
+            "Major-1：A 的 deinit 不得把 B 的 11 条命令位整体关掉"
+        )
+        XCTAssertEqual(
+            incoming.nowPlaying.registeredHandlerCount,
+            MPNowPlayingController.managedCommandNames.count,
+            "Major-1：B 挂在系统上的 target 不得被 A 的析构摘走"
+        )
+        XCTAssertTrue(incoming.ownsSharedCommandSurface, "Major-1：所有权不因非持有者的退出而改变")
+        XCTAssertEqual(
+            infoCenter.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String,
+            ownTitle,
+            "Major-1：A 的析构不得擦掉 B 正在显示的曲名"
+        )
+        XCTAssertEqual(infoCenter.playbackState, .playing, "Major-1：同理不得把 B 的播放态改成 stopped")
+
+        // 行为腿：B 那一整条命令链在 A 析构之后仍然服务（受理 → 生效 → 回显）。
+        let paused = await incoming.handleRemoteCommand(.pause)
+        XCTAssertEqual(paused, .success)
+        let snapshot = await incoming.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .paused, "Major-1：B 的播放器必须仍能执行锁屏命令")
+        XCTAssertEqual(
+            infoCenter.nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? Double,
+            0,
+            "Major-1：B 的暂停必须回显到它自己的锁屏读数上"
+        )
+        XCTAssertTrue(incoming.ownsSharedInfoSurface, "回显之后 B 仍是信息面的负责人（A 已不在）")
+
+        // 反向（MAJ-7 不得被修回头）：**持有者**自己退出时仍然整体下线。
+        await incoming.teardown()
+        XCTAssertTrue(
+            MPNowPlayingController.controllableCommands(center).allSatisfy { $0.isEnabled == false },
+            "MAJ-7：持有者 teardown 仍须关掉全部命令位"
+        )
+        XCTAssertTrue(infoCenter.nowPlayingInfo?.isEmpty ?? true, "MAJ-7：持有者 teardown 仍须擦掉读数")
+        XCTAssertEqual(incoming.nowPlaying.registeredHandlerCount, 0, "MAJ-7：target 账必须清零")
+    }
+
+    /// Major-1 的对照腿（TD-9）：**没被顶掉过**的门面析构时，命令位仍须整体关掉 ——
+    /// 「按所有权分形」不是「一律不塑形」，MAJ-7 那条判据一个字都不许退。
+    ///
+    /// 与上条的差别只在**析构的是不是持有者**：这里第二个门面从头到尾没碰过共享面，
+    /// 只用来证明「同进程存在别的实例」不构成跳过塑形的理由。
+    func testHolderFacadeDeallocationStillRetiresEverySharedSurface() async throws {
+        let bystander = CovaPlayer(
+            engine: ScriptedEngine(),
+            clock: FakeClock(),
+            audioSystem: StubAudioSessionSystem()
+        )
+        XCTAssertFalse(bystander.ownsSharedCommandSurface, "前置条件：旁观者从没碰过共享面")
+
+        var holder: CovaPlayer? = CovaPlayer(
+            engine: ScriptedEngine(),
+            clock: FakeClock(),
+            audioSystem: StubAudioSessionSystem()
+        )
+        weak let witness = holder
+        try await holder?.activateForPlayback()
+        _ = await holder?.start(items: TestItems.makeMany(["holder-facade"]))
+        XCTAssertTrue(holder?.ownsSharedCommandSurface == true, "前置条件：它就是持有者")
+        XCTAssertTrue(holder?.ownsSharedInfoSurface == true, "前置条件：它也是最后写信息面的人")
+        XCTAssertTrue(
+            MPNowPlayingController.sharedCenter().playCommand.isEnabled,
+            "前置条件：命令位开着"
+        )
+
+        holder = nil
+        XCTAssertNil(witness, "前置条件：持有者必须真的已经析构")
+
+        let center = MPNowPlayingController.sharedCenter()
+        XCTAssertTrue(
+            MPNowPlayingController.controllableCommands(center).allSatisfy { $0.isEnabled == false },
+            "MAJ-7：持有者析构仍须关闭全部命令位（Major-1 不得把它修回头）"
+        )
+        XCTAssertTrue(MPNowPlayingInfoCenter.default().nowPlayingInfo?.isEmpty ?? true)
+        XCTAssertEqual(MPNowPlayingInfoCenter.default().playbackState, .stopped)
+        await bystander.teardown()
+    }
+
     /// 生产默认的 `audioSystem` 类型（`AVAudioSessionAdapter`）本身就是通知源 —— 上条用例的
     /// 「生产形态」与真实类型必须是同一判据，否则「桩过了、真的没接」仍然可能。
     func testProductionDefaultAudioSystemIsItsOwnNotificationCenterSource() {
