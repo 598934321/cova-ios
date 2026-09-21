@@ -290,6 +290,19 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
   —— 成本本身不是问题，「跑不完 → 有人偷降迭代数」才是。
 
 **持续 / 工具链**
+- TD-47（第 11 批 B 期间的自查，协调者登记，M1 前处理）：**生产代码的 `@unchecked Sendable`
+  没有逐处论证义务**。实测普查：生产侧 9 处（`SecureStore.swift:92`、
+  `ActiveOwnerStore.swift:30`、`AVPlayerEngine.swift:18`、`NowPlayingController.swift:144`、
+  `MPNowPlayingController.swift:16`/`:37`、`PrivateAudioTransport.swift:106`、
+  `AudioSessionController.swift:369`/`:385`），其中**至少 3 处只写了别的事实、没写「凭什么
+  Sendable 是成立的」**（`AVPlayerEngine.swift:18` 未写谁在同步它的可变状态、
+  `URLSessionPrivateAudioTransport` 未写「只有不可变 `URLSession` + 静态量」这一真实理由、
+  `NowPlayingCommandRouter` 待复核）。门禁第 4/10 步只断言 `-swift-version 6`，
+  对这类**编译器被说服放弃检查**的位置零可见性 —— 而第 5/6 轮抓到的两处竞态
+  （`SharedSurfaceLedger`、`StubURLProtocol` 静态面）恰好都住在这类位置下面。
+  建议的机制化形态（不要只数数量）：**每处 `@unchecked Sendable` 必须紧邻一行
+  `// SAFETY:` 说明同步策略**，门禁断言「站点数 == 标记数」并配**只降不升**的站点上限棘轮；
+  同时在 `/tmp` 克隆里做一次反向守卫（删掉一个标记必须变红）。
 - TD-2：CovaCore 若真需要条件编译，必须先登记 NEEDS/decisions（禁止静默放宽）。
 - TD-3：测试基线可被「删测试 + 同步下调基线」绕过，依赖版本递增人工审查。
 - TD-4：`frameworks:` 令牌整体禁止；G3 若需显式链接系统框架须登记放行。
