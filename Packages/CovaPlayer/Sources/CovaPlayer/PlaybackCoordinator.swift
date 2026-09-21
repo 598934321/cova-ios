@@ -53,8 +53,12 @@ public struct PlaybackSnapshot: Equatable, Sendable {
     /// 自动推进已停止的终态。两个来源（详见 `docs/log/20260921.md` §5.1 环 4 新规则）：
     /// ① 连续失败达上限；② 失败后队列已无可跳目标，**且引擎里没有装载当前项**（守卫腿 (b)）。
     ///
-    /// 两者都以「先有失败」为前提：`failureStreak == 0` 而本字段为 true 就是谎报（F-A），
-    /// 用户的良性动作（暂停中按 ⏭）一律落在 `.held`，不进终态。
+    /// 两者都以「先有失败」为前提：`failureStreak == 0 && lastFailure == nil` 而本字段为 true
+    /// 就是谎报（F-A / MAJ-R5-1 —— 腿 (b) 的成立条件与「有没有失败」互不蕴含，
+    /// 故「从未装载」「装载在途」这类正常形态一律落在 `.held`，见 `hasFailureLedger`）。
+    /// 「先有失败」的完整口径是 `failureStreak > 0 || lastFailure != nil`：`.cancelled`
+    /// 这类**不计入连击**的失败仍然是一次失败记录（`handleFailure` 刻意留着它供 UI 提示）。
+    /// 用户的良性动作（暂停中按 ⏭）永远不进终态。
     /// 失效面（登出 / 换号 / `teardown`）会连同失败账一并清除（F-B）。
     public var isFailureTerminal: Bool
     /// 播放器是否已永久释放（`teardown()` 之后恒真且不可复位，缺陷 P3 / F-B）。
@@ -769,11 +773,12 @@ public actor PlaybackCoordinator {
             // 失败链也可能已经走得更远（F-3）。落点一律按**当下队列**投影。
             return advanceOutcome(wrapped: wrapped)
         case .repeated:
-            // 引擎账本 + 用户意图都要过守卫（R1 / F-6），但**两条腿的收敛结果必须分离**（F-A）：
-            //   · (b) 引擎归属不成立 → 这一项压根不在引擎里，「重播当前项」是无中生有
-            //     → 收敛为「停止 + 失败终态」，等用户处置；
-            //   · (c) 意图不成立而 (b) 成立 → 什么都没坏，只是用户此刻不想听
-            //     → 边界保持（位置、引擎账本、状态一律不动）。
+            // 引擎账本 + 用户意图都要过守卫（R1 / F-6），但**每条腿的收敛结果必须分离**
+            // （F-A 修了腿 (c)，MAJ-R5-1 补上腿 (b)）：
+            //   · (b) 引擎归属不成立**且账上有失败** → 「重播当前项」是无中生有，且确实
+            //     发生过故障 → 收敛为「停止 + 失败终态」，等用户处置；
+            //   · (b) 不成立而账上没有任何失败 / (c) 意图不成立 → 什么都没坏
+            //     → 边界保持（位置、引擎账本、状态、失败账一律不动）。
             // 旧实现把两者并进同一个 `haltBecauseNothingIsLoaded()`，于是「单曲 + `.all` +
             // 暂停中按 ⏭」这类良性动作进入**伪失败终态**（`isFailureTerminal = true` 而
             // `failureStreak = 0`、`lastFailure = nil`），并抹平位置、清空引擎账本。
@@ -782,6 +787,16 @@ public actor PlaybackCoordinator {
             let claimed = queue.current?.id
             switch repeatGuardVerdict(claiming: claimed) {
             case .nothingLoaded:
+                // MAJ-R5-1（F-A 的后一半）：守卫不成立这件事本身**说不出有没有失败**。
+                // 腿 (b) 的成立条件是「引擎此刻装着当前项」，而它可以在一次失败都没有时
+                // 不成立 —— 整队替换后从未起播、私有音频装载还在 `prepareSource` 上、
+                // 刚把当前曲从队列里删掉，都是这种正常形态。旧实现让它**无条件**进
+                // `haltBecauseNothingIsLoaded()`（那里头一句就是 `isFailureTerminal = true`），
+                // 于是产出「无失败的失败终态」，直接违反 design §9 与本文件
+                // `PlaybackSnapshot.isFailureTerminal` 的自述。
+                // 分流口径：**终态只能长在失败账上**；没有账时它与腿 (c) 是同一个结果 ——
+                // 良性保持（状态、位置、队列身份、失败账一律不动，用户随后 `resume()` 会真装一次）。
+                guard hasFailureLedger else { return await holdCurrentItemWithoutPlaying() }
                 return await haltBecauseNothingIsLoaded()
             case .holdWithoutPlaying:
                 return await holdCurrentItemWithoutPlaying()
@@ -852,9 +867,10 @@ public actor PlaybackCoordinator {
     /// 根本不存在的项目上时，绝不进入 `.playing`，而是停止自动推进并进入终态，
     /// 等用户处置（design §9「停止并提示」；由 `resume()` / `start()` 显式重试恢复）。
     ///
-    /// **只用于装载事实不成立那一腿**（F-A）：用户此刻没有播放意图不是「装载不符」，
-    /// 那种情形走 `holdCurrentItemWithoutPlaying()`，绝不允许进到这里 —— 本函数会写
-    /// `isFailureTerminal = true`，而终态的定义是先有失败（design §9）。
+    /// **只用于「装载事实不成立」且「确实有失败账」那一腿**（F-A + MAJ-R5-1）：本函数会写
+    /// `isFailureTerminal = true`，而终态的定义是先有失败（design §9）。没有失败账时
+    /// 「引擎里没装当前项」不是故障而是正常形态（未起播 / 装载在途 / 刚删掉当前曲），
+    /// 那种情形走 `holdCurrentItemWithoutPlaying()`，绝不允许进到这里。
     private func haltBecauseNothingIsLoaded() async -> AdvanceOutcome {
         isFailureTerminal = true
         userWantsPlayback = false
@@ -873,7 +889,9 @@ public actor PlaybackCoordinator {
         case mayReplay
         /// 装载事实成立、仅用户意图不成立：良性保持，不写任何账。
         case holdWithoutPlaying
-        /// 装载事实不成立（无当前项 / 换代在途 / 引擎没持有这一项 / 已释放）：停止 + 终态。
+        /// 装载事实不成立（无当前项 / 换代在途 / 引擎没持有这一项 / 已释放）。
+        ///
+        /// **这个裁决本身不足以定终态**（MAJ-R5-1）：调用处还要问 `hasFailureLedger`。
         case nothingLoaded
     }
 
@@ -885,6 +903,9 @@ public actor PlaybackCoordinator {
     /// `continuationIsCurrent` 定义，意图腿只由 `hasPlaybackIntent` 定义（一处一份，无就地重写）。
     /// 本函数不公开：三条腿的**组合结果**只服务 `.repeated` 一个调用点，
     /// 让外面能查「两腿合一的裁决」只会诱导就地重写条件（F-1/F-2 的老病根）。
+    ///
+    /// 注意 `.nothingLoaded` 的**收敛结果**不由本函数决定：装载事实腿的成立条件里
+    /// 不含「有没有失败」，所以终态与否留给调用处按 `hasFailureLedger` 分流（MAJ-R5-1）。
     private func repeatGuardVerdict(claiming claimed: String?) -> RepeatGuardVerdict {
         guard let claimed,
               continuationIsCurrent(
@@ -894,12 +915,18 @@ public actor PlaybackCoordinator {
         return .mayReplay
     }
 
-    /// 良性保持（F-A）：队列数学只能「重播当前项」，而用户此刻没有播放意图。
+    /// 良性保持（F-A / MAJ-R5-1）：`.repeated` 的守卫不成立，而**没有任何一次失败**。
+    ///
+    /// 触发它的有两种形态，结果必须相同 —— 因为它们都不是故障：
+    ///   · 腿 (c)：队列数学只能「重播当前项」，而用户此刻没有播放意图（暂停中按 ⏭）；
+    ///   · 腿 (b)/(a) 且不成立时没有失败账：引擎没装当前项（整队替换后未起播、
+    ///     私有音频装载在途、刚移除当前曲）。
     ///
     /// 与 `haltBecauseNothingIsLoaded()` 相反，这里**什么都不改写**：位置、`loopMode`、
     /// 引擎账本（`engineEpisodeItemID`）、失败账（`failureStreak` / `lastFailure` /
     /// `isFailureTerminal`）、集次（不关闭 → 续播复用同一幂等键）全部保持，
     /// 只把「还在响的引擎」按意图摁住，并如实回 `.held`（design §4/§6「越界保持」）。
+    /// 引擎账本没保住的那种后果由 `resume()` 自己处理：它见引擎里没有当前项就真装一次（R1）。
     private func holdCurrentItemWithoutPlaying() async -> AdvanceOutcome {
         if state == .playing || state == .buffering {
             state = .paused
@@ -1103,6 +1130,18 @@ public actor PlaybackCoordinator {
     /// 就是它），不是故障，因此它的收敛结果只能是「保持」，不能是失败终态。
     private var hasPlaybackIntent: Bool { userWantsPlayback && !isFailureTerminal }
 
+    /// 守卫 (b) 的另一半（MAJ-R5-1）：**此刻账上到底有没有失败**。
+    ///
+    /// 它是「失败终态」的唯一合法来源（design §9「连续 3 次失败停止并提示」，以及第二
+    /// 个来源「失败后队列已无可跳目标」），与「引擎里有没有装当前项」「用户想不想听」
+    /// 两件事**互不蕴含**。`PlaybackSnapshot.isFailureTerminal` 的自述 likewise：
+    /// `failureStreak == 0` 而该字段为 true 就是谎报（F-A）。
+    ///
+    /// 口径取 `failureStreak > 0 || lastFailure != nil` 而不是只看连击数：
+    /// `.cancelled` 这类失败**不计入连击**却仍然是一次真实失败（`lastFailure` 留着供 UI 提示，
+    /// 见 `handleFailure`），那种情形下「无处可跳」仍然是失败收敛，不是良性动作。
+    private var hasFailureLedger: Bool { failureStreak > 0 || lastFailure != nil }
+
     /// 守卫 (b)：引擎此刻装着的是不是这一项。
     ///
     /// `observation` 口径放宽到「正在被交给它」：`engine.load` 已在途时引擎里装的就是它，
@@ -1232,6 +1271,12 @@ public actor PlaybackCoordinator {
     /// 数的是「当前这一串连续失败的曲目」，队列已经没了、引擎已经停了，继续携带只会让 UI
     /// 把「已释放 / 空闲」渲染成「失败已停止」（且 `isFailureTerminal` 的自述要求先有失败）。
     /// 与 `resetItemTimingState()` 同一口径，两者都不是「用户重试」——重试的清零在 `resume`。
+    ///
+    /// **系统回显面也在这个收敛点上清掉**（MIN-R5-4）：失效面过去只做到了快照那一半，
+    /// 于是登出后锁屏继续显示**上一身份**的曲名与艺人（design §8「生成候选 · 仅本人可见」
+    /// 的内容尤其不该留在锁屏上），违反 D8 的防串号与 AGENTS 硬边界 3。放在这里而不是
+    /// `bindSession` 的分支里，是为了让「登出」与 `teardown` 共用同一份失效口径 ——
+    /// 少一个可以被忘记写的地方。
     private func clearQueueAndStop() async {
         reportedEpisodeItemID = nil
         _ = queue.removeAll()
@@ -1244,6 +1289,10 @@ public actor PlaybackCoordinator {
         lastFailure = nil
         isFailureTerminal = false
         state = .stopped
+        // 只擦读数（`MPNowPlayingInfoCenter` 的字典与播放态），**不退命令面**：
+        // 登出后本播放器还要继续服务游客态与新账号（`clear()` 与 `teardown()` 的语义差别）。
+        // `teardown()` 路径上这句是幂等的重复 —— 那里已经先做过一次完整的 `nowPlaying.teardown()`。
+        await nowPlaying?.clear()
     }
 
     // MARK: - 内部：Now Playing

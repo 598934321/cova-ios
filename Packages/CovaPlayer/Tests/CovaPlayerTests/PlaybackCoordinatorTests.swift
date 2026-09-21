@@ -1831,40 +1831,235 @@ final class PlaybackCoordinatorTests: XCTestCase {
         await assertPlayingIsBackedByEngine("F-A 对照组")
     }
 
+    /// 缺陷 MAJ-R5-1 · **复现路径 ①**（第 5 轮隔离复审实测）：门面那段公开 API 序列
+    /// `start → pause → 移除当前曲 → `.all` → next` 里，`removeItem` 已经把在途台账与
+    /// **引擎账本**一并作废（引擎里装着的是被删掉的那一件），于是新当前项从未进过引擎；
+    /// 此时一次 ⏭ 只能回绕到当前项 → 守卫腿 (b) 不成立 → 第 5 批的实现**无条件**进
+    /// `haltBecauseNothingIsLoaded()` → `isFailureTerminal = true` 而 `failureStreak == 0`、
+    /// `lastFailure == nil`，正是 `PlaybackSnapshot.isFailureTerminal` 自述里禁止的「谎报」。
+    ///
+    /// 门面形态说明：`CovaPlayer.start/pause/remove(itemID:)/setLoopMode/next` 都是对
+    /// `coordinator` 同名方法的一层透传（`CovaPlayer.swift` 的方法体即 `await coordinator.…`），
+    /// 故本用例就是那条序列本身；门面本身不归本批改（第 9 批在修），记日志存疑点。
+    func testRemovingCurrentItemThenNavigatingUnderAllNeverCreatesFakeTerminal() async {
+        _ = await subject.start(items: TestItems.makeMany(["a", "b"]))
+        await subject.pause()
+        await subject.receive(.position(seconds: 20))
+        _ = await subject.removeItem(itemID: "a")
+        await subject.setLoopMode(.all)
+        let before = await snapshot()
+        XCTAssertEqual(before.state, .paused, "前置：移除当前曲不得把暂停中的播放器打成播放")
+        XCTAssertEqual(before.item?.id, "b", "前置：当前项已换到同位置的新曲")
+        XCTAssertEqual(engine.loads.map(\.id), ["a"], "前置：新当前项从未进过引擎（引擎里是已删掉的 a）")
+        assertNoFakeTerminal(before, "移除当前曲之后")
+        let pausesBefore = engine.count(of: "pause")
+        let releasesBefore = engine.releaseCount
+
+        let outcome = await subject.next()
+        XCTAssertEqual(
+            outcome, .held,
+            "MAJ-R5-1：腿 (b) 不成立 + 没有任何失败账 = 良性保持，不是「停止 + 失败终态」"
+        )
+        var after = await snapshot()
+        XCTAssertFalse(after.isFailureTerminal, "MAJ-R5-1：终态的唯一合法来源是失败账（design §9）")
+        XCTAssertEqual(after.failureStreak, 0)
+        XCTAssertNil(after.lastFailure)
+        assertNoFakeTerminal(after, "移除当前曲后 next")
+        XCTAssertEqual(after.state, .paused, "MAJ-R5-1：状态保持，既不进 .stopped 也不复活播放")
+        XCTAssertEqual(after.item?.id, "b")
+        XCTAssertEqual(engine.count(of: "pause"), pausesBefore, "MAJ-R5-1：没播起来也没摁它，不该动引擎")
+        XCTAssertEqual(engine.releaseCount, releasesBefore)
+        XCTAssertEqual(
+            NowPlayingStatusMapping.status(for: outcome), .noSuchContent,
+            "MAJ-R5-1：`.stopped` 会被锁屏映射成 `.success`（虚报「已生效」）"
+        )
+
+        // 保持 ≠ 卡死：用户随后要听 → 「恢复」必须是真装载（R1 的既有裁决不得退化）。
+        await subject.resume()
+        after = await snapshot()
+        XCTAssertEqual(after.state, .playing)
+        XCTAssertFalse(after.isFailureTerminal)
+        XCTAssertEqual(engine.loads.last?.id, "b", "R1：引擎此前没有 b → resume 得真的装一次")
+        assertNoFakeTerminal(after, "resume 之后")
+    }
+
+    /// 缺陷 MAJ-R5-1 · **复现路径 ②**：单曲队列 + `.all`，整队替换后**从未装载**时按 ⏭。
+    ///
+    /// `replaceQueue` 按既有裁决不自动播放、也不打 `.loading`（F-7），所以这一刻
+    /// 「引擎没装当前项」是**正常态**而不是故障；旧实现照样写出失败终态。
+    func testReplacedQueueNeverLoadedThenNavigatingUnderAllNeverCreatesFakeTerminal() async {
+        await subject.setLoopMode(.all)
+        _ = await subject.replaceQueue(TestItems.makeMany(["a"]))
+        let before = await snapshot()
+        XCTAssertEqual(engine.count(of: "load"), 0, "前置：整队替换不自动播放（既有裁决）")
+        XCTAssertEqual(before.state, .paused, "前置：F-7 口径 —— 没有装载在途就不是 .loading")
+        XCTAssertEqual(before.failureStreak, 0, "前置：从未发生失败")
+        XCTAssertNil(before.lastFailure)
+        let loadsBefore = engine.count(of: "load")
+
+        let outcome = await subject.next()
+        XCTAssertEqual(outcome, .held, "MAJ-R5-1：从未装载 + 从未失败 = 保持，不是终态")
+        let after = await snapshot()
+        XCTAssertFalse(after.isFailureTerminal, "MAJ-R5-1：无失败的失败终态（isFailureTerminal 谎报）")
+        XCTAssertEqual(after.state, .paused)
+        XCTAssertEqual(after.failureStreak, 0)
+        XCTAssertNil(after.lastFailure)
+        assertNoFakeTerminal(after, "未装载时 next")
+        XCTAssertEqual(after.item?.id, "a")
+        XCTAssertEqual(engine.count(of: "load"), loadsBefore, "MAJ-R5-1：⏭ 不是装载请求，不该顺手装一次")
+        let published = await nowPlaying.lastPublished
+        XCTAssertEqual(published?.isPlaying, false, "MAJ-R5-1：锁屏不得收到 isPlaying=true")
+
+        await subject.resume()
+        let resumed = await snapshot()
+        XCTAssertEqual(resumed.state, .playing, "用户要听 → 这一次才真装载")
+        XCTAssertEqual(engine.loads.map(\.id), ["a"])
+        assertNoFakeTerminal(resumed, "resume 之后")
+    }
+
+    /// 缺陷 MAJ-R5-1 · **复现路径 ③**（M1 的真实形态）：单曲队列 + `.all`、
+    /// **私有音频装载在途**时按 ⏭。
+    ///
+    /// 这条最坏的地方是**两段**谎报：① 导航当场写出无失败的失败终态并向调用方回 `.stopped`
+    /// （`NowPlayingStatusMapping` 把 `.stopped` 映射成 `.success` ⇒ 锁屏收到「已生效」）；
+    /// ② 晚到的装载续体又把那个终态**悄悄抹掉**（`loadCurrent` 见引擎真的装上了当前项即
+    /// `isFailureTerminal = false`）—— 于是「终态」 existed 只在调用方的返回值里，快照上查无此事。
+    func testNextDuringInFlightPrivateAudioLoadNeverCreatesFakeTerminal() async {
+        let preparer = GatedSourcePreparer(gating: ["priv"])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        await subject.setLoopMode(.all)
+        _ = await subject.replaceQueue(
+            [TestItems.make("priv", source: .bearerRequired(TestItems.audioURL()))]
+        )
+        let startTask = Task { await subject.start() }
+        let opened = await Signals.wait(target: 1, counter: preparer.requestSignal)
+        XCTAssertTrue(opened, "前置：私有音频装载未进入在途，本用例无从验证")
+        var mid = await subject.currentSnapshot()
+        XCTAssertEqual(mid.state, .loading, "前置：装载在途（F-7 口径）")
+        XCTAssertEqual(mid.failureStreak, 0, "前置：从未发生失败")
+        XCTAssertNil(mid.lastFailure)
+        assertNoFakeTerminal(mid, "装载在途")
+
+        let outcome = await subject.next()
+        XCTAssertEqual(
+            outcome, .held,
+            "MAJ-R5-1：装载在途时的一次 ⏭ 既没失败也没落地 → 只能回「保持」"
+        )
+        XCTAssertEqual(
+            NowPlayingStatusMapping.status(for: outcome), .noSuchContent,
+            "MAJ-R5-1：旧实现回 `.stopped`，而锁屏侧把 `.stopped` 映射成 `.success`"
+        )
+        mid = await subject.currentSnapshot()
+        XCTAssertFalse(mid.isFailureTerminal, "MAJ-R5-1：无失败的失败终态（第 5 批只修了腿 (c)）")
+        XCTAssertEqual(mid.state, .loading, "MAJ-R5-1：装载在途这个事实不得被 ⏭ 改写成 .stopped")
+        XCTAssertEqual(mid.failureStreak, 0)
+        XCTAssertNil(mid.lastFailure)
+        assertNoFakeTerminal(mid, "装载在途时 next 之后")
+        XCTAssertEqual(mid.item?.id, "priv", "MAJ-R5-1：单曲回绕本就还是这一项，不该换也不该清")
+
+        // 晚到的装载照常落地：此刻的状态就是它真实写出的那一个，中间不存在「曾进过终态」。
+        await preparer.release("priv")
+        let landed = await Signals.wait(target: 1, counter: preparer.returnedSignal)
+        XCTAssertTrue(landed, "前置：在途装载未返回")
+        let started = await startTask.value
+        if case .advanced(to: let index, item: let item, let wrapped) = started {
+            XCTAssertEqual(index, 0)
+            XCTAssertEqual(item.id, "priv")
+            XCTAssertFalse(wrapped)
+        } else {
+            return XCTFail("未被取代的装载必须照常回 `.advanced`：\(started)")
+        }
+        let after = await subject.currentSnapshot()
+        XCTAssertEqual(after.state, .playing, "MAJ-R5-1：终态不该由一次良性 ⏭ 造出来，也就不存在被抹掉")
+        XCTAssertFalse(after.isFailureTerminal)
+        XCTAssertEqual(engine.loads.map(\.id), ["priv"])
+        assertNoFakeTerminal(after, "装载落地后")
+    }
+
     /// 普遍化（F-A 的判据面，替代逐条枚举）：**从未上报过任何失败**时，
-    /// 任何一次用户显式导航（`循环模式 × 队列长度 × 前/后 × 暂停/停止`）都不得产生失败终态。
+    /// 任何一次用户显式导航（`循环模式 × 队列长度 × 前/后 × 基态`）都不得产生失败终态。
     /// 复审指出既有 90 条协调器用例无一条覆盖「paused/stopped × 单曲 × `.all`」，本组矩阵把该
     /// 组合连同其邻域一起钉住。
+    ///
+    /// **基态列从 2 格补到 4 格（MAJ-R5-1，第 5 轮复审指认）**：旧矩阵每一格都先
+    /// `start(items:)` 把装载走完，于是「引擎从未装过当前项」这一整族形态（整队替换后未起播、
+    /// 私有音频装载在途）从未被这一格覆盖，`assertNoFakeTerminal` 在那里形同漏空 ——
+    /// 第 5 批的 F-A 因此只修了一半（腿 (c)）就落了证。
     func testUserNavigationNeverCreatesFailureTerminalWithoutAnyFailure() async {
         for mode in LoopMode.allCases {
             for ids in [["a"], ["a", "b", "c"]] {
-                for basePaused in [true, false] {
+                for base in NavigationBase.allCases {
                     for goForward in [true, false] {
-                        await assertNavigationFrom(mode: mode, ids: ids, basePaused: basePaused, forward: goForward)
+                        await assertNavigationFrom(mode: mode, ids: ids, base: base, forward: goForward)
                     }
                 }
             }
         }
     }
 
+    /// 矩阵的基态列。前两列是第 5 批已有的形态，后两列由 MAJ-R5-1 补齐。
+    private enum NavigationBase: CaseIterable {
+        /// 走完装载后用户显式暂停（旧矩阵 `basePaused == true`）。
+        case loadedPaused
+        /// 走完装载后 `.off` 末项播完 → **合法**停止态（旧矩阵 `basePaused == false`）。
+        case loadedStopped
+        /// 整队替换后**从未装载**（`replaceQueue` 不自动播放，引擎一次 `load` 都没收到）。
+        case neverLoaded
+        /// **私有音频装载在途**（M1 的真实形态：`prepareSource` 正跨在挂起点上）。
+        case loadInFlight
+
+        var label: String {
+            switch self {
+            case .loadedPaused: return "loadedPaused"
+            case .loadedStopped: return "loadedStopped"
+            case .neverLoaded: return "neverLoaded"
+            case .loadInFlight: return "loadInFlight"
+            }
+        }
+    }
+
     private func assertNavigationFrom(
-        mode: LoopMode, ids: [String], basePaused: Bool, forward: Bool, line: UInt = #line
+        mode: LoopMode, ids: [String], base: NavigationBase, forward: Bool, line: UInt = #line
     ) async {
         let engine = ScriptedEngine()
         let nowPlaying = RecordingNowPlaying()
-        let subject = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: nowPlaying)
-        let scene = "mode=\(mode) items=\(ids) base=\(basePaused ? "paused" : "stopped") nav=\(forward ? "next" : "previous")"
+        let scene = "mode=\(mode) items=\(ids) base=\(base.label) nav=\(forward ? "next" : "previous")"
+        let gatedID = ids[ids.count - 1]
+        // 闸门只挡「导航那一刻在途的那一件」，其余格放行同一件装具（pass-through 准备器），
+        // 于是四种基态走的是同一条装载链，差异只在「装载走到哪一步被打断」。
+        let preparer = GatedSourcePreparer(gating: base == .loadInFlight ? [gatedID] : [])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        var startTask: Task<AdvanceOutcome, Never>?
         _ = await subject.setLoopMode(.off)
-        _ = await subject.start(items: ids.map { TestItems.make($0) }, at: ids.count - 1)
-        await subject.receive(.position(seconds: 40))
-        if basePaused {
-            await subject.pause()
-        } else {
-            await subject.receive(.ended)   // `.off` 末项播完 → 合法停止态
+        let items = ids.map { TestItems.make($0) }
+        switch base {
+        case .neverLoaded:
+            _ = await subject.replaceQueue(items, startingAt: ids.count - 1)
+        case .loadInFlight:
+            startTask = Task { await subject.start(items: items, at: ids.count - 1) }
+            let opened = await Signals.wait(target: 1, counter: preparer.requestSignal)
+            XCTAssertTrue(opened, "前置：\(scene) 的装载未进入在途，本格无从验证", line: line)
+        case .loadedPaused, .loadedStopped:
+            _ = await subject.start(items: items, at: ids.count - 1)
+        }
+        switch base {
+        case .loadedPaused, .loadedStopped:
+            await subject.receive(.position(seconds: 40))
+            if base == .loadedPaused {
+                await subject.pause()
+            } else {
+                await subject.receive(.ended)   // `.off` 末项播完 → 合法停止态
+            }
+        case .neverLoaded, .loadInFlight:
+            break   // 这两种基态下没有任何一次装载走完：位置/状态都由装载链自己写着
         }
         var snap = await subject.currentSnapshot()
-        XCTAssertEqual(snap.failureStreak, 0, "前置：\(scene) 从未发生失败")
-        XCTAssertNil(snap.lastFailure, "前置：\(scene)")
+        XCTAssertEqual(snap.failureStreak, 0, "前置：\(scene) 从未发生失败", line: line)
+        XCTAssertNil(snap.lastFailure, "前置：\(scene)", line: line)
         _ = await subject.setLoopMode(mode)
         let baseState = snap.state
         let baseItemID = snap.item?.id
@@ -1880,6 +2075,14 @@ final class PlaybackCoordinatorTests: XCTestCase {
         }
         if snap.state == .playing {
             XCTAssertEqual(engine.loads.last?.id, snap.item?.id, "R1：\(scene) \(line)", line: line)
+        }
+        // 收尾：在途那一件必须真的跑完（挂起的续体不得留到本格之外 —— 它会在下一格里
+        // 变成一个不受控的回写点，D16⑤）。
+        if let startTask {
+            await preparer.release(gatedID)
+            let landed = await Signals.wait(target: 1, counter: preparer.returnedSignal)
+            XCTAssertTrue(landed, "前置：\(scene) 的在途装载未返回", line: line)
+            _ = await startTask.value
         }
     }
 
@@ -1949,5 +2152,165 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(loggedIn.state, .playing, "登录不是登出（既有裁决）")
         XCTAssertEqual(loggedIn.failureStreak, 1, "非失效面不得顺手清失败账")
         XCTAssertFalse(loggedIn.tornDown)
+    }
+
+    // MARK: - 环 4 · 第 10 批 MIN-R5-4：失效面必须一起清掉系统回显面
+
+    /// 缺陷 MIN-R5-4（Minor，第 5 轮隔离复审实测）：`teardown()` 会 `await nowPlaying?.teardown()`，
+    /// 而 `bindSession` 的失效分支只做「丢未决上报 + 停引擎 + `clearQueueAndStop()`」，
+    /// 后者**一次发布/清理都不做** ⇒ 登出后锁屏继续显示**上一身份**的曲名与艺人
+    /// （探针 `last=Optional("private-song")`）。F-B 立的「失效面必须一致收敛」只做到了快照那一半。
+    /// 违反 D8（防跨账号串号）、AGENTS 硬边界 3、design §7/§8（「生成候选 · 仅本人可见」的内容
+    /// 不应留在锁屏上）。
+    func testLogoutAndAccountSwitchClearTheNowPlayingEchoSurface() async {
+        let echo = EchoSurfaceProbe()
+        let subject = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: echo)
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p1")))
+        _ = await subject.start(items: [TestItems.make("private-song")])
+        var shown = await echo.current
+        XCTAssertEqual(
+            shown, .showing(itemID: "private-song", title: "曲目-private-song", artist: "艺人"),
+            "前置：锁屏正显示该身份的曲目"
+        )
+        var clears = await echo.clearCount
+        var teardowns = await echo.teardownCount
+        XCTAssertEqual(clears, 0, "前置：正常播放路径上没有清理")
+
+        // 失效面 ①：登出（已认证 → 未认证）。
+        await subject.bindSession(.unauthenticated)
+        shown = await echo.current
+        XCTAssertEqual(shown, .empty, "MIN-R5-4：登出后锁屏不得继续显示上一身份的曲名")
+        clears = await echo.clearCount
+        XCTAssertEqual(clears, 1, "MIN-R5-4：失效面恰好清一次回显面（不多不少）")
+        teardowns = await echo.teardownCount
+        XCTAssertEqual(teardowns, 0, "MIN-R5-4：登出**不是** teardown —— 播放器还要继续服务")
+
+        // 登出后这条链仍然可用（游客态起播 → 回显面重新写起来）。
+        _ = await subject.start(items: [TestItems.make("guest-song")])
+        shown = await echo.current
+        XCTAssertTrue(shown.isShowing, "MIN-R5-4：清理只擦读数，不得把播放器写成不可用")
+        XCTAssertEqual(shown.itemID, "guest-song")
+
+        // 对照：游客 → 已认证是**登录**，不是失效面（既有裁决「登录不是登出」）。
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p1")))
+        shown = await echo.current
+        XCTAssertEqual(shown.itemID, "guest-song", "MIN-R5-4 对照：登录不得顺手擦掉读数")
+
+        // 失效面 ②：换号（两个已认证身份之间 —— D8 的防串号正身）。
+        _ = await subject.start(items: [TestItems.make("p1-song")])
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p2")))
+        shown = await echo.current
+        XCTAssertEqual(shown, .empty, "MIN-R5-4：换号后上一身份的曲名不得留在锁屏上")
+        clears = await echo.clearCount
+        XCTAssertEqual(clears, 2)
+
+        // 失效面 ③：同一身份但 generation 推进（D8 的会话换代）。
+        _ = await subject.start(items: [TestItems.make("p2-song")])
+        await subject.bindSession(
+            PlaybackSessionContext(owner: PrincipalID(rawValue: "p2"), generation: SessionGeneration(value: 4))
+        )
+        shown = await echo.current
+        XCTAssertEqual(shown, .empty, "MIN-R5-4：换代与换号同属失效面")
+        clears = await echo.clearCount
+        XCTAssertEqual(clears, 3)
+
+        // 与 teardown **同口径**（F-B 的原则）：teardown 同样把回显面清干净。
+        _ = await subject.start(items: [TestItems.make("last-song")])
+        await subject.teardown()
+        shown = await echo.current
+        XCTAssertEqual(shown, .empty, "F-B：teardown 的清回显面既有行为，不得因本批改动退化")
+        teardowns = await echo.teardownCount
+        XCTAssertEqual(teardowns, 1)
+    }
+
+    /// MIN-R5-4 的**正向对照**（TD-9）：回显面只有失效面才清 —— 登录、同会话重复绑定、
+    /// 普通换队/追加/换曲/暂停续播都不许擦掉正在显示的内容，也不许一次导航就清一次。
+    ///
+    /// 没有这条对照，「把 `clear()` 塞进每一个发布点」也能让上一条测试变绿。
+    func testLoginAndOrdinaryQueueMaintenanceNeverClearsTheEchoSurface() async {
+        let echo = EchoSurfaceProbe()
+        let subject = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: echo)
+        _ = await subject.start(items: TestItems.makeMany(["a", "b"]))
+        let startClears = await echo.clearCount
+        XCTAssertEqual(startClears, 0, "前置：起播链上没有清理")
+        var shown = await echo.current
+        XCTAssertEqual(shown.itemID, "a", "前置：锁屏显示 a")
+
+        // ① 登录（未认证 → 已认证）：既有裁决「登录不是登出」。
+        let authenticated = PlaybackSessionContext(owner: PrincipalID(rawValue: "p1"))
+        await subject.bindSession(authenticated)
+        shown = await echo.current
+        XCTAssertEqual(shown.itemID, "a", "MIN-R5-4 对照：登录不得擦掉正在显示的内容")
+
+        // ② 同一会话视图重复绑定（幂等路径）。
+        await subject.bindSession(authenticated)
+        shown = await echo.current
+        XCTAssertEqual(shown.itemID, "a", "MIN-R5-4 对照：重复绑定同一会话同样不清")
+
+        // ③ 普通队列维护 + 导航 + 暂停/续播：每一项都只**改写**读数，从不清空。
+        _ = await subject.replaceQueue(TestItems.makeMany(["c", "d", "e"]), startingAt: 1)
+        _ = await subject.appendToQueue(TestItems.make("f"))
+        _ = await subject.insertNext(TestItems.make("g"))
+        _ = await subject.next()
+        await subject.pause()
+        await subject.resume()
+        _ = await subject.removeItem(itemID: "g")
+        shown = await echo.current
+        XCTAssertTrue(shown.isShowing, "MIN-R5-4 对照：全程没有一次「清空回显面」")
+        let clears = await echo.clearCount
+        XCTAssertEqual(clears, 0, "MIN-R5-4 对照：非失效面一次都不许清")
+        let teardowns = await echo.teardownCount
+        XCTAssertEqual(teardowns, 0, "MIN-R5-4 对照：普通操作更不是 teardown")
+    }
+}
+
+// MARK: - 环 4 · 第 10 批 MIN-R5-4：系统回显面的**当前内容**夹具
+
+/// 锁屏回显面（`MPNowPlayingInfoCenter.nowPlayingInfo`）的等价模型。
+///
+/// 为什么不用共享夹具 `RecordingNowPlaying`：它记的是「发布过什么」的**流水账**，
+/// 回显面被清掉之后 `lastPublished` 依然是上一身份的那一首 —— 于是 MIN-R5-4 的实测形态
+/// （登出后锁屏还挂着上一身份曲名）在它上面根本读不出来。本夹具把「系统此刻显示的是什么」
+/// 单独做成一份可读取的事实，`clear()` 真的把它翻回 `.empty`。
+///
+/// 刻意不在 `CovaPlayerTestSupport.swift` 里加（第 9 批正在改那份共享夹具，本批不碰）。
+actor EchoSurfaceProbe: NowPlayingControlling {
+    /// 回显面的当前内容。
+    enum Content: Equatable {
+        /// 锁屏上没有曲目（字典为空 / `.stopped`）。
+        case empty
+        case showing(itemID: String, title: String, artist: String)
+    }
+
+    private(set) var current: Content = .empty
+    private(set) var clearCount = 0
+    private(set) var teardownCount = 0
+
+    func publish(_ metadata: NowPlayingMetadata) {
+        current = .showing(itemID: metadata.itemID, title: metadata.title, artist: metadata.artist)
+    }
+
+    func clear() {
+        current = .empty
+        clearCount += 1
+    }
+
+    func teardown() {
+        current = .empty
+        clearCount += 1
+        teardownCount += 1
+    }
+}
+
+private extension EchoSurfaceProbe.Content {
+    /// 「此刻确有一首显示着」的投影（只关心显示/不显示，不关心是哪一首时用）。
+    var isShowing: Bool {
+        if case .showing = self { return true }
+        return false
+    }
+
+    var itemID: String? {
+        if case .showing(let id, _, _) = self { return id }
+        return nil
     }
 }
