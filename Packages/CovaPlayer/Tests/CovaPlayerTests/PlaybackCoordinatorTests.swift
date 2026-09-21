@@ -1661,6 +1661,98 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(snap.state, .idle)
     }
 
+    /// F-7 的**另一半**（第 11 批存疑点 1 → 11B，MAJ-R6-1 的第二半）：装载**以取消收场**时
+    /// 也必须把 `.loading` 交还给事实。
+    ///
+    /// 上面那条用例只钉了「装载成功返回 → 不留 `.loading`」。取消那一腿的形状不同：
+    /// `handleFailure` 对不计数的取消是「记完回显账就返回」，既不推进也不改状态 ⇒ 台账已被
+    /// `defer { finishLoad }` 收掉，而入口那句 `state = .loading` 还挂着 —— F-7 的自述
+    /// （`.loading` ⟺ 真有装载在途）失守。同一份输入还有第二层后果：`advanceOutcome` 照
+    /// `.loading` 回 `.advanced`，于是 `start()` 向调用方声称「已经落到这一项」，而引擎里
+    /// 从来没有过这一项（`NowPlayingStatusMapping` 把 `.advanced` 一律映射成 `.success`，
+    /// UI 与锁屏于是同时收到「成功」）。
+    func testCancelledLoadConvergesOutOfLoadingAndItsStartNeverClaimsAdvanced() async {
+        for error in [PlayerError.cancelled, .staleSession] {
+            let engine = ScriptedEngine()
+            let nowPlaying = RecordingNowPlaying()
+            let preparer = AttemptScriptedPreparer(gating: [0], outcomes: [0: error])
+            let subject = PlaybackCoordinator(
+                engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+            )
+            let scene = "error=\(error)"
+
+            let started = Task { await subject.start(items: TestItems.makeMany(["a"])) }
+            await assertSignalReached(
+                target: 1, counter: preparer.requestSignal, what: "\(scene) 的装载进入在途"
+            )
+            let mid = await subject.currentSnapshot()
+            XCTAssertEqual(mid.state, .loading, "F-7 前置：\(scene) 此刻真有装载在途，`.loading` 是真话")
+
+            await preparer.releasePendingAttempt()
+            await assertSignalReached(
+                target: 1, counter: preparer.returnedSignal, what: "\(scene) 的装载返回"
+            )
+            let outcome = await started.value
+            XCTAssertEqual(
+                outcome, .stopped,
+                "11B：\(scene) 取消的装载不得向调用方回 `.advanced`（旧实现照 `.loading` 声称已落到这一项）"
+            )
+            // 如实钉住**已知不足**而不是愿望：`.stopped` 在命令回显面与「末项播完」同码
+            // （`NowPlayingStatusMapping`），锁屏因此分不出「取消收场的停止」与「播完的停止」。
+            // 协调器这一侧的债已经还了（不再回 `.advanced`），剩下的结果粒度归 TD-39（M1 接
+            // UI 时一并复核）—— UI 真正的区分来源是快照的 `state` + `lastFailure` 回显账。
+            XCTAssertEqual(
+                NowPlayingStatusMapping.status(for: outcome), .success,
+                "TD-39（已知不足，如实钉住）：`.stopped` 与「末项播完」共用一个回显码，"
+                    + "锁屏分不出「取消收场的停止」。本批不偷偷改掉它 —— UI 的区分来源是快照的 "
+                    + "`state` + `lastFailure` 回显账，结果粒度在 M1 复核"
+            )
+
+            let after = await subject.currentSnapshot()
+            XCTAssertNotEqual(after.state, .loading, "F-7：\(scene) 装载已结束却无在途装载 → `.loading` 是谎报")
+            XCTAssertEqual(after.state, .stopped, "11B：\(scene) 交还给事实 = 停止")
+            XCTAssertFalse(after.isFailureTerminal, "11B：\(scene) 取消不是故障，终态闸门不得打开")
+            assertNoFakeTerminal(after, scene)
+            XCTAssertEqual(after.failureStreak, 0, "11B：\(scene) 计数侧仍然无账")
+            XCTAssertEqual(
+                after.lastFailure, PlayerFailure(kind: .cancelled, message: error.description),
+                "11B：\(scene) 回显账照旧留着（UI 要提示上一次坏在哪）"
+            )
+            XCTAssertTrue(engine.loads.isEmpty, "D7：\(scene) 取消的条目绝不能交给引擎")
+            XCTAssertEqual(
+                engine.count(of: "pause"), 1,
+                "11B：\(scene) 装载入口不预先摁引擎（换件本应由 `engine.load` 顶替），取消意味着那次顶替永远不会发生 —— 此刻响着的可能是上一件"
+            )
+            let published = await nowPlaying.lastPublished
+            XCTAssertEqual(published?.isPlaying, false, "11B：\(scene) 锁屏不得收到 isPlaying=true")
+
+            // 11B 的新读数（也是本修法删掉的一个**不可能状态**）：取消收场已是 `.stopped`，
+            // 显式暂停在停止态上是无操作 —— 旧实现靠「`.loading` 被 `pause()` 折成 `.paused`」
+            // 才造得出「暂停 × 引擎无装载 × 取消账」那一格，而它本身就是谎报的产物。
+            await subject.pause()
+            let pausedAttempt = await subject.currentSnapshot()
+            XCTAssertEqual(
+                pausedAttempt.state, .stopped,
+                "11B：\(scene) 停止态不得被一次暂停改写成「有东西可续播」的 .paused"
+            )
+            XCTAssertEqual(pausedAttempt.lastFailure, after.lastFailure, "11B：暂停不改写回显账")
+
+            // 收敛 ≠ 卡死：用户随后 `start()` 必须真装一次并播起来（R1 的既有裁决不得退化）。
+            let retry = await subject.start()
+            XCTAssertEqual(
+                retry, .advanced(to: 0, item: TestItems.make("a"), wrapped: false),
+                "11B：\(scene) 停止态下重新起播是**真**装载，不是补写状态"
+            )
+            let resumed = await subject.currentSnapshot()
+            XCTAssertEqual(resumed.state, .playing, "11B：\(scene)")
+            XCTAssertEqual(engine.loads.last?.id, "a", "R1：\(scene)")
+            XCTAssertNil(resumed.lastFailure, "起播时失败账归零（既有口径，本批不动）")
+            assertNoFakeTerminal(resumed, "11B \(scene) 重试之后")
+            let attempts = await preparer.requestedIDs
+            XCTAssertEqual(attempts, ["a", "a"], "11B：\(scene) 两趟都真的走过准备器")
+        }
+    }
+
     /// F-8（Minor，评审探针 `testG01`）：`PlayerEngine` 契约的「load 失败经 `.failed` 表达」
     /// 在 `loadCurrent` 里不被消费 —— 引擎说装载失败，续体照样 `state = .playing` 并**提交一次
     /// 播放上报**（少报/多报同族的口径偏差）。
@@ -2018,10 +2110,21 @@ final class PlaybackCoordinatorTests: XCTestCase {
         case loadInFlight
         /// 第一趟装载以 `.cancelled` **收场后**导航：不计数、引擎从未装着当前项、
         /// 账上只留一次回显 —— MAJ-R6-1 的正身。
+        ///
+        /// 11B 之后「收场」有了真正的落点：`state = .stopped`（旧实现留 `.loading`，
+        /// 于是这一格的「良性导航不得改写状态」比的是那句谎报的 `.loading`）。
         case cancelledSettled
-        /// 同上，但用户随后显式暂停（「暂停 × 无装载 × 取消账」三件事的叠加格）。
+        /// 同上，但用户随后显式按暂停。11B 的新读数：取消收场已是 `.stopped`，暂停在停止态
+        /// 上是**无操作** —— 这一格因此从「暂停 × 无装载 × 取消账」变成「停止 × 无装载 ×
+        /// 取消账」，而前者本来就是靠谎报才存在的（真正可达的「暂停 × 取消回显」见
+        /// `testPausedUserWithCancellationEchoHoldsInsteadOfOpeningFailureTerminal`）。
         case cancelledThenPaused
         /// 取消账已在，而**新一轮装载真的在途**（`resume()` 起的第二趟）。
+        ///
+        /// 11B 的一个**必然后果**也被这一格钉住：取消收场落在 `.stopped`，而 `.stopped` 上的
+        /// 重试入口按既有口径把两本账一起归零 ⇒ 「取消回显 × 重试起的在途装载」不可达
+        /// （`echoBeforeNavigation` 对本格是 `nil` 就是这个意思）。回显确实留在账上的
+        /// 在途形状由 `testNavigatingDuringInFlightLoadAfterCancellation...` 走可达路径钉。
         case cancelledWithLoadInFlight
         /// 同 `cancelledSettled`，但收场的是 `.staleSession`（登出/换代产生的过期会话；
         /// `kind(for:)` 把它归一到 `.cancelled` ⇒ 与上一列走的是同一把闸门）。
@@ -2051,6 +2154,9 @@ final class PlaybackCoordinatorTests: XCTestCase {
 
         /// 本格**导航之前**账上应留的那次回显（口径：`lastFailure` = 回显账，含不计数形态）。
         var echoBeforeNavigation: PlayerFailure? {
+            // 11B：`.stopped` 上的重试入口（`resume`）按既有口径把两本账一起归零，
+            // 所以本格的第二趟在途**不再**带着取消回显 —— 这个 `nil` 就是那条不可达的读数。
+            if self == .cancelledWithLoadInFlight { return nil }
             guard let error = firstAttemptError else { return nil }
             return PlayerFailure(kind: .cancelled, message: error.description)
         }
@@ -2327,63 +2433,78 @@ final class PlaybackCoordinatorTests: XCTestCase {
 
     /// MAJ-R6-1 的「暂停 × 取消账」形状（design §4/§6：暂停中按 ⏭ 是最典型的良性动作，
     /// 而此刻账上有一次**不计数**的取消 —— 第 5 批与第 10 批都只测了「零失败」那一半）。
-    func testPausedAfterCancelledLoadStillHoldsInsteadOfOpeningFailureTerminal() async {
+    ///
+    /// **这一格的来源换了（11B）**：旧实现里它靠「装载以取消收场 ⇒ `.loading` ⇒ `pause()`
+    /// 折成 `.paused`」得到，而那条链每一环都是谎报（`.loading` 背后没有在途装载、
+    /// `.paused` 背后引擎里没装当前项）。11B 把取消收场收敛成 `.stopped` 之后，
+    /// 「暂停 × 取消回显 × 引擎装着当前项」只能由**事件面**的取消构造；装载面收场那一半
+    /// 由 `testCancelledLoadConvergesOutOfLoadingAndItsStartNeverClaimsAdvanced` 钉住
+    /// （连同「停止态下暂停造不出 `.paused`」这条新的不可能状态）。
+    func testPausedUserWithCancellationEchoHoldsInsteadOfOpeningFailureTerminal() async {
         let engine = ScriptedEngine()
-        let preparer = AttemptScriptedPreparer(gating: [0], outcomes: [0: .cancelled])
-        let subject = PlaybackCoordinator(
-            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
-        )
+        let subject = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: nowPlaying)
         await subject.setLoopMode(.all)
-        let first = Task { await subject.start(items: TestItems.makeMany(["a"])) }
-        await assertSignalReached(target: 1, counter: preparer.requestSignal, what: "装载进入在途")
-        await preparer.releasePendingAttempt()
-        await assertSignalReached(target: 1, counter: preparer.returnedSignal, what: "装载返回")
-        _ = await first.value
+        _ = await subject.start(items: TestItems.makeMany(["a"]))
+        await subject.receive(.position(seconds: 30))
         await subject.pause()
+        await subject.receive(.failed(PlayerFailure(kind: .cancelled)))
         var snap = await subject.currentSnapshot()
         XCTAssertEqual(snap.state, .paused, "前置：用户已暂停")
-        XCTAssertEqual(snap.failureStreak, 0, "前置：计数侧无账")
+        XCTAssertEqual(snap.failureStreak, 0, "前置：计数侧无账（MAJ-4 的归一）")
         XCTAssertEqual(snap.lastFailure?.kind, .cancelled, "前置：回显账在")
+        XCTAssertEqual(engine.count(of: "load"), 1, "前置：引擎确实装着当前项")
 
+        let pausesBefore = engine.count(of: "pause")
         let outcome = await subject.next()
         XCTAssertEqual(outcome, .held, "MAJ-R6-1：暂停 + 取消账 + 无处可跳 = 保持")
         snap = await subject.currentSnapshot()
         XCTAssertFalse(snap.isFailureTerminal, "MAJ-R6-1：不计数形态开不了终态闸门")
         assertNoFakeTerminal(snap, "暂停中取消账在时 next")
         XCTAssertEqual(snap.state, .paused, "MAJ-R6-1：状态保持")
+        XCTAssertEqual(snap.position, 30, "MAJ-R6-1：保持不是停止，位置不得被抹平")
         XCTAssertEqual(snap.failureStreak, 0)
         XCTAssertEqual(snap.lastFailure?.kind, .cancelled, "MAJ-R6-1：回显账不得被良性导航改写")
+        XCTAssertEqual(engine.count(of: "pause"), pausesBefore, "MAJ-R6-1：本来就已经暂停，不必再摁一次")
 
         await subject.resume()
         let resumed = await subject.currentSnapshot()
         XCTAssertEqual(resumed.state, .playing, "保持 ≠ 卡死")
         XCTAssertFalse(resumed.isFailureTerminal)
+        XCTAssertEqual(engine.count(of: "load"), 1, "R1：引擎一直装着这一项 → 续播不必重新装载")
     }
 
     /// MAJ-R6-1 的「装载在途 × 取消账」形状，连同第 5 轮点名的**第二段谎**：旧实现在导航当场
     /// 写出终态并回 `.stopped`，而晚到的装载续体又把那个终态悄悄抹掉（`loadCurrent` 见引擎
     /// 真的装上了当前项即 `isFailureTerminal = false`）⇒ 「终态」只存在于调用方的返回值里。
+    ///
+    /// **形状的来源（11B）**：装载面收场的取消现在落在 `.stopped`，而 `.stopped` 上的任何重试
+    /// 入口（`start` / `resume`）都按既有口径把两本账一起归零 ⇒ 「取消回显 + 由重试起的在途装载」
+    /// 这一格在公开 API 上不可达（那条不可达本身由 11B 用例的暂停腿钉住）。可达的构造是：
+    /// 回显由**事件面**的取消落下（引擎确实装着当前项），在途那一趟由 `previous()` 的 `.moved`
+    /// 腿起（用户导航不清失败账），回绕到「只能重播当前项」则用装载在途期间切到的 `.one`。
     func testNavigatingDuringInFlightLoadAfterCancellationHoldsAndLeavesNoTerminal() async {
         let engine = ScriptedEngine()
-        let preparer = AttemptScriptedPreparer(gating: [0, 1], outcomes: [0: .cancelled])
+        let preparer = AttemptScriptedPreparer(gating: [1], outcomes: [:])
         let subject = PlaybackCoordinator(
             engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
         )
         await subject.setLoopMode(.all)
-        let first = Task { await subject.start(items: TestItems.makeMany(["a"])) }
-        await assertSignalReached(target: 1, counter: preparer.requestSignal, what: "第一趟装载进入在途")
-        await preparer.releasePendingAttempt()
-        await assertSignalReached(target: 1, counter: preparer.returnedSignal, what: "第一趟装载返回")
-        _ = await first.value
+        _ = await subject.start(items: TestItems.makeMany(["a", "b"]), at: 0)
+        await subject.receive(.failed(PlayerFailure(kind: .cancelled)))
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.lastFailure?.kind, .cancelled, "前置：回显账在（事件面落下）")
+        XCTAssertEqual(snap.failureStreak, 0, "前置：计数侧无账")
+        XCTAssertEqual(snap.state, .playing)
 
-        let second = Task { await subject.resume() }
+        let second = Task { await subject.previous() }
         await assertSignalReached(
             target: 2, counter: preparer.requestSignal,
-            what: "第二趟装载进入在途（引擎里没有当前项 → R1 真装一次）"
+            what: "第二趟装载进入在途（`.all` 下 ⏮ 回绕到 b —— 用户导航不清失败账，回显才留得住）"
         )
-        var mid = await subject.currentSnapshot()
-        XCTAssertEqual(mid.failureStreak, 0, "前置：计数侧无账")
-        XCTAssertEqual(mid.lastFailure?.kind, .cancelled, "前置：回显账在")
+        await subject.setLoopMode(.one)   // 在途期间切 `.one`：此刻 ⏭ 只能回绕到当前项
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .loading, "F-7 前置：这一趟是真的在途")
+        XCTAssertEqual(snap.lastFailure?.kind, .cancelled, "前置：回显账挺过了正常推进")
 
         let outcome = await subject.next()
         XCTAssertEqual(outcome, .held, "MAJ-R6-1：取消账 + 装载在途 = 保持，不是「停止 + 终态」")
@@ -2391,10 +2512,10 @@ final class PlaybackCoordinatorTests: XCTestCase {
             NowPlayingStatusMapping.status(for: outcome), .noSuchContent,
             "MAJ-R6-1：`.stopped` 会被锁屏映射成 `.success`（虚报「已生效」）"
         )
-        mid = await subject.currentSnapshot()
-        XCTAssertFalse(mid.isFailureTerminal, "MAJ-R6-1：无计数账即无终态")
-        assertNoFakeTerminal(mid, "取消账 + 装载在途时 next")
-        XCTAssertEqual(mid.item?.id, "a")
+        snap = await subject.currentSnapshot()
+        XCTAssertFalse(snap.isFailureTerminal, "MAJ-R6-1：无计数账即无终态")
+        assertNoFakeTerminal(snap, "取消账 + 装载在途时 next")
+        XCTAssertEqual(snap.item?.id, "b")
 
         await preparer.releasePendingAttempt()
         await assertSignalReached(target: 2, counter: preparer.returnedSignal, what: "第二趟在途装载返回")
@@ -2407,7 +2528,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertFalse(after.isFailureTerminal)
         XCTAssertEqual(after.failureStreak, 0)
         assertNoFakeTerminal(after, "装载落地后")
-        XCTAssertEqual(engine.loads.last?.id, "a")
+        XCTAssertEqual(engine.loads.last?.id, "b")
     }
 
     /// **正向腿**（防修法过窄把 F-A 的合法终态也关掉）：真实失败（计数形态）无论中间夹了多少次

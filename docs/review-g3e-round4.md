@@ -142,3 +142,33 @@
 不计数形态一经写入就会重新打开终态闸门（「没有失败却进失败终态」原地复活）；终态只看计数侧
 `failureStreak > 0`。② 矩阵基态还要覆盖「**有一次不计数失败**」的形状（4 列 → 8 列）。
 详见 `docs/log/20260921.md` §18。
+
+---
+
+## §F 第 6 轮隔离复审（HEAD `a93d829`）
+
+> **来源标注（协调者如实记）**：本轮报告以 agent 结果形式到达，未由评审实例自己落盘；
+> 本节由协调者按收到的原文转录要点，逐条与生产/测试字节核对后存档。编号 `MAJ-R6-*` /
+> `MIN-R6-*` 沿用协调者侧的登记名，评审原文的措辞以本节引用的两处直接引语为准。
+
+**结论：0 Critical / 1 Major / 2 Minor**，且评审明文否决放行：
+「**『零 Critical 且零 Major』不成立** … **G3-e 验收不得在本轮放行**」。
+
+### 本轮关闭的（正面结论，协调者已复核）
+
+| 编号 | 结论 |
+|---|---|
+| MAJ-R5-1（含 MAJ-R6-1 的**前半**） | 第 11 批的两本账分流**已闭**（`hasCountedFailureLedger == failureStreak > 0`）|
+| MAJ-R5-2 + Major-1 | 已闭（共享面票据按所有权与 token 退场，第 9 批）|
+| MIN-R5-4 | 已闭（失效面在共用收敛点清系统回显面，第 10 批）|
+| 零 flake 判据 | 成立：本轮合计 **193,600 执行 / 0 失败** |
+| 未弱化既有断言 | 成立：全区间 Tests 仅删 28 行，逐行为「签名跟进 / 拆逃生门」；`XCTSkip` 0 命中 |
+| 基线 | `PLAYER_MIN=388` 与当轮实测终值**恰好相等**（不是「下限宽松」）|
+
+### 本轮指认的
+
+| 编号 | 级别 | 现象（评审原文要点） | 处置 |
+|---|---|---|---|
+| **MAJ-R6-1** | **Major** | 一次被取消的装载（`PlayerError.cancelled` / `.staleSession`）在 `failureStreak == 0` 的情况下把 `lastFailure` 置起来，`hasFailureLedger` 随之为真 ⇒ 下一次良性 `.repeated` 走 `haltBecauseNothingIsLoaded()`，产出 `isFailureTerminal == true` 而 `failureStreak == 0` —— F-A 那类「没有失败却进失败终态」的谎报被**重新打开**（探针 200/200 确定性复现）。**同一份输入还有第二半**：装载结束后 `state` 永远停在 `.loading`（而 `inFlightLoad` 已被 `defer` 收掉，破 F-7），且 `start()` 向调用方回 `.advanced(…)`。**修法指认（原文）**：`hasFailureLedger` 应复用既有单一事实源 `failureStreak > 0 \|\| (lastFailure?.countsTowardFailureStreak ?? false)`；**并给「取消导致的装载结束」补一条真正的收敛腿**（把 `.loading` 交还给事实，且不得向调用方回 `.advanced`）。**放行条件（原文）**：「补修时必须同时补上『账上只有一条取消记录』这一列，否则第 7 轮仍会在同一格再判一次」 | **两半分别由第 11 批与第 11 批 B 收口**：<br>① 前半 = `bbb1a2e`：判据收窄为 `failureStreak > 0`。**协调者自纠一处措辞**：本栏初稿写作「评审给的式子会留下过期回显仍能开终态」，逐点核对 5 个读写位（`PlaybackCoordinator.swift:491/548/669/1294/1351` 全部**成对**清 `failureStreak` 与 `lastFailure`，`handleFailure` 只写 `lastFailure`、按形态增量 `failureStreak`）后**不成立** —— 两式当下**等价**（`failureStreak > 0 ⟺ lastFailure 为计数形态`）。取 `failureStreak > 0` 的真实理由是**单一事实源**：终态资格不应依赖「将来新增一个复位点的人记得同时清另一本账」，而评审式恰好把这条不成文不变量升格成了判据的一部分。等价关系也已在 §18 记明，`assertNoFakeTerminal` 因此无需放宽。矩阵基态 4 → **8 列**（新增「取消收场 / 取消后暂停 / 取消账 + 装载在途 / `.staleSession`」），即评审要求的「账上只有一条取消记录」那一列已补上。<br>② 后半 = **第 11 批 B**：新增 `convergeStalledLoad(generation:)` 作为取消收场的收敛腿（`.loading` → `.stopped`、位置归零、引擎账本归零、摁住可能仍在响的上一件、发布回显；**唯一**与 `haltBecauseNothingIsLoaded()` 的差是不写 `isFailureTerminal`）⇒ `start()` 自然回 `.stopped` 而非 `.advanced`。顺带**删掉一个不可能状态**：停止态上的 `pause()` 不再把谎报的 `.loading` 折成 `.paused`。证据与变异自证见 `docs/log/20260921.md` §19 |
+| MIN-R6-a | Minor | `MPNowPlayingController.handlerStatus(for:)` 生产调用点 0、只剩测试在断言这张表（「表还绿、线已断」） | 已修（`2f22a39`，取删不取接回；理由见 §E OBS-R5-5 处置栏）|
+| MIN-R6-b | Minor | 夹具 `TransferWaiter.settle()` 的三合一布尔语义含糊仍在（第 9 批无权改该原语，只在测试侧绕开）| 已修（第 11 批 B）：拆成 `Settlement` 三格（`decidedAndResumed` / `decidedBeforeRegistration` / `alreadyDecided`）+ `decidedByThisCall` 作为「终止信号该不该发」的唯一判据。**如实限定可达性**：`cancelInFlightTransfers()` 那条腿在 actor 同步区下**本就不可命中**该窗口（第 9 批的结论仍成立，本批行为无变化）；真正被修好的是 `waitCancelling` 入口 `Task.isCancelled == true` 那一支 —— 旧布尔在那一支返回 false ⇒ `onTerminate()` 不发、终止边沿少记一次。原语契约另加一条永久用例（`testTransferWaiterSettlementKeepsDecidedAndUnregisteredApartFromNoOp`）|

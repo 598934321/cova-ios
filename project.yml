@@ -100,8 +100,14 @@ targets:
         #     （第 10 批的分流判据 `failureStreak>0 || lastFailure!=nil` 正是本缺陷的根）；
         #     负向 3 条 + 正向 1 条永久测试 + 矩阵基态 4→8 列（24→96 格，含取消形态四列）+
         #     4 处变异自证；附带项 `handlerStatus(for:)` 死表已由 2f22a39 删除（本批核验零引用）
-        CFBundleShortVersionString: "0.2.48"
-        CFBundleVersion: "59"
+        # → 0.2.49/60 G3-e 环 4 第 11 批 B（协调者亲自下场，MAJ-R6-1 的第二半）：取消导致的
+        #     装载结束补一条真正的收敛腿 `convergeStalledLoad` —— `.loading` 交还给事实
+        #     （= `.stopped`，不开终态），`start()` 不再向调用方回 `.advanced`；顺带删掉一个
+        #     不可能状态（停止态上的暂停不再凭空造出 `.paused`），矩阵两列与第 11 批两条用例
+        #     按可达形状重写；`TransferWaiter.settle()` 三合一布尔拆成三格定案（定案并唤起 /
+        #     定案但未登记 / 败者），取消作废在途时不再少记终止信号；PLAYER_MIN 388 → 394
+        CFBundleShortVersionString: "0.2.49"
+        CFBundleVersion: "60"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

@@ -1138,9 +1138,27 @@ actor FileWritingPrivateAudioPreparer: PlaybackSourcePreparing {
 /// 读不出来 —— 而那正是 MAJ-1 的判据。真实 `URLSession.bytes` 流的形态是「以错误结束」，
 /// 所以这里的取消会唤醒等待者并抛出 `cancelError`。
 ///
-/// `settle` 保证 continuation 恰好恢复一次（后到的一方无操作），因此不需要任何让步或睡眠
-/// 就能把「谁先到」变成确定性的事实（D16⑤）。
+/// `settle` 保证 continuation 至多恢复一次，因此不需要任何让步或睡眠就能把「谁先到」变成
+/// 确定性的事实（D16⑤）。**但「至多一次」不等于「后到的一方无操作」**（第 11 批拆掉的根因）：
+/// 决出结论时续体可能**还没登记**（`writeAudio` 先 `pending.append(waiter)` 再 `waitCancelling`，
+/// 而 `released` 那条捷径干脆不挂起），这一次调用照样把这一路定了，只是没东西可唤起。
+/// 旧布尔把这两种「定案」都读成 false，于是 `cancelInFlightTransfers()` 落在这个窗口里时
+/// **不发 `terminatedSignal`** —— 测试等的是「传输真的终止了」，等不到就只剩超时红。
+/// 三格枚举让调用方必须自己说清要的是哪件事。
 final class TransferWaiter: @unchecked Sendable {
+    /// 一次 `settle` 到底做成了哪件事。
+    enum Settlement: Equatable {
+        /// 本次调用定案，并唤起了一个正在等待的续体。
+        case decidedAndResumed
+        /// 本次调用定案，但续体尚未登记（等待方随后直接从 `outcome` 拿到同一结论）。
+        case decidedBeforeRegistration
+        /// 已被别的一方定案，本次调用什么都没做。
+        case alreadyDecided
+
+        /// 本次调用是否真的把这一路定了 —— 「终止信号」该不该发的唯一判据。
+        var decidedByThisCall: Bool { self != .alreadyDecided }
+    }
+
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
     private var outcome: Result<Void, Error>?
@@ -1150,18 +1168,21 @@ final class TransferWaiter: @unchecked Sendable {
         self.cancelError = cancelError
     }
 
-    /// 决出这一路（首次生效）。返回是否真的由本次调用决出。
-    @discardableResult
-    func settle(_ result: Result<Void, Error>) -> Bool {
+    /// 决出这一路（首次生效）。返回本次调用**做成**了哪件事，调用方据此决定是否记账。
+    func settle(_ result: Result<Void, Error>) -> Settlement {
         lock.lock()
+        guard outcome == nil else {
+            // 败者不碰续体：那个续体属于胜者的结论，登记路径自己会直接 resume。
+            lock.unlock()
+            return .alreadyDecided
+        }
+        outcome = result
         let pending = continuation
         continuation = nil
-        let first = outcome == nil
-        if first { outcome = result }
         lock.unlock()
-        guard first, let pending else { return false }
+        guard let pending else { return .decidedBeforeRegistration }
         pending.resume(with: result)
-        return true
+        return .decidedAndResumed
     }
 
     /// 已被决出（用于登记前的粘性判定，避免「放行发生在登记之前」时漏掉结论）。
@@ -1171,13 +1192,13 @@ final class TransferWaiter: @unchecked Sendable {
         return outcome != nil
     }
 
-    /// 挂起等待；任务被取消时以 `cancelError` 收尾（`onTerminate` 只在本次取消真的决出了
-    /// 这一路时触发一次 —— 它就是测试读取「传输终止了」的那个信号）。
+    /// 挂起等待；任务被取消时以 `cancelError` 收尾（`onTerminate` 在**本次取消定案**时触发一次
+    /// —— 无论那一刻续体是否已经登记，它就是测试读取「传输终止了」的那个信号）。
     /// `honorsCancellation == false` 时**完全不理会取消**：只能由 `release()` 放行，
     /// 用来造出「不合作的出口」这一最坏形态（准备器提交前的取消复核是唯一防线）。
     func waitCancelling(onTerminate: @Sendable () -> Void, honorsCancellation: Bool = true) async throws {
         if honorsCancellation, Task.isCancelled {
-            if settle(.failure(cancelError)) { onTerminate() }
+            if settle(.failure(cancelError)).decidedByThisCall { onTerminate() }
             throw cancelError
         }
         try await withTaskCancellationHandler {
@@ -1193,7 +1214,9 @@ final class TransferWaiter: @unchecked Sendable {
             }
         } onCancel: {
             guard honorsCancellation else { return }
-            if self.settle(.failure(self.cancelError)) { onTerminate() }
+            // `onCancel` 可以在续体登记**之前**就跑（任务早已取消时 Swift 立刻调用），
+            // 这一路于是落在 `.decidedBeforeRegistration` 上 —— 它同样是「本次取消定了案」。
+            if self.settle(.failure(self.cancelError)).decidedByThisCall { onTerminate() }
         }
     }
 }
@@ -1254,7 +1277,8 @@ actor CancellablePrivateAudioTransport: PrivateAudioTransport {
         enteredSignal.bump()
         let waiter = TransferWaiter(cancelError: cancellationError())
         if released {
-            waiter.settle(.success(()))
+            // 出口已粘性放行：结论先于续体登记（等待方直接通过），本处不记终止账。
+            _ = waiter.settle(.success(()))
         } else {
             pending.append(waiter)
         }
@@ -1293,12 +1317,16 @@ actor CancellablePrivateAudioTransport: PrivateAudioTransport {
 
     /// 作废**当前在途**（MAJ-3）：协议默认空实现已删除，桩必须显式实现；
     /// 出口本身继续可用（之后的新调用照常服务）。
+    ///
+    /// 终止账按「**本次调用是否定案**」记，不按「是否唤起了续体」记：登记表里的这一路完全
+    /// 可能还没挂上续体（`pending.append` 与 `waitCancelling` 之间的那个窗口），旧布尔在那个
+    /// 窗口里少记一次账 —— 少记的就是测试等不到的那个信号（TD-35 同族的「等不到就当没发生」）。
     func cancelInFlightTransfers() async {
         cancellationRequests += 1
         cancelledSignal.bump()
         let dying = pending
         pending = []
-        for waiter in dying where waiter.settle(.failure(waiter.cancelError)) {
+        for waiter in dying where waiter.settle(.failure(waiter.cancelError)).decidedByThisCall {
             terminatedSignal.bump()
         }
     }
@@ -1308,6 +1336,6 @@ actor CancellablePrivateAudioTransport: PrivateAudioTransport {
         released = true
         let waiting = pending
         pending = []
-        for waiter in waiting { waiter.settle(.success(())) }
+        for waiter in waiting { _ = waiter.settle(.success(())) }
     }
 }

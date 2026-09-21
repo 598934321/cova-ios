@@ -2,7 +2,7 @@
 
 > 面向接手本仓的开发者/代理。先读本手册，再读 `AGENTS.md`、`docs/EXECUTION-PROMPT.md`
 > （编排协议）、`docs/PLAN.md`（总计划）、`docs/decisions.md`（锁定决策）。
-> 本手册记录**截至 2026-09-20 的真实状态**，不粉饰未完成项。
+> 本手册记录**截至 2026-09-22 的真实状态**，不粉饰未完成项。
 
 ---
 
@@ -10,13 +10,13 @@
 
 | 项 | 值 |
 |---|---|
-| 当前锚点 | HEAD = 本 commit（G3-d 落证，父提交 `f39cfa9` = 代码锚点），工作树干净（另有 1 个 stash，见 §9） |
-| 版本 | `CFBundleShortVersionString 0.2.25` / `CFBundleVersion 36`（`project.yml`） |
-| 阶段 | G0 已完成并落证；G3（核心层）进行中：**G3-a/G3-b/G3-c/G3-d 已验收**（G3-d 于第十轮隔离评审 100% 通过），剩 **G3-e（CovaPlayer）未开始**；**G1 Figma 方向稿已产出待用户验收**（§9） |
-| 门禁 | `Scripts/check.sh` **十步** EXIT=0（协调者在含环 4 全部修复的 HEAD 上亲跑）：CovaCore 372 / 95.28%、**CovaPlayer 331 / 93.75%**（15/15 源文件无条件归因）；第 3 轮复审又判门禁 2 Major（禁 UI 黑名单形态可被 WebKit 与「仅测试 target 的 UIKit」打穿）→ 正在改白名单 |
-| 设计闸门 | G1 方向稿已产出（§9）**待用户验收** / G2 未开始 → **禁止写 UI 代码** |
-| 唯一未阻塞工作 | G3 核心层（纯逻辑，不涉 UI）：G3-e CovaPlayer；G1 验收 + G2 全量设计是外部依赖 |
-| 下一步 | 见 §10：G3-e（CovaPlayer，D4/D7）与 G1 用户验收并行 |
+| 当前锚点 | HEAD = 本 commit（G3-e 环 4 第 11 批 B 落证，父提交 `bbb1a2e`），工作树干净（另有 1 个 stash，**用户裁决保留不动**，见 §9） |
+| 版本 | `CFBundleShortVersionString 0.2.49` / `CFBundleVersion 60`（`project.yml`） |
+| 阶段 | G0 已落证；G3（核心层）**G3-a/b/c/d 已验收**，**G3-e（CovaPlayer）处于环 3↔环 4 收敛末段**：已跑 6 轮全新隔离评审，第 6 轮 0 Critical / 1 Major（MAJ-R6-1）两半已分别由第 11 批与第 11 批 B 收口，**待第 7 轮复审确认「零 Critical 且零 Major」才算验收**。G1 方向稿**用户明确裁决未验收**；G2 全量规格由本仓代产出（`design/screens/` 18 屏 + 12 号屏拆 a–d，索引见 `design/screens/inventory.md`）**待用户验收** |
+| 门禁 | `Scripts/check.sh` **十步** EXIT=0（协调者在第 11 批 B 最终字节上亲跑）：`CovaTests` 2/0、`CovaCoreTests` 372 / 95.28%、`CovaPlayerTests` **394/0/0 跳过** / **CovaPlayer 3203 行 = 94.99%**（15/15 源文件无条件归因）、基线 `PLAYER_MIN=394`；禁 UI 判据已改**白名单形态**并含测试 target 三层扫描（TD-38/TD-41）|
+| 设计闸门 | G1 **未验收**（用户裁决）/ G2 代产出**待验收** → **禁止写任何 UI 代码**（硬边界 8；门禁第 6 步机制化把关，不是口头承诺）|
+| 唯一未阻塞工作 | G3-e 收尾（第 7 轮隔离复审 + 环 5 落证）。**M1–M3 / G4 全部阻塞**在外部依赖上：① G2 用户验收（硬边界 8 的 UI 禁令）；② 后端 NEEDS —— #1 `AUTH-LOGIN-TOKENS`（`user` DTO 缺 `covaId`/`phone`/`isArtist`/`isPartner`，M1 登录闭环）、#2 `PLAY-SOURCE-MOBILE`（`app-ios` 不在播放上报 allowlist，M1 上报）、#15 `PRIVATE-AUDIO-HOST-SHAPE`（私有音频主机形态，G3-e 只按守卫开发、不冒充线上）、#4 `ACCOUNT-DELETE`（G4 提审硬要求）|
+| 下一步 | 见 §9/§13：G3-e 第 7 轮复审放行 → 环 5 落证 + 交付清单 + 模拟器验收位；轨道 B 等用户对 G2 全量规格的验收 |
 
 **最重要的一句**：本仓一切改动走「五环流程 + 隔离评审」（§4）。不要跳过门禁、不要自评自过、
 不要在 G1/G2 未验收时写 UI。
@@ -29,7 +29,7 @@ Cova（CovaLink）AI 音乐商用授权平台的 iPhone 原生 App。独立 git 
 SwiftUI + Swift Concurrency，部署目标 iOS 26。分层为四个本地 SwiftPM 包：
 
 - `CovaCore`：模型 / API client / 认证 / SSE / 幂等 / 持久化（纯逻辑，全 XCTest）
-- `CovaPlayer`：AVPlayer 自研播放层（**尚未实现**，G3-e）
+- `CovaPlayer`：AVPlayer 自研播放层（**已实现，G3-e 验收待第 7 轮复审**）：队列 / 循环三态 / ±15s / 锁屏 / 上报去重 / 私有音频落盘
 - `CovaUI`：tokens / 材质 / 组件 / 动效（**尚未实现**，等 G2 设计验收）
 - `CovaFeature`：各屏（**尚未实现**，等 G2 设计验收）
 
@@ -223,6 +223,11 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
 - TD-39：`AdvanceOutcome`/`PlayerError` 结果粒度不足：环 4 的 F-4（终态应回 `.stopped`）、
   F-5（装载在途时 seek 应专属拒绝码）只能复用既有 case，因为新增 case 会打破
   `NowPlayingController` 的穷尽 switch。M1 接 UI 时一并复核更细粒度的结果类型。
+  **11B 再确认的一格（不偷偷改掉，已在测试里钉住读数）**：`AdvanceOutcome.stopped` 与
+  「末项正常播完」在回显面共用 `NowPlayingStatus.success` ⇒ 锁屏分不出「取消收场的停止」
+  与「播完的停止」。协调器侧的债 11B 已还（不再向调用方回 `.advanced`），剩下的区分只能
+  靠快照 `state` + `lastFailure` 回显账；UI 若要在一次命令的返回码里就分得清，必须扩 case
+  （届时连带 `NowPlayingStatusMapping` 的穷尽 switch），这就是本条一直挂到 M1 的原因。
 - TD-40：私有音频并发合流改用无结构 `Task`（为了在 actor 重入前先把登记表填上），
   **取消传播路径未经证明**；M1 需复核「上层取消是否真能终止合流中的下载」。
 - TD-10：源集合适配域过宽——`Sources/CovaCore/` 下若出现名为 `Tests` 的子目录会被误红。
@@ -269,6 +274,13 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
   `URLProtocol` 夹具上**不可观测**（桩不重放跳转链，实测只发出 1 个主机、落地请求无
   `Authorization`）；且全仓 `willPerformHTTPRedirection` 0 命中 ⇒ 实现里根本没有可剥离凭证
   的位置。字节侧已由 C2 的响应权威复核兜住（`.hostRejected`、零写盘），**凭证侧仍是缺口**。
+- TD-45（第 11 批存疑点 3，协调者裁决：派后续批次，不阻塞 G3-e）：私有音频「取消 → ⏭」
+  这一族的复现腿全在**协调器层**，`CovaPlayer` 公开门面走同一条路径没有用例。补它要动
+  门面与其测试文件（不在协调器批次的文件域内，避免与并行实例互踩）。M1 装配真实播放器时
+  必须补上，否则「门面只是薄适配器」这一前提在测试面上是**未证明**的。
+- TD-46（矩阵成本，第 11 批存疑点 4）：导航矩阵 96 格 × 1000 迭代是 `CovaPlayerTests` 最重的
+  一支（约 220–260s / 千轮）。再加基态列时按 §17.5 第 4 条**拆成独立用例**，不要继续乘进去
+  —— 成本本身不是问题，「跑不完 → 有人偷降迭代数」才是。
 
 **持续 / 工具链**
 - TD-2：CovaCore 若真需要条件编译，必须先登记 NEEDS/decisions（禁止静默放宽）。

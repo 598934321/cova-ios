@@ -1305,6 +1305,42 @@ final class PrivateAudioFetcherTests: XCTestCase {
         XCTAssertEqual(stillCached, 1)
     }
 
+    // MARK: - 环 4 · 第 11 批：`TransferWaiter.settle` 的三格定案（夹具自身的契约）
+
+    /// 为什么给「测试夹具的原语」单独写一条用例：MAJ-1 / MAJ-3 那批判据读的就是
+    /// `terminatedSignal`，而这个信号过去由一个**三合一布尔**决定是否记账 ——
+    /// 「本次定案且唤起了续体」才是 true，于是「本次定案但续体还没登记」被读成无操作。
+    /// 那个窗口不是理论形态：`pending.append(waiter)` 与 `waitCancelling` 之间它就开着，
+    /// `cancelInFlightTransfers()` 落进来时就少记一次账，测试于是等不到自己等的信号
+    /// （TD-35 同族：等不到就当没发生）。三格枚举把这件事变成断言得动的东西。
+    func testTransferWaiterSettlementKeepsDecidedAndUnregisteredApartFromNoOp() async throws {
+        // ② 续体未登记：这一路**已被本次调用定案**（旧布尔在这一格返回 false）。
+        let waiter = TransferWaiter(cancelError: PlayerError.cancelled)
+        XCTAssertEqual(waiter.settle(.success(())), .decidedBeforeRegistration)
+        XCTAssertTrue(waiter.isSettled, "定案即成立，与有没有续体无关")
+        // ③ 后到的一方才是真的无操作（同一路续体绝不双唤醒）。
+        XCTAssertEqual(waiter.settle(.failure(PlayerError.cancelled)), .alreadyDecided)
+        XCTAssertEqual(
+            waiter.settle(.success(())).decidedByThisCall, false,
+            "终止信号不得被败者重复记一次"
+        )
+
+        // ① 有人真的在等：定案必须落在两种「本次定案」之一，且等待方被唤起（不靠让步或睡眠）。
+        let live = TransferWaiter(cancelError: PlayerError.cancelled)
+        let terminated = SignalCounter()
+        let waiting = Task {
+            try? await live.waitCancelling(onTerminate: { terminated.bump() })
+        }
+        let settlement = live.settle(.success(()))
+        XCTAssertTrue(
+            settlement == .decidedAndResumed || settlement == .decidedBeforeRegistration,
+            "定案的一方不得被读成「无操作」：\(settlement)"
+        )
+        await waiting.value   // 已定案 → 这一句不可能挂住（挂住就是超时红，不是漏检）
+        // `onTerminate` 只属于「取消把这一路定案」那条腿：`release()` 侧的定案不发终止信号。
+        XCTAssertEqual(terminated.value, 0, "放行不是终止：两件事不得共用一个信号")
+    }
+
     // MARK: - 夹具（环 4 新增）
 
     /// 缓存根下的 owner 目录名（`.inflight` 是隐藏目录，不计入 owner 集合）。

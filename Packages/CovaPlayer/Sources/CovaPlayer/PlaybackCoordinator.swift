@@ -1041,6 +1041,7 @@ public actor PlaybackCoordinator {
                     generation: generation, claimingEngineItem: nil, requiresPlaybackIntent: false
                 ) else { return }
                 await handleFailure(PlayerFailure(kind: Self.kind(for: error), message: error.description))
+                await convergeStalledLoad(generation: generation)
                 return
             }
         } else if item.requiresLocalization {
@@ -1049,6 +1050,7 @@ public actor PlaybackCoordinator {
                 generation: generation, claimingEngineItem: nil, requiresPlaybackIntent: false
             ) else { return }
             await handleFailure(PlayerFailure(kind: .localizationRequired, message: "缺少私有音频本地化器"))
+            await convergeStalledLoad(generation: generation)
             return
         } else {
             prepared = item
@@ -1066,6 +1068,7 @@ public actor PlaybackCoordinator {
             // 引擎账本尚未记账，所以「无处可跳」会由 `apply(.repeated)` 的闸门收敛成终态。
             inFlightLoad?.failure = nil
             await handleFailure(failure)
+            await convergeStalledLoad(generation: generation)
             return
         }
         // 引擎账本先落，再谈播放状态（R1）。
@@ -1091,6 +1094,36 @@ public actor PlaybackCoordinator {
     /// 当代装载是否仍未被取代（取代 = 新一轮 `loadCurrent` / 无当前项 / teardown）。
     private func isCurrent(_ generation: UInt64) -> Bool {
         generation == loadGeneration && !tornDown
+    }
+
+    /// 取消导致的装载结束：把 `.loading` **交还给事实**（MAJ-R6-1 的第二半，第 11 批存疑点 1）。
+    ///
+    /// 为什么需要一条独立的腿：`handleFailure` 对不计数的取消就是「记完回显账立刻返回」，
+    /// 于是这一次装载既不播、也不推进、也不改状态 —— 而它入口那句 `state = .loading` 还在，
+    /// `defer { finishLoad }` 又已经把台账收掉 ⇒ **`.loading` 从此没有对应的在途装载**，
+    /// F-7 的自述（`.loading` ⟹ 真有装载在途）当场失守。同一份输入还有第二层后果：
+    /// `advanceOutcome` 照 `.loading` 回 `.advanced`，`start()` 于是向调用方声称
+    /// 「已经落到这一项」，而引擎里什么都没有。
+    ///
+    /// 与 `haltBecauseNothingIsLoaded()` 的差别只有**一行**：这里不写 `isFailureTerminal`。
+    /// 取消不是故障（MAJ-4 / MAJ-R6-1 的口径 —— 计数账才是终态的唯一来源），它只让
+    /// 「装载中」这个读数作废；位置、时长、队列身份都留着，用户 `resume()` 会真装一次
+    /// （引擎账本已归零，R1 要求的就是这个）。
+    ///
+    /// 自我守卫的两个条件缺一不可：计数失败的腿会经 `apply` 去装**下一件**（状态已被那条腿
+    /// 改写，或已换成更新一代的在途装载），那时本函数必须是无操作 —— 否则就会把用户刚刚
+    /// 起播的新一轮装载打成 `.stopped`。
+    private func convergeStalledLoad(generation: UInt64) async {
+        guard state == .loading, inFlightLoad?.generation == generation else { return }
+        userWantsPlayback = false
+        state = .stopped
+        position = 0
+        engineEpisodeItemID = nil
+        await closeEpisodeIfNeeded()
+        // 装载入口没有先摁住引擎（换件由 `engine.load` 顶替旧项）：取消意味着永远不会有那次
+        // 顶替，此刻响着的可能是**上一件**。不暂停就是「读数说停止了，耳朵里却还在播」。
+        await engine.pause()
+        await publishNowPlaying(force: true)
     }
 
     // MARK: - 内部：续体守卫（环 4 R9：F-1 / F-2 / F-5 / F-7 / F-8 的同一条不变量）
