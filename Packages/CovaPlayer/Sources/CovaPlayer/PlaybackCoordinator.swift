@@ -110,6 +110,16 @@ public struct PlaybackSnapshot: Equatable, Sendable {
 }
 
 /// 推进结果（`next` / `previous` / 播完自动推进 / seek 落到末尾 共用）。
+extension PlaybackState {
+    /// 「正在出声或即将出声」：事件归约与保持腿只认这两种为「响着」。
+    /// **全仓唯一的两态字面量定义**（MIN-R7-2 / R8B-5）：过去 `pause()` / `toggle()` /
+    /// `receive(.playing)` / `holdCurrentItemWithoutPlaying()` / `handleItemEnded` 五处各写一份，
+    /// 第 7/8 轮各数出一次不一致。改这里 = 改五处。
+    var isSounding: Bool { self == .playing || self == .buffering }
+    /// 「用户可暂停」：含 `.loading`（装载在途 = 正要响，⏯ 的意图是别播这首）。
+    var isPausableByUser: Bool { isSounding || self == .loading }
+}
+
 public enum AdvanceOutcome: Equatable, Sendable {
     case advanced(to: Int, item: PlaybackItem, wrapped: Bool)
     /// `.one` 播完：不换曲，回到 0 继续。
@@ -421,7 +431,7 @@ public actor PlaybackCoordinator {
     public func removeItem(at index: Int) async -> PlayQueue.Change {
         guard !tornDown else { return .rejected(.tornDown) }
         let wasCurrent = queue.currentIndex == index
-        let wasPlaying = state == .playing || state == .buffering || state == .loading
+        let wasPlaying = state.isPausableByUser
         let change = queue.remove(at: index)
         guard wasCurrent, case .applied(let effect) = change else { return change }
         // 被移除的正是「装载在途的那一件」→ 整条在途装载作废：它回来时既不得回写引擎、
@@ -550,7 +560,7 @@ public actor PlaybackCoordinator {
         // F-1：显式暂停**先**落意图，再动状态机 —— 在途装载的续体据此选择 `.paused`，
         // 而不是无条件声称 `.playing`。
         userWantsPlayback = false
-        guard state == .playing || state == .buffering || state == .loading else {
+        guard state.isPausableByUser else {
             await engine.pause()
             return
         }
@@ -592,7 +602,7 @@ public actor PlaybackCoordinator {
         // `.buffering`，于是在途那一下落到 `resume()` → 新代次装载并把状态写成 `.playing`，
         // 用户想停必须按第二次 —— 而锁屏与耳机按键本来就只给一次。
         // `pause()` 在 `.loading` 上是成立的：它先落意图（F-1），当代装载回来时自己落暂停。
-        if state == .playing || state == .buffering || state == .loading {
+        if state.isPausableByUser {
             await pause()
         } else {
             await resume()
@@ -688,7 +698,7 @@ public actor PlaybackCoordinator {
             //   ③ 用户此刻要听（显式暂停、失败终态之后不得被引擎悄悄翻回播放，
             //      否则锁屏会发布 isPlaying=true）；
             //   ④ 当前本就处于「在播 / 缓冲 / 装载」三态之一。
-            guard state == .playing || state == .buffering || state == .loading else { return }
+            guard state.isPausableByUser else { return }
             guard continuationIsCurrent(
                 generation: nil, claimingEngineItem: queue.current?.id, requiresPlaybackIntent: true
             ) else { return }
@@ -971,7 +981,10 @@ public actor PlaybackCoordinator {
     /// 只把「还在响的引擎」按意图摁住，并如实回 `.held`（design §4/§6「越界保持」）。
     /// 引擎账本没保住的那种后果由 `resume()` 自己处理：它见引擎里没有当前项就真装一次（R1）。
     private func holdCurrentItemWithoutPlaying() async -> AdvanceOutcome {
-        if state == .playing || state == .buffering {
+        // 只在该摁的时候摁：用户**没有**播放意图时保持 = 把还响着的摁住；
+        // 意图为真却走到这里（引擎没装当前项、也无失败账）时什么都不响或正由装载腿负责，
+        // 再 pause 一次就是 R8B-1 那类「手势替用户停了音乐」。
+        if state.isSounding, !hasPlaybackIntent {
             state = .paused
             await engine.pause()
         }
@@ -986,7 +999,7 @@ public actor PlaybackCoordinator {
         // 引擎侧存在，故由 `EngineEventGate` 在事件进流之前丢弃（见 `PlayerEngine.swift`）。
         // 决策层这里补的是**另一半**归因：装载在途 / 引擎未持有当前项时不得推进（F-2 同族），
         // 那类 `ended` 只可能来自已被取代的条目，且引擎闸门管不到「装载续体自己正在 await」的窗口。
-        guard state == .playing || state == .buffering else { return .held }
+        guard state.isSounding else { return .held }
         guard continuationIsCurrent(
             generation: nil, claimingEngineItem: queue.current?.id, requiresPlaybackIntent: true
         ) else { return .held }
@@ -1351,7 +1364,7 @@ public actor PlaybackCoordinator {
         duration = seconds
         guard position > seconds else { return }
         position = seconds
-        guard state == .playing || state == .buffering else { return }
+        guard state.isSounding else { return }
         _ = await handleItemEnded()
     }
 

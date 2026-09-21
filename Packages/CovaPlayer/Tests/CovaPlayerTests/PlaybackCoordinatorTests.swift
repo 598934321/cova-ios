@@ -2283,7 +2283,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
     /// 私有音频装载在途）从未被这一格覆盖，`assertNoFakeTerminal` 在那里形同漏空 ——
     /// 第 5 批的 F-A 因此只修了一半（腿 (c)）就落了证。
     ///
-    /// **基态列再从 4 格补到 8 格（MAJ-R6-1，第 11 批）**：前四列全程「一次失败都没有」，
+    /// **基态列再从 4 格补到 8 格（MAJ-R6-1，第 11 批）、第 13 批删回 7 格**：前四列全程「一次失败都没有」，
     /// 而 MAJ-R6-1 恰恰只在「**有一次不计数失败**（取消 / 过期会话）」时才成立 ——
     /// 那一格此前同样形同漏空（第 6 轮复审的探针 `testProbeStaleSessionThenNavigate` 就是从这里
     /// 打出来的）。新增四列把「取消账 × 未装载 / 暂停 / 装载在途」三种此前只测过「零失败」的
@@ -2301,7 +2301,12 @@ final class PlaybackCoordinatorTests: XCTestCase {
     }
 
     /// 矩阵的基态列。前四列是第 5 / 10 批已有的形态（**计数侧与回显侧都无账**），
-    /// 后四列由 MAJ-R6-1 补齐（**回显侧有一次不计数的取消，计数侧仍无账**）。
+    /// 后三列由 MAJ-R6-1 补齐（**回显侧有一次不计数的取消，计数侧仍无账**）。
+    /// **第 13 批删掉的那一列（MIN-R7-3）**：原 `cancelledWithLoadInFlight` 的
+    /// `echoBeforeNavigation` 恒为 `nil`，列名与所测相反、行为上退化为 `loadInFlight` 的重复列。
+    /// 它想钉的「取消回显 × 新一轮装载在途」形状由
+    /// `testNavigatingDuringInFlightLoadAfterCancellationHoldsAndLeavesNoTerminal` 以可达构造
+    /// （`previous()` 的 `.moved` 腿起第二趟）单独守着 —— 删列不留空名，判据不丢。
     private enum NavigationBase: CaseIterable, Equatable {
         /// 走完装载后用户显式暂停（旧矩阵 `basePaused == true`）。
         case loadedPaused
@@ -2322,13 +2327,6 @@ final class PlaybackCoordinatorTests: XCTestCase {
         /// 取消账」，而前者本来就是靠谎报才存在的（真正可达的「暂停 × 取消回显」见
         /// `testPausedUserWithCancellationEchoHoldsInsteadOfOpeningFailureTerminal`）。
         case cancelledThenPaused
-        /// 取消账已在，而**新一轮装载真的在途**（`resume()` 起的第二趟）。
-        ///
-        /// 11B 的一个**必然后果**也被这一格钉住：取消收场落在 `.stopped`，而 `.stopped` 上的
-        /// 重试入口按既有口径把两本账一起归零 ⇒ 「取消回显 × 重试起的在途装载」不可达
-        /// （`echoBeforeNavigation` 对本格是 `nil` 就是这个意思）。回显确实留在账上的
-        /// 在途形状由 `testNavigatingDuringInFlightLoadAfterCancellation...` 走可达路径钉。
-        case cancelledWithLoadInFlight
         /// 同 `cancelledSettled`，但收场的是 `.staleSession`（登出/换代产生的过期会话；
         /// `kind(for:)` 把它归一到 `.cancelled` ⇒ 与上一列走的是同一把闸门）。
         case staleSessionSettled
@@ -2341,7 +2339,6 @@ final class PlaybackCoordinatorTests: XCTestCase {
             case .loadInFlight: return "loadInFlight"
             case .cancelledSettled: return "cancelledSettled"
             case .cancelledThenPaused: return "cancelledThenPaused"
-            case .cancelledWithLoadInFlight: return "cancelledWithLoadInFlight"
             case .staleSessionSettled: return "staleSessionSettled"
             }
         }
@@ -2349,7 +2346,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
         /// 本格第一趟装载用来收场的错误（`nil` = 装载正常走完 / 只在途不返回）。
         var firstAttemptError: PlayerError? {
             switch self {
-            case .cancelledSettled, .cancelledThenPaused, .cancelledWithLoadInFlight: return .cancelled
+            case .cancelledSettled, .cancelledThenPaused: return .cancelled
             case .staleSessionSettled: return .staleSession
             case .loadedPaused, .loadedStopped, .neverLoaded, .loadInFlight: return nil
             }
@@ -2357,9 +2354,6 @@ final class PlaybackCoordinatorTests: XCTestCase {
 
         /// 本格**导航之前**账上应留的那次回显（口径：`lastFailure` = 回显账，含不计数形态）。
         var echoBeforeNavigation: PlayerFailure? {
-            // 11B：`.stopped` 上的重试入口（`resume`）按既有口径把两本账一起归零，
-            // 所以本格的第二趟在途**不再**带着取消回显 —— 这个 `nil` 就是那条不可达的读数。
-            if self == .cancelledWithLoadInFlight { return nil }
             guard let error = firstAttemptError else { return nil }
             return PlayerFailure(kind: .cancelled, message: error.description)
         }
@@ -2417,10 +2411,8 @@ final class PlaybackCoordinatorTests: XCTestCase {
         case .loadedPaused, .loadedStopped, .neverLoaded, .loadInFlight:
             rig = .gated(GatedSourcePreparer(gating: base == .loadInFlight ? [gatedID] : []))
         case .cancelledSettled, .cancelledThenPaused, .staleSessionSettled:
-            let error = base.firstAttemptError!   // 后四列必非 nil（见 `firstAttemptError`）
+            let error = base.firstAttemptError!   // 取消列必非 nil（见 `firstAttemptError`）
             rig = .scripted(AttemptScriptedPreparer(gating: [0], outcomes: [0: error]))
-        case .cancelledWithLoadInFlight:
-            rig = .scripted(AttemptScriptedPreparer(gating: [0, 1], outcomes: [0: .cancelled]))
         }
         let subject = PlaybackCoordinator(
             engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: rig.sourcePreparer
@@ -2438,7 +2430,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
             XCTAssertTrue(opened, "前置：\(scene) 的装载未进入在途，本格无从验证", line: line)
         case .loadedPaused, .loadedStopped:
             _ = await subject.start(items: items, at: ids.count - 1)
-        case .cancelledSettled, .cancelledThenPaused, .staleSessionSettled, .cancelledWithLoadInFlight:
+        case .cancelledSettled, .cancelledThenPaused, .staleSessionSettled:
             // 第一趟装载**真的走完**并以取消收场（不是「模拟一个已完成的失败账」：
             // 走的是 `loadCurrent → handleFailure` 那条真实写入路径）。
             let first = Task { await subject.start(items: items, at: ids.count - 1) }
@@ -2451,13 +2443,6 @@ final class PlaybackCoordinatorTests: XCTestCase {
             if base == .cancelledThenPaused {
                 await subject.pause()
             }
-            if base == .cancelledWithLoadInFlight {
-                // 引擎里没有当前项 → `resume()` 走的是「真装载」那条腿（R1），于是第二趟
-                // 真的停在 `prepareSource` 上；导航就发生在这段在途里。
-                secondTask = Task { await subject.resume() }
-                let reopened = await Signals.wait(target: 2, counter: rig.requestSignal)
-                XCTAssertTrue(reopened, "前置：\(scene) 的第二趟装载未进入在途", line: line)
-            }
         }
         switch base {
         case .loadedPaused, .loadedStopped:
@@ -2469,8 +2454,8 @@ final class PlaybackCoordinatorTests: XCTestCase {
             }
         case .neverLoaded, .loadInFlight:
             break   // 这两种基态下没有任何一次装载走完：位置/状态都由装载链自己写着
-        case .cancelledSettled, .cancelledThenPaused, .staleSessionSettled, .cancelledWithLoadInFlight:
-            break   // 取消收场 / 第二趟在途：位置与状态同样由装载链自己写着
+        case .cancelledSettled, .cancelledThenPaused, .staleSessionSettled:
+            break   // 取消收场：位置与状态同样由装载链自己写着
         }
         var snap = await subject.currentSnapshot()
         XCTAssertEqual(
