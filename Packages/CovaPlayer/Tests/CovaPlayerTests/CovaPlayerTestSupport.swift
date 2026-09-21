@@ -1142,8 +1142,11 @@ actor FileWritingPrivateAudioPreparer: PlaybackSourcePreparing {
 /// 确定性的事实（D16⑤）。**但「至多一次」不等于「后到的一方无操作」**（第 11 批拆掉的根因）：
 /// 决出结论时续体可能**还没登记**（`writeAudio` 先 `pending.append(waiter)` 再 `waitCancelling`，
 /// 而 `released` 那条捷径干脆不挂起），这一次调用照样把这一路定了，只是没东西可唤起。
-/// 旧布尔把这两种「定案」都读成 false，于是 `cancelInFlightTransfers()` 落在这个窗口里时
-/// **不发 `terminatedSignal`** —— 测试等的是「传输真的终止了」，等不到就只剩超时红。
+/// 旧布尔把这两种「定案」都读成 false。**可达性已逐处核过（第 7/8 轮复审 + 协调者独立核对）**：
+/// `cancelInFlightTransfers()` 那一腿**命中不了**「定案未登记」窗口 —— `pending.append(waiter)`
+/// 到续体登记之间没有 await / 隔离 hop，actor 隔离方法插不进来；真正被旧布尔少记一次终止
+/// 边沿的是 `waitCancelling` 入口 `Task.isCancelled == true` 那一支。别再把不可达的窗口
+/// 写成可达（MIN-R7-4）。
 /// 三格枚举让调用方必须自己说清要的是哪件事。
 final class TransferWaiter: @unchecked Sendable {
     /// 一次 `settle` 到底做成了哪件事。

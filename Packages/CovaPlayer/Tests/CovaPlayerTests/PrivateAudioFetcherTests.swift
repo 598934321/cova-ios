@@ -1311,7 +1311,8 @@ final class PrivateAudioFetcherTests: XCTestCase {
     /// `terminatedSignal`，而这个信号过去由一个**三合一布尔**决定是否记账 ——
     /// 「本次定案且唤起了续体」才是 true，于是「本次定案但续体还没登记」被读成无操作。
     /// 那个窗口不是理论形态：`pending.append(waiter)` 与 `waitCancelling` 之间它就开着，
-    /// `cancelInFlightTransfers()` 落进来时就少记一次账，测试于是等不到自己等的信号
+    /// （MIN-R7-4 已核：少记终止边沿的是 `waitCancelling` 入口 `Task.isCancelled` 那一支；
+    /// `cancelInFlightTransfers()` 腿因 actor 同步区命中不了「定案未登记」窗口，行为不变。）
     /// （TD-35 同族：等不到就当没发生）。三格枚举把这件事变成断言得动的东西。
     func testTransferWaiterSettlementKeepsDecidedAndUnregisteredApartFromNoOp() async throws {
         // ② 续体未登记：这一路**已被本次调用定案**（旧布尔在这一格返回 false）。
