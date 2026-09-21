@@ -49,15 +49,22 @@ public struct PlaybackSnapshot: Equatable, Sendable {
     public var duration: Double?
     public var playbackRate: Double
     public var failureStreak: Int
+    /// **回显账**：最近一次失败记录，含 `.cancelled` / `.staleSession` 这类**不计数**形态
+    /// （口径见 `hasCountedFailureLedger` 与 `isFailureTerminal`）。它只回答「上一次坏在哪」，
+    /// 不参与任何裁决：终态、跳曲、连击全都只看 `failureStreak` 那一本账（MAJ-R6-1）。
     public var lastFailure: PlayerFailure?
     /// 自动推进已停止的终态。两个来源（详见 `docs/log/20260921.md` §5.1 环 4 新规则）：
     /// ① 连续失败达上限；② 失败后队列已无可跳目标，**且引擎里没有装载当前项**（守卫腿 (b)）。
     ///
-    /// 两者都以「先有失败」为前提：`failureStreak == 0 && lastFailure == nil` 而本字段为 true
-    /// 就是谎报（F-A / MAJ-R5-1 —— 腿 (b) 的成立条件与「有没有失败」互不蕴含，
-    /// 故「从未装载」「装载在途」这类正常形态一律落在 `.held`，见 `hasFailureLedger`）。
-    /// 「先有失败」的完整口径是 `failureStreak > 0 || lastFailure != nil`：`.cancelled`
-    /// 这类**不计入连击**的失败仍然是一次失败记录（`handleFailure` 刻意留着它供 UI 提示）。
+    /// 两者都以「**计数侧**先有失败」为前提：`failureStreak == 0` 而本字段为 true 就是谎报
+    /// （F-A / MAJ-R5-1 / MAJ-R6-1 —— 腿 (b) 的成立条件与「有没有失败」互不蕴含，
+    /// 故「从未装载」「装载在途」这类正常形态一律落在 `.held`，见 `hasCountedFailureLedger`）。
+    ///
+    /// **「先有失败」只有一个来源，就是 `failureStreak`（裁决账）**。本快照里的
+    /// `lastFailure` 是**回显账**：「最近一次失败记录」，包含 `.cancelled` / `.staleSession`
+    /// 这类 `countsTowardFailureStreak == false` 的形态，只供 UI 提示（design §9「停止并提示」
+    /// 的提示面）与诊断，**不具备开终态的资格**（MAJ-R6-1：把回显当账，一次被取消的装载
+    /// 就能重新造出「没有失败却进失败终态」）。
     /// 用户的良性动作（暂停中按 ⏭）永远不进终态。
     /// 失效面（登出 / 换号 / `teardown`）会连同失败账一并清除（F-B）。
     public var isFailureTerminal: Bool
@@ -774,11 +781,11 @@ public actor PlaybackCoordinator {
             return advanceOutcome(wrapped: wrapped)
         case .repeated:
             // 引擎账本 + 用户意图都要过守卫（R1 / F-6），但**每条腿的收敛结果必须分离**
-            // （F-A 修了腿 (c)，MAJ-R5-1 补上腿 (b)）：
-            //   · (b) 引擎归属不成立**且账上有失败** → 「重播当前项」是无中生有，且确实
+            // （F-A 修了腿 (c)，MAJ-R5-1 补上腿 (b)，MAJ-R6-1 把「有没有失败」定在计数侧）：
+            //   · (b) 引擎归属不成立**且计数侧有账** → 「重播当前项」是无中生有，且确实
             //     发生过故障 → 收敛为「停止 + 失败终态」，等用户处置；
-            //   · (b) 不成立而账上没有任何失败 / (c) 意图不成立 → 什么都没坏
-            //     → 边界保持（位置、引擎账本、状态、失败账一律不动）。
+            //   · (b) 不成立而计数侧无账（含「只有一次不计数的取消」）/ (c) 意图不成立
+            //     → 什么都没坏 → 边界保持（位置、引擎账本、状态、失败账一律不动）。
             // 旧实现把两者并进同一个 `haltBecauseNothingIsLoaded()`，于是「单曲 + `.all` +
             // 暂停中按 ⏭」这类良性动作进入**伪失败终态**（`isFailureTerminal = true` 而
             // `failureStreak = 0`、`lastFailure = nil`），并抹平位置、清空引擎账本。
@@ -787,16 +794,18 @@ public actor PlaybackCoordinator {
             let claimed = queue.current?.id
             switch repeatGuardVerdict(claiming: claimed) {
             case .nothingLoaded:
-                // MAJ-R5-1（F-A 的后一半）：守卫不成立这件事本身**说不出有没有失败**。
-                // 腿 (b) 的成立条件是「引擎此刻装着当前项」，而它可以在一次失败都没有时
-                // 不成立 —— 整队替换后从未起播、私有音频装载还在 `prepareSource` 上、
-                // 刚把当前曲从队列里删掉，都是这种正常形态。旧实现让它**无条件**进
-                // `haltBecauseNothingIsLoaded()`（那里头一句就是 `isFailureTerminal = true`），
-                // 于是产出「无失败的失败终态」，直接违反 design §9 与本文件
-                // `PlaybackSnapshot.isFailureTerminal` 的自述。
-                // 分流口径：**终态只能长在失败账上**；没有账时它与腿 (c) 是同一个结果 ——
-                // 良性保持（状态、位置、队列身份、失败账一律不动，用户随后 `resume()` 会真装一次）。
-                guard hasFailureLedger else { return await holdCurrentItemWithoutPlaying() }
+                // MAJ-R5-1（F-A 的后一半）+ MAJ-R6-1（它的**下一半**）：守卫不成立这件事
+                // 本身**说不出有没有失败**。腿 (b) 的成立条件是「引擎此刻装着当前项」，而它可以
+                // 在一次失败都没有时不成立 —— 整队替换后从未起播、私有音频装载还在
+                // `prepareSource` 上、刚把当前曲从队列里删掉，都是这种正常形态。第 10 批为此
+                // 加了分流，但把「账上有没有失败」读成了 `failureStreak > 0 || lastFailure != nil`；
+                // `lastFailure` 是**回显账**，一次被取消的装载（用户取消 / 断网 / 登出换代产生的
+                // `.staleSession`）就会把它点亮 ⇒ 终态闸门被重新打开，F-A 那一类「没有失败却进
+                // 失败终态」原地复活。
+                // 分流口径：**终态只能长在计数侧的失败账上**（`countsTowardFailureStreak`）；
+                // 计数侧没有账时，它与腿 (c) 是同一个结果 —— 良性保持（状态、位置、队列身份、
+                // 失败账一律不动，用户随后 `resume()` 会真装一次）。
+                guard hasCountedFailureLedger else { return await holdCurrentItemWithoutPlaying() }
                 return await haltBecauseNothingIsLoaded()
             case .holdWithoutPlaying:
                 return await holdCurrentItemWithoutPlaying()
@@ -867,9 +876,10 @@ public actor PlaybackCoordinator {
     /// 根本不存在的项目上时，绝不进入 `.playing`，而是停止自动推进并进入终态，
     /// 等用户处置（design §9「停止并提示」；由 `resume()` / `start()` 显式重试恢复）。
     ///
-    /// **只用于「装载事实不成立」且「确实有失败账」那一腿**（F-A + MAJ-R5-1）：本函数会写
-    /// `isFailureTerminal = true`，而终态的定义是先有失败（design §9）。没有失败账时
-    /// 「引擎里没装当前项」不是故障而是正常形态（未起播 / 装载在途 / 刚删掉当前曲），
+    /// **只用于「装载事实不成立」且「计数侧确实有失败账」那一腿**（F-A + MAJ-R5-1 + MAJ-R6-1）：
+    /// 本函数会写 `isFailureTerminal = true`，而终态的定义是先有**计数**失败（design §9）。
+    /// 计数侧没有账时 —— 哪怕回显账上有一次不计数的取消 ——
+    /// 「引擎里没装当前项」不是故障而是正常形态（未起播 / 装载在途 / 刚删掉当前曲 / 装载被取消），
     /// 那种情形走 `holdCurrentItemWithoutPlaying()`，绝不允许进到这里。
     private func haltBecauseNothingIsLoaded() async -> AdvanceOutcome {
         isFailureTerminal = true
@@ -891,7 +901,8 @@ public actor PlaybackCoordinator {
         case holdWithoutPlaying
         /// 装载事实不成立（无当前项 / 换代在途 / 引擎没持有这一项 / 已释放）。
         ///
-        /// **这个裁决本身不足以定终态**（MAJ-R5-1）：调用处还要问 `hasFailureLedger`。
+        /// **这个裁决本身不足以定终态**（MAJ-R5-1）：调用处还要问 `hasCountedFailureLedger`，
+        /// 而它只看裁决账 —— 一次不计数的取消不算数（MAJ-R6-1）。
         case nothingLoaded
     }
 
@@ -905,7 +916,8 @@ public actor PlaybackCoordinator {
     /// 让外面能查「两腿合一的裁决」只会诱导就地重写条件（F-1/F-2 的老病根）。
     ///
     /// 注意 `.nothingLoaded` 的**收敛结果**不由本函数决定：装载事实腿的成立条件里
-    /// 不含「有没有失败」，所以终态与否留给调用处按 `hasFailureLedger` 分流（MAJ-R5-1）。
+    /// 不含「有没有失败」，所以终态与否留给调用处按 `hasCountedFailureLedger` 分流
+    /// （MAJ-R5-1；第 11 批 MAJ-R6-1 把那条分流钉死在**计数侧**：不计数的取消不开终态）。
     private func repeatGuardVerdict(claiming claimed: String?) -> RepeatGuardVerdict {
         guard let claimed,
               continuationIsCurrent(
@@ -915,12 +927,14 @@ public actor PlaybackCoordinator {
         return .mayReplay
     }
 
-    /// 良性保持（F-A / MAJ-R5-1）：`.repeated` 的守卫不成立，而**没有任何一次失败**。
+    /// 良性保持（F-A / MAJ-R5-1 / MAJ-R6-1）：`.repeated` 的守卫不成立，而**裁决账上没有失败**。
     ///
     /// 触发它的有两种形态，结果必须相同 —— 因为它们都不是故障：
     ///   · 腿 (c)：队列数学只能「重播当前项」，而用户此刻没有播放意图（暂停中按 ⏭）；
-    ///   · 腿 (b)/(a) 且不成立时没有失败账：引擎没装当前项（整队替换后未起播、
-    ///     私有音频装载在途、刚移除当前曲）。
+    ///   · 腿 (b)/(a) 不成立而计数侧无账：引擎没装当前项（整队替换后未起播、
+    ///     私有音频装载在途、刚移除当前曲、**上一次装载被取消 / 会话过期**）。
+    ///     最后一例的回显账可能非 nil（`lastFailure == .cancelled`），那也只是「上次为什么没播成」，
+    ///     不构成终态资格（MAJ-R6-1）。
     ///
     /// 与 `haltBecauseNothingIsLoaded()` 相反，这里**什么都不改写**：位置、`loopMode`、
     /// 引擎账本（`engineEpisodeItemID`）、失败账（`failureStreak` / `lastFailure` /
@@ -954,6 +968,13 @@ public actor PlaybackCoordinator {
     private func handleFailure(_ failure: PlayerFailure) async {
         // F-2 的终态腿：已经收敛为终态时，迟到的失败不得再计数、不得再跳曲。
         guard !isFailureTerminal else { return }
+        // 两本账分开记（MAJ-R6-1 的口径，见 `hasCountedFailureLedger`）：
+        //   · `lastFailure` = **回显账**，任何形态（含不计数的取消）都写，供 UI 提示；
+        //   · `failureStreak` = **裁决账**，只有 `countsTowardFailureStreak` 的形态进得来，
+        //     而它是「失败终态」的唯一合法来源。
+        // 因此下面这条 `guard` 不只是「少计一次连击」，它同时决定了这一次失败**能不能
+        // 打开终态闸门**（`apply(.repeated)` 的腿 (b) 分流）—— 这正是第 6 批 MAJ-4
+        // 「取消一律归一为 `.cancelled` → 不计连击」的应有之义。
         lastFailure = failure
         guard failure.countsTowardFailureStreak else { return }
         if failureStreak < configuration.consecutiveFailureLimit { failureStreak += 1 }
@@ -1130,17 +1151,26 @@ public actor PlaybackCoordinator {
     /// 就是它），不是故障，因此它的收敛结果只能是「保持」，不能是失败终态。
     private var hasPlaybackIntent: Bool { userWantsPlayback && !isFailureTerminal }
 
-    /// 守卫 (b) 的另一半（MAJ-R5-1）：**此刻账上到底有没有失败**。
+    /// 守卫 (b) 的另一半（MAJ-R5-1 / MAJ-R6-1）：**此刻裁决账上到底有没有失败**。
     ///
-    /// 它是「失败终态」的唯一合法来源（design §9「连续 3 次失败停止并提示」，以及第二
-    /// 个来源「失败后队列已无可跳目标」），与「引擎里有没有装当前项」「用户想不想听」
-    /// 两件事**互不蕴含**。`PlaybackSnapshot.isFailureTerminal` 的自述 likewise：
-    /// `failureStreak == 0` 而该字段为 true 就是谎报（F-A）。
+    /// 「失败」在本协调器里是**两本账**，混用就是 MAJ-R6-1 的根：
+    ///   · `failureStreak` = **裁决账** —— 只由 `PlayerFailure.countsTowardFailureStreak == true`
+    ///     的形态累加（`handleFailure`），是「失败终态」的**唯一**合法来源（design §9
+    ///     「连续 3 次失败停止并提示」，以及第二个来源「失败后队列已无可跳目标」）；
+    ///   · `lastFailure` = **回显账** —— 最近一次失败记录，含 `.cancelled`（用户取消、断网、
+    ///     登出/换代产生的 `.staleSession` 都经 `kind(for:)` 归一到这一类）这种**不计数**形态。
+    ///     它回答的是「上一次坏在哪」，供 UI 提示与诊断，**不回答「现在还算不算失败」**。
     ///
-    /// 口径取 `failureStreak > 0 || lastFailure != nil` 而不是只看连击数：
-    /// `.cancelled` 这类失败**不计入连击**却仍然是一次真实失败（`lastFailure` 留着供 UI 提示，
-    /// 见 `handleFailure`），那种情形下「无处可跳」仍然是失败收敛，不是良性动作。
-    private var hasFailureLedger: Bool { failureStreak > 0 || lastFailure != nil }
+    /// 所以判据只看计数侧：`failureStreak > 0`。第 10 批写成
+    /// `failureStreak > 0 || lastFailure != nil`，等于让回显账获得裁决权 —— 一次被取消的
+    /// 装载即可点亮终态闸门，把 F-A 那一类「没有失败却进失败终态」原地重新打开
+    /// （`failureStreak == 0` 而 `isFailureTerminal == true`，违反本文件与 `PlaybackSnapshot`
+    /// 的自述不变量，也违反 MAJ-4 立下的「取消不是失败」）。
+    ///
+    /// 与「引擎里有没有装当前项」「用户想不想听」两件事**互不蕴含**：`failureStreak == 0`
+    /// 而该字段为 true 才是谎报（F-A 原文），而 `failureStreak > 0` 时它必然也非 nil
+    /// （计数形态先写回显再进裁决账），故「终态 ⟹ 两本账都有」这条测试判据仍然成立。
+    private var hasCountedFailureLedger: Bool { failureStreak > 0 }
 
     /// 守卫 (b)：引擎此刻装着的是不是这一项。
     ///

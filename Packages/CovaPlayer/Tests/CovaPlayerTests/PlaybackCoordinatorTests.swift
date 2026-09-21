@@ -1978,7 +1978,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
         assertNoFakeTerminal(after, "装载落地后")
     }
 
-    /// 普遍化（F-A 的判据面，替代逐条枚举）：**从未上报过任何失败**时，
+    /// 普遍化（F-A 的判据面，替代逐条枚举）：**计数侧从来没有账**时，
     /// 任何一次用户显式导航（`循环模式 × 队列长度 × 前/后 × 基态`）都不得产生失败终态。
     /// 复审指出既有 90 条协调器用例无一条覆盖「paused/stopped × 单曲 × `.all`」，本组矩阵把该
     /// 组合连同其邻域一起钉住。
@@ -1987,6 +1987,12 @@ final class PlaybackCoordinatorTests: XCTestCase {
     /// `start(items:)` 把装载走完，于是「引擎从未装过当前项」这一整族形态（整队替换后未起播、
     /// 私有音频装载在途）从未被这一格覆盖，`assertNoFakeTerminal` 在那里形同漏空 ——
     /// 第 5 批的 F-A 因此只修了一半（腿 (c)）就落了证。
+    ///
+    /// **基态列再从 4 格补到 8 格（MAJ-R6-1，第 11 批）**：前四列全程「一次失败都没有」，
+    /// 而 MAJ-R6-1 恰恰只在「**有一次不计数失败**（取消 / 过期会话）」时才成立 ——
+    /// 那一格此前同样形同漏空（第 6 轮复审的探针 `testProbeStaleSessionThenNavigate` 就是从这里
+    /// 打出来的）。新增四列把「取消账 × 未装载 / 暂停 / 装载在途」三种此前只测过「零失败」的
+    /// 形状全部重走一遍，另加一列 `.staleSession` 分类腿（`kind(for:)` 归一到同一个不计数形态）。
     func testUserNavigationNeverCreatesFailureTerminalWithoutAnyFailure() async {
         for mode in LoopMode.allCases {
             for ids in [["a"], ["a", "b", "c"]] {
@@ -1999,8 +2005,9 @@ final class PlaybackCoordinatorTests: XCTestCase {
         }
     }
 
-    /// 矩阵的基态列。前两列是第 5 批已有的形态，后两列由 MAJ-R5-1 补齐。
-    private enum NavigationBase: CaseIterable {
+    /// 矩阵的基态列。前四列是第 5 / 10 批已有的形态（**计数侧与回显侧都无账**），
+    /// 后四列由 MAJ-R6-1 补齐（**回显侧有一次不计数的取消，计数侧仍无账**）。
+    private enum NavigationBase: CaseIterable, Equatable {
         /// 走完装载后用户显式暂停（旧矩阵 `basePaused == true`）。
         case loadedPaused
         /// 走完装载后 `.off` 末项播完 → **合法**停止态（旧矩阵 `basePaused == false`）。
@@ -2009,6 +2016,16 @@ final class PlaybackCoordinatorTests: XCTestCase {
         case neverLoaded
         /// **私有音频装载在途**（M1 的真实形态：`prepareSource` 正跨在挂起点上）。
         case loadInFlight
+        /// 第一趟装载以 `.cancelled` **收场后**导航：不计数、引擎从未装着当前项、
+        /// 账上只留一次回显 —— MAJ-R6-1 的正身。
+        case cancelledSettled
+        /// 同上，但用户随后显式暂停（「暂停 × 无装载 × 取消账」三件事的叠加格）。
+        case cancelledThenPaused
+        /// 取消账已在，而**新一轮装载真的在途**（`resume()` 起的第二趟）。
+        case cancelledWithLoadInFlight
+        /// 同 `cancelledSettled`，但收场的是 `.staleSession`（登出/换代产生的过期会话；
+        /// `kind(for:)` 把它归一到 `.cancelled` ⇒ 与上一列走的是同一把闸门）。
+        case staleSessionSettled
 
         var label: String {
             switch self {
@@ -2016,6 +2033,62 @@ final class PlaybackCoordinatorTests: XCTestCase {
             case .loadedStopped: return "loadedStopped"
             case .neverLoaded: return "neverLoaded"
             case .loadInFlight: return "loadInFlight"
+            case .cancelledSettled: return "cancelledSettled"
+            case .cancelledThenPaused: return "cancelledThenPaused"
+            case .cancelledWithLoadInFlight: return "cancelledWithLoadInFlight"
+            case .staleSessionSettled: return "staleSessionSettled"
+            }
+        }
+
+        /// 本格第一趟装载用来收场的错误（`nil` = 装载正常走完 / 只在途不返回）。
+        var firstAttemptError: PlayerError? {
+            switch self {
+            case .cancelledSettled, .cancelledThenPaused, .cancelledWithLoadInFlight: return .cancelled
+            case .staleSessionSettled: return .staleSession
+            case .loadedPaused, .loadedStopped, .neverLoaded, .loadInFlight: return nil
+            }
+        }
+
+        /// 本格**导航之前**账上应留的那次回显（口径：`lastFailure` = 回显账，含不计数形态）。
+        var echoBeforeNavigation: PlayerFailure? {
+            guard let error = firstAttemptError else { return nil }
+            return PlayerFailure(kind: .cancelled, message: error.description)
+        }
+    }
+
+    /// 一格里装载夹具的**统一会合面**（基态扩到取消形态后，两种夹具各有分工）。
+    private enum NavigationRig {
+        /// 共享夹具：闸门按曲目 id **粘性**放行 —— 只需「一次在途」的前四列。
+        case gated(GatedSourcePreparer)
+        /// 本批夹具：闸门与结果都按**尝试序号**给 —— 取消形态的后四列（见其注释）。
+        case scripted(AttemptScriptedPreparer)
+
+        var sourcePreparer: any PlaybackSourcePreparing {
+            switch self {
+            case .gated(let preparer): return preparer
+            case .scripted(let preparer): return preparer
+            }
+        }
+
+        var requestSignal: SignalCounter {
+            switch self {
+            case .gated(let preparer): return preparer.requestSignal
+            case .scripted(let preparer): return preparer.requestSignal
+            }
+        }
+
+        var returnedSignal: SignalCounter {
+            switch self {
+            case .gated(let preparer): return preparer.returnedSignal
+            case .scripted(let preparer): return preparer.returnedSignal
+            }
+        }
+
+        /// 放行当前在途的那一趟（`gated` 认 id，`scripted` 认序号，id 对它无意义）。
+        func release(_ id: String) async {
+            switch self {
+            case .gated(let preparer): await preparer.release(id)
+            case .scripted(let preparer): await preparer.releasePendingAttempt()
             }
         }
     }
@@ -2027,13 +2100,24 @@ final class PlaybackCoordinatorTests: XCTestCase {
         let nowPlaying = RecordingNowPlaying()
         let scene = "mode=\(mode) items=\(ids) base=\(base.label) nav=\(forward ? "next" : "previous")"
         let gatedID = ids[ids.count - 1]
-        // 闸门只挡「导航那一刻在途的那一件」，其余格放行同一件装具（pass-through 准备器），
-        // 于是四种基态走的是同一条装载链，差异只在「装载走到哪一步被打断」。
-        let preparer = GatedSourcePreparer(gating: base == .loadInFlight ? [gatedID] : [])
+        // 前四列：闸门只挡「导航那一刻在途的那一件」，其余格放行同一件装具（pass-through
+        // 准备器），于是四种基态走的是同一条装载链，差异只在「装载走到哪一步被打断」。
+        // 后四列：按尝试序号说话 —— 第一趟以取消收场，需要时再挂起第二趟。
+        let rig: NavigationRig
+        switch base {
+        case .loadedPaused, .loadedStopped, .neverLoaded, .loadInFlight:
+            rig = .gated(GatedSourcePreparer(gating: base == .loadInFlight ? [gatedID] : []))
+        case .cancelledSettled, .cancelledThenPaused, .staleSessionSettled:
+            let error = base.firstAttemptError!   // 后四列必非 nil（见 `firstAttemptError`）
+            rig = .scripted(AttemptScriptedPreparer(gating: [0], outcomes: [0: error]))
+        case .cancelledWithLoadInFlight:
+            rig = .scripted(AttemptScriptedPreparer(gating: [0, 1], outcomes: [0: .cancelled]))
+        }
         let subject = PlaybackCoordinator(
-            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: rig.sourcePreparer
         )
         var startTask: Task<AdvanceOutcome, Never>?
+        var secondTask: Task<Void, Never>?
         _ = await subject.setLoopMode(.off)
         let items = ids.map { TestItems.make($0) }
         switch base {
@@ -2041,10 +2125,30 @@ final class PlaybackCoordinatorTests: XCTestCase {
             _ = await subject.replaceQueue(items, startingAt: ids.count - 1)
         case .loadInFlight:
             startTask = Task { await subject.start(items: items, at: ids.count - 1) }
-            let opened = await Signals.wait(target: 1, counter: preparer.requestSignal)
+            let opened = await Signals.wait(target: 1, counter: rig.requestSignal)
             XCTAssertTrue(opened, "前置：\(scene) 的装载未进入在途，本格无从验证", line: line)
         case .loadedPaused, .loadedStopped:
             _ = await subject.start(items: items, at: ids.count - 1)
+        case .cancelledSettled, .cancelledThenPaused, .staleSessionSettled, .cancelledWithLoadInFlight:
+            // 第一趟装载**真的走完**并以取消收场（不是「模拟一个已完成的失败账」：
+            // 走的是 `loadCurrent → handleFailure` 那条真实写入路径）。
+            let first = Task { await subject.start(items: items, at: ids.count - 1) }
+            let opened = await Signals.wait(target: 1, counter: rig.requestSignal)
+            XCTAssertTrue(opened, "前置：\(scene) 的第一趟装载未进入在途", line: line)
+            await rig.release(gatedID)
+            let settled = await Signals.wait(target: 1, counter: rig.returnedSignal)
+            XCTAssertTrue(settled, "前置：\(scene) 的第一趟装载未返回", line: line)
+            _ = await first.value
+            if base == .cancelledThenPaused {
+                await subject.pause()
+            }
+            if base == .cancelledWithLoadInFlight {
+                // 引擎里没有当前项 → `resume()` 走的是「真装载」那条腿（R1），于是第二趟
+                // 真的停在 `prepareSource` 上；导航就发生在这段在途里。
+                secondTask = Task { await subject.resume() }
+                let reopened = await Signals.wait(target: 2, counter: rig.requestSignal)
+                XCTAssertTrue(reopened, "前置：\(scene) 的第二趟装载未进入在途", line: line)
+            }
         }
         switch base {
         case .loadedPaused, .loadedStopped:
@@ -2056,18 +2160,39 @@ final class PlaybackCoordinatorTests: XCTestCase {
             }
         case .neverLoaded, .loadInFlight:
             break   // 这两种基态下没有任何一次装载走完：位置/状态都由装载链自己写着
+        case .cancelledSettled, .cancelledThenPaused, .staleSessionSettled, .cancelledWithLoadInFlight:
+            break   // 取消收场 / 第二趟在途：位置与状态同样由装载链自己写着
         }
         var snap = await subject.currentSnapshot()
-        XCTAssertEqual(snap.failureStreak, 0, "前置：\(scene) 从未发生失败", line: line)
-        XCTAssertNil(snap.lastFailure, "前置：\(scene)", line: line)
+        XCTAssertEqual(
+            snap.failureStreak, 0,
+            "前置：\(scene) 计数侧从未有账（取消不计数，MAJ-4 的归一）", line: line
+        )
+        if let echo = base.echoBeforeNavigation {
+            XCTAssertEqual(snap.lastFailure, echo, "前置：\(scene) 取消形态留下一次回显", line: line)
+            XCTAssertEqual(
+                snap.lastFailure?.countsTowardFailureStreak, false,
+                "前置：\(scene) 回显不得是计数形态", line: line
+            )
+        } else {
+            XCTAssertNil(snap.lastFailure, "前置：\(scene) 从未发生失败", line: line)
+        }
         _ = await subject.setLoopMode(mode)
         let baseState = snap.state
         let baseItemID = snap.item?.id
+        let echoAtNavigation = snap.lastFailure
 
         let outcome = forward ? await subject.next() : await subject.previous()
         snap = await subject.currentSnapshot()
         assertNoFakeTerminal(snap, scene, line: line)
-        XCTAssertNil(snap.lastFailure, "F-A：\(scene) 良性导航不得记账失败", line: line)
+        XCTAssertFalse(
+            snap.isFailureTerminal,
+            "MAJ-R6-1：计数侧无账时终态闸门**一律**不得打开（\(scene)）", line: line
+        )
+        XCTAssertEqual(
+            snap.lastFailure, echoAtNavigation,
+            "F-A / MAJ-R6-1：良性导航不得改写失败账（回显也不许多记一次）", line: line
+        )
         XCTAssertEqual(snap.failureStreak, 0, "F-A：\(scene)", line: line)
         if outcome == .held {
             XCTAssertEqual(snap.state, baseState, "F-A：\(scene) 边界保持不得改写状态", line: line)
@@ -2078,12 +2203,267 @@ final class PlaybackCoordinatorTests: XCTestCase {
         }
         // 收尾：在途那一件必须真的跑完（挂起的续体不得留到本格之外 —— 它会在下一格里
         // 变成一个不受控的回写点，D16⑤）。
+        if let secondTask {
+            await rig.release(gatedID)
+            let landed = await Signals.wait(target: 2, counter: rig.returnedSignal)
+            XCTAssertTrue(landed, "前置：\(scene) 的第二趟在途装载未返回", line: line)
+            _ = await secondTask.value
+        }
         if let startTask {
-            await preparer.release(gatedID)
-            let landed = await Signals.wait(target: 1, counter: preparer.returnedSignal)
+            await rig.release(gatedID)
+            let landed = await Signals.wait(target: 1, counter: rig.returnedSignal)
             XCTAssertTrue(landed, "前置：\(scene) 的在途装载未返回", line: line)
             _ = await startTask.value
         }
+    }
+
+    /// 会合点必须成立，否则本格/本用例的**前提**就消失了。上界沿用 `Signals.wait` 的 10s
+    /// （本仓唯一的时间上界），到期即红 —— 不允许「等不到就当没事发生」（D16⑤）。
+    private func assertSignalReached(
+        target: Int, counter: SignalCounter, what: String, line: UInt = #line
+    ) async {
+        let reached = await Signals.wait(target: target, counter: counter)
+        XCTAssertTrue(reached, "前置：\(what) 未会合（信号未达第 \(target) 次，上界到期）", line: line)
+    }
+
+    // MARK: - 环 4 · 第 11 批 MAJ-R6-1：不计数的取消形态不得重开失败终态
+
+    /// 缺陷 MAJ-R6-1（Major，第 6 轮复审 + 协调者坐实）：`handleFailure` **无条件**先写
+    /// `lastFailure`，只有 `failureStreak` 被 `countsTowardFailureStreak` 门控；而第 10 批的
+    /// 终态分流判据取的是 `failureStreak > 0 || lastFailure != nil` ⇒ 一次**被取消的装载**
+    /// （用户取消 / 断网 / 登出换代产生的 `.staleSession`）就能点亮终态闸门，把
+    /// 「引擎没装当前项 + 无处可跳」收敛成失败终态：`isFailureTerminal = true` 而
+    /// `failureStreak == 0` —— 正是 design §9 与 `PlaybackSnapshot.isFailureTerminal` 自述
+    /// 禁止的「没有失败却进失败终态」（F-A 那一类），也是第 6 批 MAJ-4
+    /// 「取消一律归一为 `.cancelled` → 不计连击」的**后半刀没落下**。
+    ///
+    /// 本批定口径（同时写进 `hasCountedFailureLedger` 与字段自述）：
+    ///   · `failureStreak` = **裁决账**，「失败终态」的唯一合法来源；
+    ///   · `lastFailure` = **回显账**（最近一次失败记录，含 `.cancelled` / `.staleSession`
+    ///     这类不计数形态），只供 UI 提示与诊断，**不参与任何裁决**。
+    /// ⇒ 取消仍留一次回显（既有裁决 `testCancellationFailureDoesNotCountTowardStreak` 一字未动），
+    /// 但它永远开不了终态闸门。
+    ///
+    /// 正向对照见 `testCountedFailuresStillOpenFailureTerminalWithCancellationEchoInBetween`；
+    /// 全形状穷举见矩阵 `testUserNavigationNeverCreatesFailureTerminalWithoutAnyFailure`。
+    func testCancelledOrStaleLoadCannotOpenFailureTerminalOnSingleItemQueueUnderAll() async {
+        for error in [PlayerError.cancelled, .staleSession] {
+            for forward in [true, false] {
+                let engine = ScriptedEngine()
+                let nowPlaying = RecordingNowPlaying()
+                let preparer = AttemptScriptedPreparer(gating: [0], outcomes: [0: error])
+                let subject = PlaybackCoordinator(
+                    engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+                )
+                let scene = "error=\(error) nav=\(forward ? "next" : "previous")"
+                await subject.setLoopMode(.all)
+                let first = Task { await subject.start(items: TestItems.makeMany(["a"])) }
+                await assertSignalReached(
+                    target: 1, counter: preparer.requestSignal, what: "\(scene) 的第一趟装载进入在途"
+                )
+                await preparer.releasePendingAttempt()
+                await assertSignalReached(
+                    target: 1, counter: preparer.returnedSignal, what: "\(scene) 的第一趟装载返回"
+                )
+                _ = await first.value
+
+                let before = await subject.currentSnapshot()
+                XCTAssertEqual(
+                    before.lastFailure, PlayerFailure(kind: .cancelled, message: error.description),
+                    "前置：\(scene) 取消形态留下一次回显（口径：回显账）"
+                )
+                XCTAssertEqual(before.failureStreak, 0, "前置：\(scene) 计数侧无账")
+                XCTAssertFalse(before.isFailureTerminal, "前置：\(scene)")
+                XCTAssertTrue(engine.loads.isEmpty, "前置：\(scene) 取消的装载绝不能把条目交给引擎")
+
+                let pausesBefore = engine.count(of: "pause")
+                let outcome = forward ? await subject.next() : await subject.previous()
+                XCTAssertEqual(
+                    outcome, .held,
+                    "MAJ-R6-1：被取消的装载不构成失败账，无处可跳时只能保持（\(scene)）"
+                )
+                let after = await subject.currentSnapshot()
+                XCTAssertFalse(
+                    after.isFailureTerminal,
+                    "MAJ-R6-1：不计数形态不得具备开终态闸门的资格（\(scene)）"
+                )
+                assertNoFakeTerminal(after, scene)
+                XCTAssertEqual(after.failureStreak, 0, "MAJ-R6-1：\(scene)")
+                XCTAssertEqual(
+                    after.lastFailure, before.lastFailure,
+                    "MAJ-R6-1：良性导航不得改写回显账（\(scene)）"
+                )
+                XCTAssertEqual(after.state, before.state, "MAJ-R6-1：\(scene) 状态保持")
+                XCTAssertEqual(after.item?.id, "a", "MAJ-R6-1：\(scene) 曲目身份保持")
+                XCTAssertEqual(
+                    NowPlayingStatusMapping.status(for: outcome), .noSuchContent,
+                    "MAJ-R6-1：\(scene) 旧实现回 `.stopped`，锁屏侧把 `.stopped` 映射成 `.success`"
+                )
+                XCTAssertEqual(
+                    engine.count(of: "pause"), pausesBefore,
+                    "MAJ-R6-1：\(scene) 保持不是停止，不许命令引擎"
+                )
+                let published = await nowPlaying.lastPublished
+                XCTAssertEqual(
+                    published?.isPlaying, false,
+                    "MAJ-R6-1：\(scene) 锁屏不得收到 isPlaying=true"
+                )
+
+                // 保持 ≠ 卡死：用户随后要听 → 这一次真的重新装一次（R1 的既有裁决不得退化）。
+                await subject.resume()
+                let resumed = await subject.currentSnapshot()
+                XCTAssertEqual(resumed.state, .playing, "MAJ-R6-1：\(scene) 取消之后仍可正常起播")
+                XCTAssertFalse(resumed.isFailureTerminal, "MAJ-R6-1：\(scene)")
+                XCTAssertEqual(engine.loads.last?.id, "a", "R1：\(scene) resume 得真装一次")
+                let attempts = await preparer.requestedIDs
+                XCTAssertEqual(
+                    attempts, ["a", "a"],
+                    "MAJ-R6-1：\(scene) 保持不是卡死 —— 两趟都真的走过准备器（取消一趟 + resume 一趟）"
+                )
+                assertNoFakeTerminal(resumed, "resume 之后")
+            }
+        }
+    }
+
+    /// MAJ-R6-1 的「暂停 × 取消账」形状（design §4/§6：暂停中按 ⏭ 是最典型的良性动作，
+    /// 而此刻账上有一次**不计数**的取消 —— 第 5 批与第 10 批都只测了「零失败」那一半）。
+    func testPausedAfterCancelledLoadStillHoldsInsteadOfOpeningFailureTerminal() async {
+        let engine = ScriptedEngine()
+        let preparer = AttemptScriptedPreparer(gating: [0], outcomes: [0: .cancelled])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        await subject.setLoopMode(.all)
+        let first = Task { await subject.start(items: TestItems.makeMany(["a"])) }
+        await assertSignalReached(target: 1, counter: preparer.requestSignal, what: "装载进入在途")
+        await preparer.releasePendingAttempt()
+        await assertSignalReached(target: 1, counter: preparer.returnedSignal, what: "装载返回")
+        _ = await first.value
+        await subject.pause()
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .paused, "前置：用户已暂停")
+        XCTAssertEqual(snap.failureStreak, 0, "前置：计数侧无账")
+        XCTAssertEqual(snap.lastFailure?.kind, .cancelled, "前置：回显账在")
+
+        let outcome = await subject.next()
+        XCTAssertEqual(outcome, .held, "MAJ-R6-1：暂停 + 取消账 + 无处可跳 = 保持")
+        snap = await subject.currentSnapshot()
+        XCTAssertFalse(snap.isFailureTerminal, "MAJ-R6-1：不计数形态开不了终态闸门")
+        assertNoFakeTerminal(snap, "暂停中取消账在时 next")
+        XCTAssertEqual(snap.state, .paused, "MAJ-R6-1：状态保持")
+        XCTAssertEqual(snap.failureStreak, 0)
+        XCTAssertEqual(snap.lastFailure?.kind, .cancelled, "MAJ-R6-1：回显账不得被良性导航改写")
+
+        await subject.resume()
+        let resumed = await subject.currentSnapshot()
+        XCTAssertEqual(resumed.state, .playing, "保持 ≠ 卡死")
+        XCTAssertFalse(resumed.isFailureTerminal)
+    }
+
+    /// MAJ-R6-1 的「装载在途 × 取消账」形状，连同第 5 轮点名的**第二段谎**：旧实现在导航当场
+    /// 写出终态并回 `.stopped`，而晚到的装载续体又把那个终态悄悄抹掉（`loadCurrent` 见引擎
+    /// 真的装上了当前项即 `isFailureTerminal = false`）⇒ 「终态」只存在于调用方的返回值里。
+    func testNavigatingDuringInFlightLoadAfterCancellationHoldsAndLeavesNoTerminal() async {
+        let engine = ScriptedEngine()
+        let preparer = AttemptScriptedPreparer(gating: [0, 1], outcomes: [0: .cancelled])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        await subject.setLoopMode(.all)
+        let first = Task { await subject.start(items: TestItems.makeMany(["a"])) }
+        await assertSignalReached(target: 1, counter: preparer.requestSignal, what: "第一趟装载进入在途")
+        await preparer.releasePendingAttempt()
+        await assertSignalReached(target: 1, counter: preparer.returnedSignal, what: "第一趟装载返回")
+        _ = await first.value
+
+        let second = Task { await subject.resume() }
+        await assertSignalReached(
+            target: 2, counter: preparer.requestSignal,
+            what: "第二趟装载进入在途（引擎里没有当前项 → R1 真装一次）"
+        )
+        var mid = await subject.currentSnapshot()
+        XCTAssertEqual(mid.failureStreak, 0, "前置：计数侧无账")
+        XCTAssertEqual(mid.lastFailure?.kind, .cancelled, "前置：回显账在")
+
+        let outcome = await subject.next()
+        XCTAssertEqual(outcome, .held, "MAJ-R6-1：取消账 + 装载在途 = 保持，不是「停止 + 终态」")
+        XCTAssertEqual(
+            NowPlayingStatusMapping.status(for: outcome), .noSuchContent,
+            "MAJ-R6-1：`.stopped` 会被锁屏映射成 `.success`（虚报「已生效」）"
+        )
+        mid = await subject.currentSnapshot()
+        XCTAssertFalse(mid.isFailureTerminal, "MAJ-R6-1：无计数账即无终态")
+        assertNoFakeTerminal(mid, "取消账 + 装载在途时 next")
+        XCTAssertEqual(mid.item?.id, "a")
+
+        await preparer.releasePendingAttempt()
+        await assertSignalReached(target: 2, counter: preparer.returnedSignal, what: "第二趟在途装载返回")
+        _ = await second.value
+        let after = await subject.currentSnapshot()
+        XCTAssertEqual(
+            after.state, .playing,
+            "MAJ-R6-1：晚到的装载照常落地；中间不存在「曾进过终态」（否则这段就是悄悄抹账）"
+        )
+        XCTAssertFalse(after.isFailureTerminal)
+        XCTAssertEqual(after.failureStreak, 0)
+        assertNoFakeTerminal(after, "装载落地后")
+        XCTAssertEqual(engine.loads.last?.id, "a")
+    }
+
+    /// **正向腿**（防修法过窄把 F-A 的合法终态也关掉）：真实失败（计数形态）无论中间夹了多少次
+    /// 取消，都必须照常累计并打开终态 —— 两条来源各自钉住：
+    ///   ① 「失败后无处可跳」（单曲 + `.all`，计数失败 1 次即收敛为终态，第 5/10 批的既有裁决）；
+    ///   ② 「连续失败达上限」（design §9 的 3 次，夹着 5 次取消也不许推迟也不许提前）。
+    func testCountedFailuresStillOpenFailureTerminalWithCancellationEchoInBetween() async {
+        // ① 计数失败 + 无处可跳 → 终态（`hasCountedFailureLedger` 为真那一腿）。
+        //    `.hostRejected` 经 `PlaybackCoordinator.kind(for:)` 归一为 `.network` —— 计数形态。
+        let engine = ScriptedEngine()
+        let preparer = AttemptScriptedPreparer(gating: [0], outcomes: [0: .hostRejected])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        await subject.setLoopMode(.all)
+        let first = Task { await subject.start(items: TestItems.makeMany(["a"])) }
+        await assertSignalReached(target: 1, counter: preparer.requestSignal, what: "装载进入在途")
+        await preparer.releasePendingAttempt()
+        await assertSignalReached(target: 1, counter: preparer.returnedSignal, what: "装载返回")
+        _ = await first.value
+        let snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .stopped, "正向①：计数失败 + 无处可跳 = 停止")
+        XCTAssertTrue(snap.isFailureTerminal, "正向①：MAJ-R6-1 的修法不得关掉这条合法终态")
+        XCTAssertEqual(snap.failureStreak, 1, "正向①：计数形态入裁决账")
+        XCTAssertEqual(snap.lastFailure?.kind, .network)
+
+        // ② 夹着取消的 3 次计数失败照样达到上限进终态（取消既不抬高也不吞掉连击）。
+        await subject.resume()   // 用户处置 → 终态复位，回到可播状态
+        let mixed = await subject.currentSnapshot()
+        XCTAssertFalse(mixed.isFailureTerminal, "前置：resume 是既有的终态复位路径")
+        XCTAssertEqual(mixed.failureStreak, 0)
+        _ = await subject.replaceQueue(TestItems.makeMany(["a", "b", "c", "d"]))
+        _ = await subject.start()
+        for _ in 0..<5 { await subject.receive(.failed(PlayerFailure(kind: .cancelled))) }
+        var counted = await subject.currentSnapshot()
+        XCTAssertEqual(counted.failureStreak, 0, "正向②：取消不抬高连击（MAJ-4 既有口径）")
+        XCTAssertFalse(counted.isFailureTerminal, "正向②：取消永远不构成终态")
+        for _ in 0..<2 { await subject.receive(.failed(PlayerFailure(kind: .network))) }
+        counted = await subject.currentSnapshot()
+        XCTAssertEqual(counted.failureStreak, 2, "正向②：计数形态照常累计")
+        XCTAssertFalse(counted.isFailureTerminal, "正向②：未达上限不得提前终态")
+        await subject.receive(.failed(PlayerFailure(kind: .cancelled)))
+        let interleaved = await subject.currentSnapshot()
+        XCTAssertEqual(
+            interleaved.failureStreak, 2,
+            "正向②：上限前一次夹入的取消也不得把计数推到 3"
+        )
+        await subject.receive(.failed(PlayerFailure(kind: .mediaInvalid)))
+        counted = await subject.currentSnapshot()
+        XCTAssertEqual(counted.failureStreak, 3, "正向②：第 3 次计数失败即终态（design §9）")
+        XCTAssertTrue(counted.isFailureTerminal, "正向②：合法终态必须仍然可达 —— 修法没过窄")
+        XCTAssertEqual(counted.state, .stopped)
+        XCTAssertEqual(
+            counted.lastFailure?.kind, .mediaInvalid,
+            "正向②：回显账记的是最近一次失败（含不计数形态）"
+        )
     }
 
     // MARK: - 环 4 · 第 5 批 F-B：teardown 的失效面收敛 + 快照暴露「已释放」
@@ -2313,4 +2693,73 @@ private extension EchoSurfaceProbe.Content {
         if case .showing(let id, _, _) = self { return id }
         return nil
     }
+}
+
+// MARK: - 环 4 · 第 11 批 MAJ-R6-1：按「尝试序号」设闸与设错的装载夹具
+
+/// 装载夹具：**第几趟**装载过闸门、**第几趟**以哪个 `PlayerError` 收场，都由脚本说话。
+///
+/// 为什么不复用共享夹具 `GatedSourcePreparer`（它的闸门与错误都按**曲目 id** 生效、闸门粘性）：
+/// 本批的形态全都要求「同一曲目上，第二趟与第一趟不一样」——
+///   ① 取消账已落下，而**新一轮装载真的在途**（粘性闸门第二次直接直通，造不出在途）；
+///   ② 取消一趟之后用户真的能播起来（「保持 ≠ 卡死」的对照腿，粘性 `failing` 会永远失败）；
+///   ③ 取消账在 + 随后一次**计数**失败仍须把终态打开（正向腿，防修法过窄把 F-A 的合法终态也关掉）。
+/// 因此这里按尝试序号（0 起）给闸门与结果：`gating` 决定哪几趟挂起，`outcomes` 决定哪几趟
+/// 以哪个错误收场（缺席 = 成功）。
+///
+/// 会合面与既有夹具同形：`requestSignal` = 已进入 `prepareSource`（在途已开始），
+/// `returnedSignal` = 闸门放行后即将返回给协调器。等待一律走 `Signals.wait(SignalCounter)`
+/// （10s 上界，到期即 `XCTAssertTrue` 变红），**不使用**第 5 轮坐实有边沿丢失缺陷的
+/// `TransferWaiter.settle()`，也没有 `Task.yield()` / 睡眠 / 让步（D16⑤）。
+actor AttemptScriptedPreparer: PlaybackSourcePreparing {
+    let requestSignal = SignalCounter()
+    let returnedSignal = SignalCounter()
+    private let gating: Set<Int>
+    private let outcomes: [Int: PlayerError]
+    private var attempts = 0
+    private var parked: Int?
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var released: Set<Int> = []
+    private(set) var requestedIDs: [String] = []
+
+    init(gating: [Int], outcomes: [Int: PlayerError] = [:]) {
+        self.gating = Set(gating)
+        self.outcomes = outcomes
+    }
+
+    func prepareSource(
+        for item: PlaybackItem,
+        session: PlaybackSessionContext
+    ) async -> Result<PlaybackItem, PlayerError> {
+        let attempt = attempts
+        attempts += 1
+        requestedIDs.append(item.id)
+        requestSignal.bump()
+        if gating.contains(attempt) {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if released.contains(attempt) {
+                    continuation.resume()
+                } else {
+                    parked = attempt
+                    waiter = continuation
+                }
+            }
+        }
+        returnedSignal.bump()
+        if let error = outcomes[attempt] { return .failure(error) }
+        return .success(item)
+    }
+
+    /// 放行**当前停着的那一趟**。测试总是先等到 `requestSignal` 再调用本方法，
+    /// 而 `bump` 与挂起登记在同一段 actor 同步区内完成 ⇒ 这里必然看得见那一个。
+    func releasePendingAttempt() {
+        guard let parked else { return }
+        released.insert(parked)
+        self.parked = nil
+        waiter?.resume()
+        waiter = nil
+    }
+
+    /// MAJ-2 口径：本桩不在磁盘上留任何私有音频字节，显式空操作 = 免责申明。
+    func discardPrivateAudio(owner: PrincipalID?) async {}
 }
