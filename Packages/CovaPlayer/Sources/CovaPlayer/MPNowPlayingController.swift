@@ -26,6 +26,87 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
     /// ±15s 的 skip 节拍（design/screens/02-player.md §4）。
     public static let skipInterval: Double = 15
 
+    // MARK: - 共享命令面的所有权（min-6）
+
+    /// 进程内「谁最后认领了 `MPRemoteCommandCenter` 这组共享命令」的账。
+    ///
+    /// 只做事实记录，不做拦截（原因见 TD-43）：系统不给「按所有者查询 target」的能力，
+    /// 任何「非所有者就不许动」的实现都会让**已经挂上的** target 留在系统里 —— 那比互踩更糟。
+    /// 收敛的那一半是：认领关系变成可查询的票据，于是第二个门面进来时第一个不再蒙在鼓里。
+    private final class SharedSurfaceLedger: @unchecked Sendable {
+        private let lock = NSLock()
+        private var issued: UInt64 = 0
+        private var holder: UInt64?
+
+        func claim() -> UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            issued += 1
+            holder = issued
+            return issued
+        }
+
+        /// 认领总次数（进程内单调，永不回收：证明「有没有第二个实例动过共享面」）。
+        var claimCount: UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            return issued
+        }
+
+        var currentHolder: UInt64? {
+            lock.lock()
+            defer { lock.unlock() }
+            return holder
+        }
+
+        /// 退位：仅当自己仍是当前持有者时清空（别人已经接手则什么都不做）。
+        func release(_ ticket: UInt64) {
+            lock.lock()
+            if holder == ticket { holder = nil }
+            lock.unlock()
+        }
+    }
+
+    private static let sharedSurfaceLedger = SharedSurfaceLedger()
+
+    /// 本实例最近一次认领共享面的票据（nil = 从未注册过命令、或已随退出释放）。
+    private var sharedSurfaceClaim: UInt64?
+
+    /// 进程内认领共享命令面的**总次数**（系统侧事实面：> 1 就意味着有第二个实例动过单例）。
+    public static var sharedSurfaceClaimCount: UInt64 { sharedSurfaceLedger.claimCount }
+
+    /// 本实例是否仍是共享命令面的当前持有者（min-6 的可查询事实）。
+    ///
+    /// 这是 `registeredHandlerCount` 的反面：那个数**只说明本层账上记了几条 target**，
+    /// 说明不了系统现在听谁的 —— 复审点名的正是这一混淆。
+    public var ownsSharedCommandSurface: Bool {
+        guard let claim = lockedSharedSurfaceClaim() else { return false }
+        return Self.sharedSurfaceLedger.currentHolder == claim
+    }
+
+    /// 认领共享面（注册命令、以及任何一次写 `isEnabled` 都算：写的人就是现在的形状负责人）。
+    private func claimSharedCommandSurface() {
+        let ticket = Self.sharedSurfaceLedger.claim()
+        lock.lock()
+        sharedSurfaceClaim = ticket
+        lock.unlock()
+    }
+
+    /// 释放认领（仅当自己仍是当前持有者）。
+    private func releaseSharedCommandSurface() {
+        lock.lock()
+        let claim = sharedSurfaceClaim
+        sharedSurfaceClaim = nil
+        lock.unlock()
+        if let claim { Self.sharedSurfaceLedger.release(claim) }
+    }
+
+    private func lockedSharedSurfaceClaim() -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return sharedSurfaceClaim
+    }
+
     public init(router: NowPlayingCommandRouter, artworkAttacher: (any NowPlayingArtworkAttaching)? = nil) {
         self.router = router
         self.artworkAttacher = artworkAttacher
@@ -107,11 +188,15 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
 
     /// 注册全部锁屏 / 耳机远端命令（幂等：先清后加，不叠加 target）。
     ///
-    /// min-6（已知边界，本批未收敛，见 `docs/log/20260921.md` §13.7 TD-43）：
+    /// min-6（本批收敛到「可观测」；系统不给的那一半立 TD-43）：
     /// `MPRemoteCommandCenter` 是**进程单例**，因此这里的「先清后加」以及
     /// `setCommandsEnabled` / `teardown` 都作用于全部 11 条命令、与调用者是谁无关 ——
-    /// 同进程装配第二个门面会把第一个的 target 抹掉。当前装配只有一个门面。
+    /// 同进程装配第二个门面会把第一个的 target 抹掉，而 `registeredHandlerCount`
+    /// 只是**自我申报**（MediaPlayer 不公开 `targets`，系统侧读数不可得：TD-39）。
+    /// 现在每次注册都认领共享面（进程内单调票据）：「我被别人顶掉了」从静默失守
+    /// 变成 `ownsSharedCommandSurface` / `sharedSurfaceClaimCount` 两个问得出的事实。
     public func registerCommands() async {
+        claimSharedCommandSurface()
         let center = Self.sharedCenter()
         for name in Self.managedCommandNames {
             guard let command = Self.command(in: center, named: name) else { continue }
@@ -144,31 +229,59 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
 
     /// 远端命令 handler：**受理即返回 + 异步投递**（MAJ-6）。
     ///
-    /// 旧实现是 `DispatchSemaphore(value: 0)` + 无超时 `wait()`，把路由链搬回同步形态 ——
+    /// 旧实现是 `DispatchSemaphore(value: 0)` + **无超时** `wait()`，把路由链搬回同步形态 ——
     /// 代价是把**系统自己的队列**钉在一条含下载挂起点的 actor 链上
     /// （`resume()` → `loadCurrent` → `prepareSource` → 私有音频取回），
     /// 上界就是 `URLSessionPrivateAudioTransport.resourceTimeout`（**7 天**）；
-    /// 复审实测 parked 0.424s（夹具放行之前零推进）。这期间系统队列上排着的其它命令
-    /// （暂停、下一首、来自 Control Center 的事件）与播放本身一起被拖住。
+    /// 复审实测 parked 0.424s（夹具放行之前零推进）。这期间排在系统队列上的其它命令
+    /// （暂停、下一首、Control Center 事件）与播放本身一起被拖住。
     ///
-    /// 新形态：只有**同步可判、零 hop** 的那一点参与返回码（seek 目标是否合法，
-    /// 用的是 `NowPlayingStatusMapping` 那份纯函数）；其余一律按「已受理」回 `.success`，
-    /// 真正的活起一个 `Task` 跑完。锁屏按钮要的是「命令收下了」，播放结果由
-    /// Now Playing 的信息字典与 `playbackState` 回显 —— 那本来就是异步面。
+    /// 新形态两件事，各自可测：
+    /// 1. `acceptanceStatus(for:)` —— **零 hop 的纯函数**受理判定（只有同步可判的那一点参与
+    ///    返回码：seek 目标合法性，用的就是 `NowPlayingStatusMapping` 那份判定）；
+    /// 2. `deliver(router:command:)` —— 起一条 `Task` 跑完整命令链，**不等它**。
+    ///
+    /// 命令结果如何回到系统：`MPRemoteCommandHandlerStatus` 只表达「收没收下」，
+    /// 真正的播放状态由协调器在每次状态转移时 `publish` 到 `MPNowPlayingInfoCenter`
+    /// （`playbackState` + 信息字典）—— 那本来就是异步面（design §7「锁屏只是入口」）。
     ///
     /// 已知取舍（如实标注）：底层失败（如 `.noSuchContent`）不再能从返回码告知系统，
-    /// 系统因此不会自动回滚按钮态；这条口径与 design §7「锁屏只是入口」一致，
-    /// 真正的状态以门面回显为准。
+    /// 系统因此不会自动回滚按钮态；口径与上面一致，状态以 Now Playing 回显为准。
     static func acceptAndDeliver(
         router: NowPlayingCommandRouter,
         command: NowPlayingCommand
     ) -> MPRemoteCommandHandlerStatus {
+        let status = acceptanceStatus(for: command)
+        // 已经同步判死的命令不再投递（`NowPlayingCommandRouter.handle` 里那第二条合法性
+        // 检查保留：它是决策面的自守，不是本处的依赖）。
+        if status == .success { deliver(router: router, command: command) }
+        return status
+    }
+
+    /// 受理判定（**纯函数、零 hop、零 await**）：这是 handler 唯一允许用来决定返回码的东西。
+    ///
+    /// 判据的另一半在 `NowPlayingCommandRouter.handle`（那里会真跑命令链）：本函数**不得**
+    /// 出现任何 `await` —— 一旦出现，系统队列就又回到「被播放器钉住」的形态（MAJ-6）。
+    static func acceptanceStatus(for command: NowPlayingCommand) -> MPRemoteCommandHandlerStatus {
         if case .seek(let target) = command,
            NowPlayingStatusMapping.isLegalTimeTarget(target) == false {
             return .commandFailed
         }
-        Task { _ = await router.handle(command) }
         return .success
+    }
+
+    /// 投递：把命令交给 actor 链跑完，**不等待结果**（MAJ-6 的另一半）。
+    ///
+    /// `onDelivered` 是**投递完成之后的记账点**，默认什么都不做：
+    /// - 生产形态不需要它（返回码早在受理那一刻就定下来了，状态回显走 Now Playing）；
+    /// - 它存在的理由是让「异步投递真的跑完了」变成可等待的事实（测试据此做确定性会合，
+    ///   不必靠让步或计时器猜 —— D16⑤），也是将来要加「失败回传/上报」时的唯一挂点。
+    static func deliver(
+        router: NowPlayingCommandRouter,
+        command: NowPlayingCommand,
+        onDelivered: @escaping @Sendable (NowPlayingStatus) -> Void = { _ in }
+    ) {
+        Task { onDelivered(await router.handle(command)) }
     }
 
     /// 状态码映射（纯函数）。
@@ -190,6 +303,8 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
     }
 
     public func setCommandsEnabled(_ enabled: Bool) {
+        // min-6：写共享面即认领共享面 —— 「谁最后塑形，谁负责」，且这件事是查得到的事实。
+        claimSharedCommandSurface()
         for command in Self.controllableCommands(Self.sharedCenter()) {
             command.isEnabled = enabled
         }
@@ -296,6 +411,7 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
     public func teardown() async {
         await clear()
         retireSharedCommandTargets()
+        releaseSharedCommandSurface()
         completeTeardown()
     }
 
@@ -327,6 +443,7 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
         let center = MPNowPlayingInfoCenter.default()
         center.nowPlayingInfo = nil
         center.playbackState = .stopped
+        releaseSharedCommandSurface()
         completeTeardown()
     }
 

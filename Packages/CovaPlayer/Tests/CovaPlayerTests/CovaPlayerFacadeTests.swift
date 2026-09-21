@@ -679,6 +679,31 @@ final class CovaPlayerFacadeTests: XCTestCase {
         XCTAssertNil(scriptedEngine, "注入的引擎不得被换掉")
     }
 
+    /// min-6：同进程装配第二个门面时，第一个门面必须**问得出**自己已经不是共享命令面的持有者。
+    ///
+    /// 复审的形态：`registerCommands()` 每次 `removeTarget(nil)`、`setCommandsEnabled` 与
+    /// `teardown` 都作用于全部 11 条命令，与所有者无关，而 `registeredHandlerCount`
+    /// 是自我申报。本层能收敛的是「让失守可见」（票据），收敛不了的是「按所有者隔离写入」
+    /// （MediaPlayer 不给这个能力）⇒ TD-43 记边界与影响面。当前生产装配只有一个门面。
+    func testSecondFacadeRegistrationTakesOverSharedCommandSurface() async throws {
+        let first = CovaPlayer(engine: ScriptedEngine(), clock: FakeClock(), audioSystem: StubAudioSessionSystem())
+        let second = CovaPlayer(engine: ScriptedEngine(), clock: FakeClock(), audioSystem: StubAudioSessionSystem())
+        XCTAssertFalse(first.ownsSharedCommandSurface, "未注册不得自称持有共享面")
+
+        try await first.activateForPlayback()
+        XCTAssertTrue(first.ownsSharedCommandSurface)
+        XCTAssertFalse(second.ownsSharedCommandSurface)
+
+        try await second.activateForPlayback()
+        XCTAssertFalse(first.ownsSharedCommandSurface, "min-6：第二个门面接手必须可见（旧实现里这是静默的）")
+        XCTAssertTrue(second.ownsSharedCommandSurface)
+        // 自我申报的局限一并钉在明面上：被顶掉者仍然自报满额 target（TD-43 的那一半）。
+        let selfReport = first.nowPlaying.registeredHandlerCount
+        XCTAssertEqual(selfReport, MPNowPlayingController.managedCommandNames.count)
+        await second.teardown()
+        await first.teardown()
+    }
+
     /// 生产默认的 `audioSystem` 类型（`AVAudioSessionAdapter`）本身就是通知源 —— 上条用例的
     /// 「生产形态」与真实类型必须是同一判据，否则「桩过了、真的没接」仍然可能。
     func testProductionDefaultAudioSystemIsItsOwnNotificationCenterSource() {

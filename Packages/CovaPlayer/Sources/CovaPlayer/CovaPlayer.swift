@@ -155,6 +155,12 @@ public final class CovaPlayer {
     /// 是否已永久下线（`teardown()` 之后恒真）。
     public var isTornDown: Bool { tornDown }
 
+    /// 本门面的控制器是否仍是**共享命令面**（`MPRemoteCommandCenter` 是进程单例）的当前持有者
+    /// （min-6）。同进程装配第二个门面并注册命令后，这里必须变成 `false` ——
+    /// 旧实现里这件事完全静默：`registeredHandlerCount` 只申报自己账上有几条 target，
+    /// 说不出「系统现在听谁的」。
+    public var ownsSharedCommandSurface: Bool { nowPlaying.ownsSharedCommandSurface }
+
     /// 绑定会话（D8：登出/换号 → 推进 generation → 丢未决上报 + 清私有音频 + 停播放）。
     ///
     /// 缺陷 F-13：这一支以前只丢上报、停引擎、清队列 —— **盘上的私有音频一个字节都没动过**，
