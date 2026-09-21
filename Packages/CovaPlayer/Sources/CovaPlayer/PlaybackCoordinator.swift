@@ -859,15 +859,10 @@ public actor PlaybackCoordinator {
             guard continuationIsCurrent(
                 generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: true
             ) else {
-                // R9-1（第 9 轮验收轮 Major）：**被取代 ≠ 该摁引擎**。取代有三种来源 ——
-                // 用户暂停（意图假）、用户换曲/移除（新一代装载在途）、用户另起一播（新一代在途）。
-                // 旧写法无条件 `engine.pause()`，于是后两种里「用户刚刚起播的另一首」被一次
-                // **已被取代的** ⏭ 摁停，而读数仍写 `.playing`、那次 ⏭ 还回 `.advanced(新曲)`。
-                // 只有「引擎里仍恰好是这次 ⏭ 宣称的那一项、且没有新一代装载」时摁才是对的
-                // （即用户暂停那一支；此时 pause 幂等）。
-                if inFlightLoad == nil, engineEpisodeItemID == claimed {
-                    await engine.pause()
-                }
+                // R9-1 + R10-1 的合流修法：**被取代的重播腿一律不碰引擎**。
+                // 摁引擎的责任在三处各自闭环 —— 用户暂停由 `pause()` 摁；换件/另起一播由
+                // `loadCurrent` 入口摁旧声（R10-1 根因修法）；移除当前曲由 `removeItem` 停。
+                // 这里再摁一次只会重演 R9-1（把用户刚起播的摁停）或 R10-1（摁错对象）。
                 return advanceOutcome(wrapped: false)
             }
             state = .playing
@@ -1063,6 +1058,13 @@ public actor PlaybackCoordinator {
         loadGeneration &+= 1
         let generation = loadGeneration
         inFlightLoad = InFlightLoad(generation: generation)
+        // R10-1 根因：换件装载期间引擎物理上仍持有旧项，不摁就会「读数说在装新曲、耳朵里
+        // 还是旧曲」（私有音频长下载时这段窗口以分钟计）。在**入口**摁住旧声，而不是指望
+        // 各条取代腿事后收拾 —— 事后收拾永远漏「账本已换、引擎未换」这一段。
+        // 同一曲目重装不摁（重播/恢复语义：声音本就该继续或由 F-1 的暂停负责）。
+        if let previousLanded = engineEpisodeItemID, previousLanded != item.id {
+            await engine.pause()
+        }
         // 台账的生命周期用 defer 钉死：本函数有 7 个提前返回，漏掉任何一个都会让
         // 「装载在途」永久成立，从而把所有后续 seek / 事件归约误杀（守卫 (a) 的另一半）。
         defer { finishLoad(generation) }

@@ -1902,6 +1902,37 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(submitted, 0, "R7D：没播起来就不许提交播放上报")
     }
 
+    /// 缺陷 R10-1（**Major**，第 10 轮验收轮；本批修在根上）：换件装载期间引擎物理上仍持有
+    /// 旧项，旧实现不摁 ⇒ 「读数说在装新曲、耳朵里还是旧曲」，私有音频长下载时窗口以分钟计；
+    /// 而各条取代腿事后收拾永远漏「账本已换、引擎未换」这一段。修法：`loadCurrent` **入口**
+    /// 在换掉「另一首已落地曲目」时先摁旧声；被取代的重播腿因此可以一律不碰引擎。
+    func testSwitchingTrackPausesTheOldAudioAtLoadEntry() async {
+        let engine = ScriptedEngine()
+        let preparer = GatedSourcePreparer(gating: ["b"])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        _ = await subject.start(items: TestItems.makeMany(["a", "b"]), at: 0)
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "前置：a 正在响")
+        let pausesBefore = engine.count(of: "pause")
+
+        let switched = Task { await subject.start(at: 1) }
+        await assertSignalReached(target: 1, counter: preparer.requestSignal, what: "b 的装载进入在途")
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .loading, "前置：b 在装")
+        XCTAssertEqual(
+            engine.count(of: "pause"), pausesBefore + 1,
+            "R10-1：换件装载入口必须摁住旧声（否则读数说在装 b、耳朵里还是 a）"
+        )
+
+        await preparer.release("b")
+        _ = await switched.value
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "R10-1：b 落地后正常起播")
+        XCTAssertEqual(snap.item?.id, "b")
+    }
+
     /// 缺陷 R9-1（**Major**，第 9 轮验收轮；本批修）：被取代的重播腿**无条件** `engine.pause()`，
     /// 把用户刚刚起播的另一首摁停（用户从未暂停），且读数仍 `.playing`、那次 ⏭ 还回 `.advanced`。
     /// 构造：单元素 `.one` 正在响时发 ⏭（重播腿在 `engine.seek` 的 actor hop 上挂起），
