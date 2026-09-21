@@ -655,6 +655,90 @@ final class PrivateAudioFetcherTests: XCTestCase {
         XCTAssertFalse(PrivateAudioFetcher.hasPrivateAudioFileMode([:]))
     }
 
+    // MARK: - 环 4 · 第 7 批 min-1：缓存**目录**位也要收紧（旧实现只收了文件位）
+
+    /// min-1：根 / owner / 在途三个目录都必须落到 `PrivateAudioPath.directoryMode`（0700）。
+    ///
+    /// 为什么文件位 0600 还不够：目录 0755 时别的进程 `ls` 得出「哪个账号（hex 命名空间）
+    /// 缓存过哪些曲目、在第几代」—— 文件名本身就是 `<itemID>@g<generation>`。
+    /// 元数据泄漏也是泄漏（D7 / AGENTS 硬边界 3 不区分这两件事）。
+    func testCacheDirectoriesAreOwnerOnlySearchable() async throws {
+        XCTAssertEqual(PrivateAudioPath.directoryMode, 0o700, "目录位口径本身就是判据（放宽必须红在这里）")
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let fetcher = makeFetcherOn(in: directory, transport: StubPrivateAudioTransport())
+        let result = await fetcher.localizedURL(for: request())
+        guard case .success = result else { return XCTFail("应成功本地化：\(result)") }
+
+        let owner = PrincipalID(rawValue: "principal-1")
+        let paths = [
+            PrivateAudioPath.rootDirectory(base: directory.url),
+            PrivateAudioPath.ownerDirectory(base: directory.url, owner: owner),
+            PrivateAudioPath.temporaryDirectory(base: directory.url),
+        ]
+        for path in paths {
+            let mode = try posixMode(of: path.path) & 0o777
+            XCTAssertEqual(
+                mode,
+                PrivateAudioPath.directoryMode,
+                "目录 \(path.lastPathComponent) 位必须是 0700（实得 \(String(format: "%04o", mode))）"
+            )
+            XCTAssertEqual(mode & 0o077, 0, "组/其它的可进入位一个都不许留")
+        }
+        // 判定函数自身的形状（与文件面 `hasPrivateAudioFileMode` 同一做法）。
+        XCTAssertTrue(PrivateAudioFetcher.hasPrivateAudioDirectoryMode([.posixPermissions: NSNumber(value: Int16(0o700))]))
+        XCTAssertFalse(PrivateAudioFetcher.hasPrivateAudioDirectoryMode([.posixPermissions: NSNumber(value: Int16(0o755))]))
+        XCTAssertFalse(PrivateAudioFetcher.hasPrivateAudioDirectoryMode([.posixPermissions: NSNumber(value: Int16(0o710))]))
+        XCTAssertFalse(PrivateAudioFetcher.hasPrivateAudioDirectoryMode([:]), "读不到属性即不合格（fail-closed）")
+    }
+
+    /// min-1 的另一半：**收紧之前**就已经存在的 0755 历史目录必须被就地改掉。
+    ///
+    /// 旧实现是 `guard fileExists == false else { return }` —— 目录已存在就直接返回，
+    /// 于是这条判据只对全新安装生效，老设备升级后仍然 0755（这才是复审实测到的 0755）。
+    /// 同时这条也守住建目录顺序：`createDirectory(withIntermediateDirectories:)` 会顺手把上游
+    /// 目录按默认位建出来，所以根目录必须先自己建、自己收。
+    func testPreexistingLooseCacheDirectoriesAreTightenedInPlace() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let owner = PrincipalID(rawValue: "principal-1")
+        let root = PrivateAudioPath.rootDirectory(base: directory.url)
+        let ownerDirectory = PrivateAudioPath.ownerDirectory(base: directory.url, owner: owner)
+        let inflight = PrivateAudioPath.temporaryDirectory(base: directory.url)
+        let fileManager = FileManager.default
+        for path in [root, ownerDirectory, inflight] {
+            try fileManager.createDirectory(at: path, withIntermediateDirectories: true)
+            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path.path)
+            XCTAssertEqual(
+                try posixMode(of: path.path) & 0o777,
+                0o755,
+                "前置条件：造出一个收紧之前留下的世界可进入目录（\(path.lastPathComponent)）"
+            )
+        }
+
+        let fetcher = makeFetcherOn(in: directory, transport: StubPrivateAudioTransport())
+        let result = await fetcher.localizedURL(for: request())
+        guard case .success = result else { return XCTFail("就地收紧不得让取回失败：\(result)") }
+        for path in [root, ownerDirectory, inflight] {
+            let mode = try posixMode(of: path.path) & 0o777
+            XCTAssertEqual(mode, PrivateAudioPath.directoryMode, "已存在的目录也必须被改到 0700：\(path.lastPathComponent)")
+        }
+    }
+
+    /// min-1 判定函数的形态腿（TD-9 对照）：`posixPermissions` 在真机上可能是**完整 st_mode**
+    /// （带 `S_IFDIR` 位），判定必须只看低 9 位 —— 否则「已经收紧的目录」被误判成不合格，
+    /// 每次取回都失败。
+    func testDirectoryModeJudgementHandlesFullStMode() {
+        XCTAssertFalse(
+            PrivateAudioFetcher.hasPrivateAudioDirectoryMode([.posixPermissions: NSNumber(value: Int32(0o40755))]),
+            "世界可进入的目录（S_IFDIR|0755）不得被判为已收紧"
+        )
+        XCTAssertTrue(
+            PrivateAudioFetcher.hasPrivateAudioDirectoryMode([.posixPermissions: NSNumber(value: Int32(0o40700))]),
+            "S_IFDIR|0700 是真实读数，不得误红"
+        )
+    }
+
     // MARK: - 环 4 · m13：删除后复核，删不掉就不许报「已删」
 
     func testPurgeReturnsZeroWhenRemovalThrows() async throws {

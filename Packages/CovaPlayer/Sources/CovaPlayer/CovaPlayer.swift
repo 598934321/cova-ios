@@ -17,7 +17,10 @@ import Foundation
 /// - 私有音频（D7）经 `PrivateAudioFetcher` 先落盘校验、再以 `file://` 播放；
 ///   Bearer / 签名地址以 `AudioURL` 形态存在，不进日志、不进持久化；
 /// - `deinit` 同步释放引擎（`stopAndRelease`）并**退掉系统面**（远端命令 / Now Playing），
-///   音频会话观测者由 `AVAudioSessionAdapter.deinit` 兜底摘除（MAJ-7）。
+///   音频会话观测者由 `AVAudioSessionAdapter.deinit` 兜底摘除（MAJ-7）；
+/// - 音频会话激活失败**不被吞掉**（MAJ-5）：门面无 `try?`，失败留在
+///   `audioSessionActivationFailure`，且 `isActivated` 只在激活真的成功时为真；
+///   系统面（观测者 / 远端命令）的注册与「激活是否成功」脱钩。
 @MainActor
 public final class CovaPlayer {
     /// 资源出口（钉死为生产 origin；既有 `CovaTests` 断言其语义，不得退化）。
@@ -44,6 +47,18 @@ public final class CovaPlayer {
     private var activated = false
     /// `teardown()` 之后门面永久下线：重新接线会造出「引擎事件循环已摘除、却在出声」的半死状态。
     private var tornDown = false
+    /// 最近一次**音频会话激活失败**（MAJ-5）。
+    ///
+    /// 旧实现是 `try? await audioSession.start()`：错误被吞掉后，门面对外仍然自称
+    /// `isActivated == true`，于是真机上「他人占用会话 / 通话中」这种常见形态会表现成
+    /// 「播放莫名其妙没声音、UI 却说一切正常」。现在错误**必须**留在这里并可被上层读到，
+    /// 同时 `activated` 只在真的激活成功时才置位（状态面不许说谎）。
+    ///
+    /// 类型是 `Error?` 而不是 `PlayerError?`：`configureForPlayback()` 之外没有别的换算可做，
+    /// 把未知错误硬编成一个 `PlayerError` case 等于再制造一次信息损失。
+    public private(set) var audioSessionActivationFailure: Error?
+    /// 远端命令面是否已挂上系统（MAJ-5：这与「会话激活成功」是两件事，分开记账）。
+    public private(set) var isRemoteCommandSurfaceRegistered = false
 
     /// 默认出口 = 生产 API origin（D10）。
     public convenience init() {
@@ -103,14 +118,36 @@ public final class CovaPlayer {
     ///
     /// **teardown 是终态**（M11）：释放后重新接线会造出「远端 target 重挂 + 已 deactivate 的会话
     /// 再激活」的僵尸态（协调器那边已经拒绝一切请求），因此本方法与 `ensureActivated` 一并下线。
+    ///
+    /// MAJ-5：会话激活失败**不掩掉系统面注册**。观测者注册在 `AudioSessionGate.start()` 内部
+    /// 已排在 `configureForPlayback()` 之前，远端命令注册在这里也不得排在「激活成功」之后才发生 ——
+    /// 否则 design §7（锁屏 / 中断后续播）在会话被他人占用时又静默失效一次。
+    /// 失败仍然照实抛出（本方法是 throwing 面），并由 `audioSessionActivationFailure` 留痕。
     public func activateForPlayback() async throws {
         guard !tornDown else { return }
         guard !activated else { return }
         await coordinator.attach()
-        try await audioSession.start()
+        let activationFailure = await startAudioSession()
         await nowPlaying.registerCommands()
         nowPlaying.setCommandsEnabled(true)
-        activated = true
+        isRemoteCommandSurfaceRegistered = true
+        activated = activationFailure == nil
+        if let activationFailure { throw activationFailure }
+    }
+
+    /// 启动音频会话并把失败**记账后交回调用方**（MAJ-5：门面侧禁止 `try?` 吞错）。
+    ///
+    /// 返回 nil = 激活成功；返回错误 = 已留痕在 `audioSessionActivationFailure`。
+    /// 成功时清掉旧失败记录，避免「上一次失败」被误读成当前状态。
+    private func startAudioSession() async -> Error? {
+        do {
+            try await audioSession.start()
+            audioSessionActivationFailure = nil
+            return nil
+        } catch {
+            audioSessionActivationFailure = error
+            return error
+        }
     }
 
     public var isActivated: Bool { activated }
@@ -173,9 +210,12 @@ public final class CovaPlayer {
     private func ensureActivated() async {
         guard !tornDown, !activated else { return }
         await coordinator.attach()
-        try? await audioSession.start()
+        // MAJ-5：这里曾是 `try? await audioSession.start()` —— 吞掉错误之后仍然置位
+        // `activated = true`，于是「会话没起来」在门面外部完全不可观测（状态面说谎）。
+        let activationFailure = await startAudioSession()
         await nowPlaying.registerCommands()
-        activated = true
+        isRemoteCommandSurfaceRegistered = true
+        activated = activationFailure == nil
     }
 
     public func pause() async {
@@ -262,6 +302,7 @@ public final class CovaPlayer {
         guard !tornDown else { return }
         tornDown = true
         activated = false
+        isRemoteCommandSurfaceRegistered = false
         nowPlaying.setCommandsEnabled(false)
         await coordinator.teardown()
         await reporter.teardown()
@@ -278,6 +319,15 @@ public final class CovaPlayer {
     deinit {
         // 同步释放：取消事件循环并摘掉时间观察者 / KVO / 通知 token。
         engine.stopAndRelease()
+        // MAJ-7：析构**必须**退系统面。旧实现只做了引擎那一件事，于是走「没 teardown 就释放」
+        // 这条真实路径（App 里门面是随作用域生死的一次性装配）之后：`playCommand.isEnabled`
+        // 仍为 true、锁屏还显示着已死门面的曲名、`playbackState` 仍是 playing ——
+        // 系统把命令投给一个已经不存在的播放器。
+        // 这里只能是同步路径（deinit 不能 await）：`retireSystemSurfacesSynchronously()` 与
+        // `teardown()` 走的是同一批退出动作（摘 target / 关命令位 / 清 Now Playing 字典）。
+        // 音频会话那一侧的观测者 token 由 `AVAudioSessionAdapter.deinit` 兜底摘除
+        // （门释放 → 适配器释放 → 兜底生效；`AudioSessionGate.stop()` 是常规路径，deinit 是漏路径的兜底）。
+        nowPlaying.retireSystemSurfacesSynchronously()
     }
 }
 

@@ -466,17 +466,39 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
     }
 
     private func prepareDirectories(owner: PrincipalID) throws {
+        // 顺序有讲究：先根、再 owner 目录、再在途目录 —— `createDirectory(withIntermediateDirectories:)`
+        // 会顺手把上游目录按默认位（0755）建出来，所以每一个都必须自己收紧（min-1）。
+        try createDirectory(PrivateAudioPath.rootDirectory(base: baseDirectory))
         try createDirectory(PrivateAudioPath.ownerDirectory(base: baseDirectory, owner: owner))
         try createDirectory(PrivateAudioPath.temporaryDirectory(base: baseDirectory))
     }
 
+    /// 建目录**并**把位收敛到 `PrivateAudioPath.directoryMode`（min-1）。
+    ///
+    /// 收紧对「已存在的目录」同样执行：收紧之前建的 0755 目录必须被就地改到 0700，
+    /// 否则这条判据只对全新安装生效。失败按 fail-closed 处理（宁可这次取回失败）。
     private func createDirectory(_ url: URL) throws {
-        guard fileManager.fileExists(atPath: url.path) == false else { return }
+        if fileManager.fileExists(atPath: url.path) == false {
+            do {
+                try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+            } catch {
+                throw PlayerError.writeFailed(Self.status(of: error))
+            }
+        }
         do {
-            try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+            try fileManager.setAttributes(PrivateAudioPath.directoryAttributes, ofItemAtPath: url.path)
         } catch {
             throw PlayerError.writeFailed(Self.status(of: error))
         }
+        guard Self.hasPrivateAudioDirectoryMode(attributesOf(url)) else {
+            throw PlayerError.writeFailed(EACCES)
+        }
+    }
+
+    /// 目录位是否已收敛到 `PrivateAudioPath.directoryMode`（min-1 的复核面）。
+    static func hasPrivateAudioDirectoryMode(_ attributes: [FileAttributeKey: Any]) -> Bool {
+        let raw = (attributes[.posixPermissions] as? NSNumber)?.int32Value ?? -1
+        return Int(truncatingIfNeeded: raw) & 0o777 == PrivateAudioPath.directoryMode
     }
 
     private func commitMove(from source: URL, to target: URL) throws {

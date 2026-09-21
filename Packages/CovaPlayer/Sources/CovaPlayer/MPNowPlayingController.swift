@@ -106,6 +106,11 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
     }
 
     /// 注册全部锁屏 / 耳机远端命令（幂等：先清后加，不叠加 target）。
+    ///
+    /// min-6（已知边界，本批未收敛，见 `docs/log/20260921.md` §13.7 TD-43）：
+    /// `MPRemoteCommandCenter` 是**进程单例**，因此这里的「先清后加」以及
+    /// `setCommandsEnabled` / `teardown` 都作用于全部 11 条命令、与调用者是谁无关 ——
+    /// 同进程装配第二个门面会把第一个的 target 抹掉。当前装配只有一个门面。
     public func registerCommands() async {
         let center = Self.sharedCenter()
         for name in Self.managedCommandNames {
@@ -115,7 +120,7 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
             let token = command.addTarget { [weak self] event in
                 guard let self else { return .commandFailed }
                 guard let translated = make(event) else { return .commandFailed }
-                return Self.handleSynchronously(router: self.router, command: translated)
+                return Self.acceptAndDeliver(router: self.router, command: translated)
             }
             recordTarget(token, for: name)
         }
@@ -137,29 +142,33 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
     public static var skipNumber: NSNumber { NSNumber(value: skipInterval) }
     public static var defaultRateNumber: NSNumber { NSNumber(value: 1) }
 
-    /// 远端命令 handler 必须**同步**返回状态码，故在此桥接 actor 调用。
+    /// 远端命令 handler：**受理即返回 + 异步投递**（MAJ-6）。
     ///
-    /// 系统在自己的队列上调用 handler（非主线程），且路由链不触碰主 actor → 无自死锁；
-    /// 单测不打到这里（改测 `NowPlayingCommandRouter` 的纯决策）。
-    static func handleSynchronously(
+    /// 旧实现是 `DispatchSemaphore(value: 0)` + 无超时 `wait()`，把路由链搬回同步形态 ——
+    /// 代价是把**系统自己的队列**钉在一条含下载挂起点的 actor 链上
+    /// （`resume()` → `loadCurrent` → `prepareSource` → 私有音频取回），
+    /// 上界就是 `URLSessionPrivateAudioTransport.resourceTimeout`（**7 天**）；
+    /// 复审实测 parked 0.424s（夹具放行之前零推进）。这期间系统队列上排着的其它命令
+    /// （暂停、下一首、来自 Control Center 的事件）与播放本身一起被拖住。
+    ///
+    /// 新形态：只有**同步可判、零 hop** 的那一点参与返回码（seek 目标是否合法，
+    /// 用的是 `NowPlayingStatusMapping` 那份纯函数）；其余一律按「已受理」回 `.success`，
+    /// 真正的活起一个 `Task` 跑完。锁屏按钮要的是「命令收下了」，播放结果由
+    /// Now Playing 的信息字典与 `playbackState` 回显 —— 那本来就是异步面。
+    ///
+    /// 已知取舍（如实标注）：底层失败（如 `.noSuchContent`）不再能从返回码告知系统，
+    /// 系统因此不会自动回滚按钮态；这条口径与 design §7「锁屏只是入口」一致，
+    /// 真正的状态以门面回显为准。
+    static func acceptAndDeliver(
         router: NowPlayingCommandRouter,
         command: NowPlayingCommand
     ) -> MPRemoteCommandHandlerStatus {
-        // 局部 var 被 @Sendable 闭包捕获会触发 region isolation 诊断，故经显式盒子传递
-        // （读写两侧由信号量串行化，盒子自身不再假设线程安全）。
-        let box = StatusBox()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task {
-            box.status = await router.handle(command)
-            semaphore.signal()
+        if case .seek(let target) = command,
+           NowPlayingStatusMapping.isLegalTimeTarget(target) == false {
+            return .commandFailed
         }
-        semaphore.wait()
-        return handlerStatus(for: box.status)
-    }
-
-    /// `handleSynchronously` 的结果载体。
-    final class StatusBox: @unchecked Sendable {
-        var status: NowPlayingStatus = .failure
+        Task { _ = await router.handle(command) }
+        return .success
     }
 
     /// 状态码映射（纯函数）。
@@ -286,10 +295,46 @@ public final class MPNowPlayingController: NowPlayingControlling, @unchecked Sen
 
     public func teardown() async {
         await clear()
+        retireSharedCommandTargets()
+        completeTeardown()
+    }
+
+    /// 摘净系统侧 target（`teardown()` 与 deinit 兜底共用；同步、幂等）。
+    private func retireSharedCommandTargets() {
         for command in Self.controllableCommands(Self.sharedCenter()) {
             command.removeTarget(nil)
         }
+    }
+
+    /// **同步**退掉系统面（MAJ-7：门面 `deinit` 只能走这条路，deinit 里不能 await）。
+    ///
+    /// 与 `teardown()` 收敛到同一终态：命令位关闭 → target 摘净 → Now Playing 字典清空 +
+    /// `playbackState = .stopped` → 本层 target 账清零。三条都是必要的：
+    /// - `removeTarget` **不许**以任何理由跳过 —— 系统不持有 target，留着就是「命令还在被投给
+    ///   一个已经死掉的播放器」；
+    /// - 清 Now Playing 字典是同一件事的另一半：不清，锁屏会继续显示已释放门面的曲名与
+    ///   「正在播放」；
+    /// - `isEnabled` 一并关闭，否则控制中心仍把按钮画成可点。
+    ///
+    /// 幂等：`teardown()` 之后再释放、或从未 `teardown()` 就释放，结果相同。
+    func retireSystemSurfacesSynchronously() {
+        for command in Self.controllableCommands(Self.sharedCenter()) {
+            command.isEnabled = false
+        }
+        retireSharedCommandTargets()
+        // 在途封面任务必须一起取消：否则它会在字典已清空之后再把封面写回去（复活已死门面）。
+        takeArtworkTask()?.cancel()
+        let center = MPNowPlayingInfoCenter.default()
+        center.nowPlayingInfo = nil
+        center.playbackState = .stopped
         completeTeardown()
+    }
+
+    /// 兜底（MAJ-7）：从未 `teardown()` 就被释放时，同样必须退系统面。
+    ///
+    /// 这里不能 await，所以走上面那条同步路径；`teardown()` 已经执行过时它是空操作。
+    deinit {
+        retireSystemSurfacesSynchronously()
     }
 
     /// 已持有的 handler target 数（注册后 = 命令数；teardown 后必须 = 0）。

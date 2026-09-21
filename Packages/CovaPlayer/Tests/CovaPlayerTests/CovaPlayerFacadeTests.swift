@@ -1,4 +1,5 @@
 import AVFoundation
+import MediaPlayer
 import XCTest
 import CovaCore
 import Foundation
@@ -692,5 +693,182 @@ final class CovaPlayerFacadeTests: XCTestCase {
         XCTAssertFalse(stubObserves, "不具备观测能力的桩不得被误判为已接线")
     }
 
-    // MARK: - 环 4 · 第 6 批 MAJ-5 / MAJ-7：系统面生命周期
+    // MARK: - 环 4 · 第 7 批 MAJ-5 / MAJ-7：系统面生命周期
+
+    /// MAJ-5（门面腿）：`ensureActivated()` 旧实现是 `try? await audioSession.start()` ——
+    /// 吞掉错误之后仍然 `activated = true`，于是「会话根本没起来」在门面外部完全不可观测。
+    /// 现在：失败留痕、状态面不谎报、而系统面注册（远端命令）仍然完成。
+    func testFacadeDoesNotSwallowAudioSessionActivationFailure() async {
+        let system = StubAudioSessionSystem(failsConfigure: true)
+        let player = CovaPlayer(engine: ScriptedEngine(), clock: FakeClock(), audioSystem: system)
+        _ = await player.start(items: TestItems.makeMany(["a"]))
+
+        let activated = player.isActivated
+        XCTAssertFalse(activated, "MAJ-5：激活失败的门面不得自称已激活")
+        let failure = player.audioSessionActivationFailure as? PlayerError
+        XCTAssertEqual(failure, .writeFailed(-10868), "错误必须原样留痕（不吞、不改写、不丢码）")
+        let registered = player.isRemoteCommandSurfaceRegistered
+        XCTAssertTrue(registered, "MAJ-5：会话起不来也不该掩掉系统面注册")
+        let handlers = player.nowPlaying.registeredHandlerCount
+        XCTAssertEqual(handlers, MPNowPlayingController.managedCommandNames.count, "前置条件：target 确实挂上了")
+        // 播放意图本身仍然服务（用户按了播放就该播；失败以状态面如实呈现，而不是静默改判）。
+        let snapshot = await player.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .playing, "会话激活失败不得被伪装成播放失败")
+        // 重试语义：每次传输动作都会再试一次激活（`started` 没置位 → 门会重跑 configure）。
+        let configuredBefore = system.configurationCount
+        await player.resume()
+        let configuredAfter = system.configurationCount
+        XCTAssertEqual(configuredAfter, configuredBefore + 1, "失败后下一次用户意图必须重试激活")
+        await player.teardown()
+        let still = player.audioSessionActivationFailure as? PlayerError
+        XCTAssertEqual(still, .writeFailed(-10868), "teardown 不得抹掉失败留痕（那是事实，不是待清标志位）")
+    }
+
+    /// MAJ-5：显式激活面（throwing 路径）同样不得因为「激活失败」而丢掉系统面注册。
+    func testExplicitActivationThrowsButStillRegistersSystemSurface() async {
+        let system = StubAudioSessionSystem(failsConfigure: true)
+        let player = CovaPlayer(engine: ScriptedEngine(), clock: FakeClock(), audioSystem: system)
+        do {
+            try await player.activateForPlayback()
+            XCTFail("前置条件：桩系统被配成激活必然失败")
+        } catch let error as PlayerError {
+            XCTAssertEqual(error, .writeFailed(-10868), "门面必须把错误如实抛出，而不是吞掉")
+        } catch {
+            XCTFail("错误类型不得被门面改写：\(type(of: error))")
+        }
+        let registered = player.isRemoteCommandSurfaceRegistered
+        XCTAssertTrue(registered)
+        let activated = player.isActivated
+        XCTAssertFalse(activated)
+        await player.teardown()
+    }
+
+    /// 建门面 → 激活 → 起播 → （可选 `teardown()`）→ **在同一个作用域末尾把它放掉**。
+    ///
+    /// 为什么必须有这个 helper：`let live` 这类局部常量会把对象生命周期续到**所在作用域末尾**，
+    /// 所以在测试方法体里写 `player = nil` 压根不会触发析构（那是 MAJ-7 判据最容易写空的地方）。
+    /// 返回值是「放掉之前」读到的系统面事实，用作前置条件自证 —— 少了它，下面的断言就可能是空断言。
+    private func runFacadeUntilDeallocation(
+        itemID: String,
+        explicitTeardown: Bool = false
+    ) async throws -> (
+        commandsEnabled: Bool,
+        title: String?,
+        playbackState: MPNowPlayingPlaybackState,
+        heldTargets: Int
+    ) {
+        let player = CovaPlayer(engine: ScriptedEngine(), clock: FakeClock(), audioSystem: StubAudioSessionSystem())
+        try await player.activateForPlayback()
+        _ = await player.start(items: TestItems.makeMany([itemID]))
+        if explicitTeardown {
+            await player.teardown()
+        }
+        return (
+            MPNowPlayingController.sharedCenter().playCommand.isEnabled,
+            MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] as? String,
+            MPNowPlayingInfoCenter.default().playbackState,
+            player.nowPlaying.registeredHandlerCount
+        )
+        // 此处作用域结束：`player` 与隐式持有的引用全部释放 → deinit 必须退系统面。
+    }
+
+    /// MAJ-7：**没有 teardown 就释放**（App 里门面的真实终态之一）之后，系统面必须退干净：
+    /// 远端命令 `isEnabled` 归位、target 摘净、`MPNowPlayingInfoCenter` 不再显示死门面的曲目。
+    ///
+    /// 旧 `deinit` 只做 `engine.stopAndRelease()`，复审实测析构后 `playCommand.isEnabled == true`、
+    /// Now Playing 仍是死门面的曲名、`playbackState == playing`。
+    func testDeinitWithoutTeardownRetiresRemoteCommandsAndNowPlaying() async throws {
+        let center = MPNowPlayingController.sharedCenter()
+        let infoCenter = MPNowPlayingInfoCenter.default()
+        let before = try await runFacadeUntilDeallocation(itemID: "dying-facade")
+
+        // 前置条件：系统面确实被这个（已死的）门面占着。
+        XCTAssertTrue(before.commandsEnabled, "前置条件：命令已启用")
+        XCTAssertEqual(before.title, "曲目-dying-facade", "前置条件：锁屏显示的是本门面的曲目")
+        XCTAssertEqual(before.playbackState, .playing, "前置条件：系统读数仍是「正在播放」")
+        XCTAssertEqual(
+            before.heldTargets,
+            MPNowPlayingController.managedCommandNames.count,
+            "前置条件：target 确实挂上了"
+        )
+
+        XCTAssertFalse(center.playCommand.isEnabled, "MAJ-7：析构后不得继续接远端命令")
+        XCTAssertFalse(center.pauseCommand.isEnabled)
+        XCTAssertFalse(center.togglePlayPauseCommand.isEnabled)
+        XCTAssertTrue(infoCenter.nowPlayingInfo?.isEmpty ?? true, "MAJ-7：析构后锁屏不得继续显示死门面的曲目")
+        XCTAssertEqual(infoCenter.playbackState, .stopped, "MAJ-7：析构后不得继续自称在播放")
+    }
+
+    /// MAJ-7 的对照腿（TD-9）：常规 `teardown()` 路径同样收敛到「命令位关闭 + target 摘净」，
+    /// 之后的析构兜底是幂等的（不得把已关闭的命令位再打开、也不得重复扣账）。
+    func testTeardownThenDeinitIsIdempotentOnSharedSurfaces() async throws {
+        let center = MPNowPlayingController.sharedCenter()
+        let before = try await runFacadeUntilDeallocation(itemID: "tidy-facade", explicitTeardown: true)
+        XCTAssertFalse(before.commandsEnabled, "前置条件：teardown 已关闭命令位")
+        XCTAssertEqual(before.heldTargets, 0, "前置条件：teardown 已摘净 target 账")
+
+        XCTAssertFalse(center.playCommand.isEnabled, "析构兜底不得把已关闭的命令位再打开")
+        XCTAssertTrue(MPNowPlayingInfoCenter.default().nowPlayingInfo?.isEmpty ?? true)
+    }
+
+    /// 用**生产默认**音频会话（真实 `AVAudioSessionAdapter`）跑一次起播，然后在本作用域末尾释放门面。
+    ///
+    /// 「活着时的净额」必须在**作用域内**读：helper 一返回，门面就已经析构了（那是本条的判据本体）。
+    private func runFacadeWithProductionAudioSession(itemID: String) async -> (attached: Bool, netWhileAlive: Int) {
+        let player = CovaPlayer(engine: ScriptedEngine(), clock: FakeClock())
+        _ = await player.start(items: TestItems.makeMany([itemID]))
+        let attached = await player.audioSession.isObservingSystemNotifications
+        return (attached, AVAudioSessionAdapter.netLiveObserverTokens)
+    }
+
+    /// MAJ-7 的分层腿：控制器**比门面活得久**时（真实装配里协调器就强持着它），
+    /// 退系统面只能由门面的 `deinit` 那一句完成 —— 控制器自己的 deinit 兜底此时根本没跑。
+    ///
+    /// 为什么需要单独一条：只测「析构后系统面干净」时，两层兜底互为替身，删掉门面那一句
+    /// 仍然全绿（变异自证 G3-M7a 的第一版就逃过了）。把控制器留在测试手里，
+    /// 替身就消失了。
+    func testDeinitRetiresSharedSurfacesEvenWhenControllerOutlivesFacade() async throws {
+        let center = MPNowPlayingController.sharedCenter()
+        let infoCenter = MPNowPlayingInfoCenter.default()
+        let survivor = try await runFacadeAndKeepControllerAlive(itemID: "orphaned-controller")
+
+        XCTAssertFalse(center.playCommand.isEnabled, "MAJ-7：门面析构即须关闭命令位（控制器活着不算理由）")
+        XCTAssertTrue(infoCenter.nowPlayingInfo?.isEmpty ?? true, "MAJ-7：死门面的曲名不得留在锁屏上")
+        XCTAssertEqual(infoCenter.playbackState, .stopped)
+        XCTAssertEqual(
+            survivor.observedTeardownCount,
+            1,
+            "退出动作确实发生在这个仍活着的控制器身上（不是它自己稍后的 deinit）"
+        )
+        XCTAssertEqual(survivor.registeredHandlerCount, 0, "MAJ-7：target 账必须随退出清零")
+    }
+
+    /// 建门面 → 激活 → 起播 → 返回**控制器本体**（于是控制器比门面活得久）。
+    private func runFacadeAndKeepControllerAlive(itemID: String) async throws -> MPNowPlayingController {
+        let player = CovaPlayer(engine: ScriptedEngine(), clock: FakeClock(), audioSystem: StubAudioSessionSystem())
+        try await player.activateForPlayback()
+        _ = await player.start(items: TestItems.makeMany([itemID]))
+        XCTAssertTrue(
+            MPNowPlayingController.sharedCenter().playCommand.isEnabled,
+            "前置条件：活着的门面确实占着共享命令面"
+        )
+        return player.nowPlaying
+    }
+
+    /// MAJ-7：门面释放后，观测者账必须回到原水位 —— 走的是 `AVAudioSessionAdapter.deinit`
+    /// 兜底（门是 actor，`deinit` 里不能 `await audioSession.stop()`）。
+    /// 这条同时证明「自引用强环已断」：环没断时适配器永不释放，净额会永久停在 +2。
+    func testFacadeDeallocationLeavesNoLiveSessionObservers() async throws {
+        let baseline = AVAudioSessionAdapter.netLiveObserverTokens
+        let run = await runFacadeWithProductionAudioSession(itemID: "observer-leak")
+        XCTAssertTrue(run.attached, "前置条件：门已挂上观测者（MAJ-5 —— 会话激活成不成都与此无关）")
+        XCTAssertEqual(
+            run.netWhileAlive,
+            baseline + AVAudioSessionAdapter.observedNotificationNames.count,
+            "前置条件：净额随注册上升（门面还活着，此时 +2 是事实而不是泄漏）"
+        )
+
+        let net = AVAudioSessionAdapter.netLiveObserverTokens
+        XCTAssertEqual(net, baseline, "MAJ-7：门面释放之后进程内不得残留观测者 token")
+    }
 }

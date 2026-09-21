@@ -584,6 +584,11 @@ final class AudioSessionControllerTests: XCTestCase {
 
     /// 生产默认注入的那个类型（`AVAudioSessionAdapter`）当 system 用时，门必须真的在它身上
     /// 挂上观测者 —— 这条走的是**真实适配器**，不是桩的形状。
+    ///
+    /// MAJ-5：**原来的 `XCTSkip` 逃生门已拆掉**。旧写法是「`start()` 抛错就跳过」，而那恰恰是
+    /// 本条 finding 的形态 —— 真机上 `setActive(true)` 会因为他人占用会话 / 通话中而失败，
+    /// 一失败就跳过注册，design §7 静默失效，测试却报「通过」。现在注册排在激活之前，
+    /// 所以**无论激活成功与否**，观测者都必须已经挂上；这条判据因此是确定性的，没有可跳过的分支。
     func testRealAdapterAsSystemGetsObserversRegisteredByGate() async throws {
         let adapter = AVAudioSessionAdapter()
         let gate = AudioSessionGate(
@@ -593,18 +598,169 @@ final class AudioSessionControllerTests: XCTestCase {
         addTeardownBlock { await gate.stop() }
         let wired = await gate.observesSystemNotifications
         XCTAssertTrue(wired)
+
+        var activationFailed = false
         do {
             try await gate.start()
         } catch {
-            throw XCTSkip("模拟器不允许激活音频会话（\(error)）：注册判据由默认接线用例覆盖")
+            activationFailed = true
         }
+        // 无论走哪条分支，下面两段判据都必须成立（激活成功 = 注册；激活失败 = 也注册）。
         let registered = adapter.observedNotificationCount
         XCTAssertEqual(registered, AVAudioSessionAdapter.observedNotificationNames.count, "生产默认真挂了观测者")
         let holding = adapter.holdsGate
         XCTAssertTrue(holding)
+        let attached = await gate.isObservingSystemNotifications
+        XCTAssertTrue(attached, "门必须自己知道「观测者挂着」，且这与激活成功无关")
+        let started = await gate.isStarted()
+        XCTAssertEqual(started, !activationFailed, "激活失败时不得自称已启动（成功时才记账）")
         await gate.stop()
         let remaining = adapter.observedNotificationCount
         XCTAssertEqual(remaining, 0)
+        let detached = await gate.isObservingSystemNotifications
+        XCTAssertFalse(detached)
+    }
+
+    // MARK: - 环 4 · 第 7 批 MAJ-5：注册与「会话激活成功」脱钩
+
+    /// MAJ-5：`setActive(true)` 失败时观测者**必须仍然**注册，而且中断通知要**真的**驱动到播放层。
+    ///
+    /// 机理（复审证据 `AudioSessionController.swift:279-286`）：旧实现把注册排在
+    /// `try system.configureForPlayback()` **之后**，一抛错就整段跳过；而中断/路由通知恰恰在
+    /// 「本 App 拿不到会话」时最可能出现。M3 修的是「没接上」，这一条修的是「接上了但被跳过」。
+    ///
+    /// 这里用真实适配器当观测者、桩系统当激活面（`failsConfigure: true`），于是
+    /// 「注册发生在激活之前」被压成一件可断言的事：**激活已经失败，观测者却在挂着**。
+    func testObserverRegistrationDoesNotDependOnSessionActivation() async throws {
+        let engine = ScriptedEngine()
+        let coordinator = PlaybackCoordinator(engine: engine, clock: FakeClock())
+        _ = await coordinator.start(items: TestItems.makeMany(["activation-failed"]))
+        let playing = await coordinator.currentSnapshot().state
+        XCTAssertEqual(playing, .playing, "前置条件：正在播放")
+
+        let adapter = AVAudioSessionAdapter()
+        let handler = SignallingSessionHandler(coordinator: coordinator)
+        let gate = AudioSessionGate(
+            system: StubAudioSessionSystem(failsConfigure: true),
+            handler: handler,
+            adapter: adapter
+        )
+        addTeardownBlock {
+            await gate.stop()
+            await coordinator.teardown()
+        }
+        do {
+            try await gate.start()
+            XCTFail("前置条件被破坏：桩系统被配成「激活必然失败」")
+        } catch {
+            // 期望：激活失败。判据全在下面 —— 失败**不许**带走注册。
+        }
+        let started = await gate.isStarted()
+        XCTAssertFalse(started, "激活失败不得自称已启动")
+        let registered = adapter.observedNotificationCount
+        XCTAssertEqual(
+            registered,
+            AVAudioSessionAdapter.observedNotificationNames.count,
+            "MAJ-5：激活失败时观测者必须已经挂上（否则 design §7 又静默失效一次）"
+        )
+        let attached = await gate.isObservingSystemNotifications
+        XCTAssertTrue(attached)
+
+        // 「挂着」不能只是记账：真的灌一条中断进去，必须驱动到播放层。
+        NotificationCenter.default.post(
+            name: AVAudioSession.interruptionNotification,
+            object: nil,
+            userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]
+        )
+        let sawCommand = await handler.waitForCommands(target: 1)
+        XCTAssertTrue(sawCommand, "激活失败之后中断通知仍必须进决策")
+        let applied = await handler.appliedUpTo(1)
+        XCTAssertEqual(applied, [.pause])
+        let paused = await coordinator.currentSnapshot().state
+        XCTAssertEqual(paused, .paused)
+
+        // 重复 start()（门面每次传输动作都会重试激活）不得重复注册，也不得抹掉观测者。
+        try? await gate.start()
+        let stillRegistered = adapter.observedNotificationCount
+        XCTAssertEqual(stillRegistered, AVAudioSessionAdapter.observedNotificationNames.count)
+    }
+
+    /// MAJ-5 的另一半（通知残留红线）：`start()` 半途失败之后 `stop()` 仍然必须把
+    /// 观测者与 deactivate 两件事都做掉。旧实现是 `guard started else { return }`，
+    /// 于是「注册成功 + 激活失败」这一形态下 `stop()` 直接返回 —— token 永久残留。
+    func testStopAfterFailedActivationStillDetachesObservers() async throws {
+        let system = StubAudioSessionSystem(failsConfigure: true)
+        let adapter = AVAudioSessionAdapter()
+        let gate = AudioSessionGate(
+            system: system,
+            handler: AudioSessionCommandHandler(coordinator: nil),
+            adapter: adapter
+        )
+        try? await gate.start()
+        let beforeStop = adapter.observedNotificationCount
+        XCTAssertEqual(beforeStop, AVAudioSessionAdapter.observedNotificationNames.count, "前置条件：注册已发生")
+        await gate.stop()
+        let afterStop = adapter.observedNotificationCount
+        XCTAssertEqual(afterStop, 0, "激活失败不得让 stop() 漏摘观测者（本仓红线）")
+        XCTAssertFalse(adapter.holdsGate)
+        let attached = await gate.isObservingSystemNotifications
+        XCTAssertFalse(attached)
+        let deactivated = system.deactivationCount
+        XCTAssertEqual(deactivated, 1, "半途失败的 start 仍要走反激活（会话类目已可能被改掉）")
+
+        // 收尾之后再 stop() 是空操作（幂等），且不得把 token 记成负数。
+        await gate.stop()
+        let net = AVAudioSessionAdapter.netLiveObserverTokens
+        XCTAssertGreaterThanOrEqual(net, 0, "账目不得为负：\(net)")
+    }
+
+    // MARK: - 环 4 · 第 7 批 MAJ-7：适配器 deinit 兜底（通知残留）
+
+    /// MAJ-7：忘记 `stopObserving()` 就释放时，`AVAudioSessionAdapter.deinit` 必须兜底摘 token。
+    ///
+    /// 判据只能落在**跨对象的全局净额**上：实例一旦释放，再没人能问它「你还挂着几个观测者」。
+    /// 这条同时杀掉复审提到的另一种形态 —— 门把 `system` 当 `routeProbe` 传回自己，
+    /// 生产默认装配下那是**自引用强环**（适配器永不释放 → `deinit` 形同不存在）。
+    func testAdapterDeinitDetachesObserversWhenStopWasForgotten() async {
+        let baseline = AVAudioSessionAdapter.netLiveObserverTokens
+        do {
+            let adapter = AVAudioSessionAdapter()
+            let gate = AudioSessionGate(
+                system: adapter,
+                handler: AudioSessionCommandHandler(coordinator: nil)
+            )
+            // 直接挂观测者（不走 `start()`：那条路要先激活真实会话，成不成都不该影响本判据）。
+            await adapter.attachNotifications(to: gate, routeProbe: adapter)
+            let attached = adapter.observedNotificationCount
+            XCTAssertEqual(attached, 2, "前置条件：两个观测者都挂上了")
+            XCTAssertEqual(
+                AVAudioSessionAdapter.netLiveObserverTokens,
+                baseline + attached,
+                "前置条件：净额随注册上升（无人摘除）"
+            )
+        }
+        XCTAssertEqual(
+            AVAudioSessionAdapter.netLiveObserverTokens,
+            baseline,
+            "MAJ-7：deinit 必须兜底摘 token（自引用环未破 / 无 deinit 都会红在这里）"
+        )
+    }
+
+    /// MAJ-7 的对照腿（TD-9：合法工程不得误红）：显式 `stopObserving()` 之后归零，
+    /// 随后的 `deinit` 兜底不得把账减成负数（否则会掩盖真实泄漏，或让别的用例误红）。
+    func testExplicitStopObservingThenDeinitKeepsLedgerAtZero() async {
+        let baseline = AVAudioSessionAdapter.netLiveObserverTokens
+        do {
+            let adapter = AVAudioSessionAdapter()
+            let gate = AudioSessionGate(
+                system: adapter,
+                handler: AudioSessionCommandHandler(coordinator: nil)
+            )
+            await adapter.attachNotifications(to: gate, routeProbe: adapter)
+            await adapter.stopObserving()
+            XCTAssertEqual(AVAudioSessionAdapter.netLiveObserverTokens, baseline, "显式收尾即归零")
+        }
+        XCTAssertEqual(AVAudioSessionAdapter.netLiveObserverTokens, baseline, "deinit 兜底不得重复扣减")
     }
 
 }

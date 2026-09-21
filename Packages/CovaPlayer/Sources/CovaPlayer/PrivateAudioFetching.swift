@@ -88,6 +88,16 @@ public enum PrivateAudioPath {
     public static var fileAttributes: [FileAttributeKey: Any] {
         [FileAttributeKey.posixPermissions: fileMode]
     }
+    /// 目录权限位（min-1）：与文件位同口径收紧到「仅 owner 可进入」。
+    ///
+    /// 旧实现只收了文件位（0600），目录仍是 0755 —— 于是别的进程虽然读不到音频字节，
+    /// 却能 `ls` 出「哪个账号（hex 命名空间）缓存过哪些曲目、在第几代」（文件名本身就是
+    /// `<itemID>@g<generation>`）。元数据泄漏也是泄漏，D7/AGENTS 硬边界 3 不区分这两件事。
+    public static let directoryMode = 0o700
+    /// `directoryMode` 的 `FileAttributeKey` 形态。
+    public static var directoryAttributes: [FileAttributeKey: Any] {
+        [FileAttributeKey.posixPermissions: directoryMode]
+    }
 
     /// owner 命名空间（hex，避免任何原始字符进入文件系统）。
     public static func namespace(for owner: PrincipalID) -> String {

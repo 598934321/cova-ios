@@ -265,6 +265,10 @@ public actor AudioSessionGate: AudioSessionControlling {
     private let notifier: (any AudioSessionNotificationObserving)?
     private var state = AudioSessionState()
     private var started = false
+    /// 观测者是否已挂上（MAJ-5）：这与「会话激活成功」是**两件事**，必须分开记账 ——
+    /// 混成一个 flag 的话，激活失败要么让注册一起丢（design §7 静默失效），
+    /// 要么让 `stop()` 漏摘已挂上的观测者（通知残留，本仓红线）。
+    private var observingAttached = false
 
     public init(
         system: any AudioSessionSystemInterface,
@@ -278,16 +282,27 @@ public actor AudioSessionGate: AudioSessionControlling {
 
     public func start() async throws {
         guard !started else { return }
+        // MAJ-5：观测者注册排在 `configureForPlayback()` **之前**。
+        //
+        // 旧顺序把「注册」挂在「激活成功」上：真机上 `setActive(true)` 会因为他人占用音频、
+        // 通话中等而失败，一失败就整段跳过注册 —— design §7（来电后自动续播、拔耳机暂停）
+        // 再次静默失效（M3 修的是「没接上」，这一次是「接上了但被跳过」）。
+        // 而且中断/路由通知恰恰在「本 App 拿不到会话」时最可能出现，所以它们必须已经被观测。
+        // 注册是幂等的（适配器按通知名去重），激活失败时留着它也没有任何残留风险 ——
+        // `stop()` 会按 `observingAttached` 摘掉，与 `started` 无关。
+        if observingAttached == false, let notifier {
+            await notifier.attachNotifications(to: self, routeProbe: system)
+            observingAttached = true
+        }
         try system.configureForPlayback()
         started = true
-        // M3：观测者的注册**不依赖调用方是否额外传了 `adapter:`** —— 生产默认（`system` 即
-        // `AVAudioSessionAdapter`）也必须在这里真的挂上通知，否则整条中断/路由链静默失效。
-        await notifier?.attachNotifications(to: self, routeProbe: system)
     }
 
     public func stop() async {
-        guard started else { return }
+        // 两个 flag 任一成立都要走收尾：只认 `started` 会把「注册成功、激活失败」的那一半漏掉。
+        guard started || observingAttached else { return }
         started = false
+        observingAttached = false
         await notifier?.detachNotifications()
         try? system.deactivate()
         state = AudioSessionState()
@@ -298,6 +313,9 @@ public actor AudioSessionGate: AudioSessionControlling {
 
     /// 是否已接上系统通知源（生产默认接线判据）。
     public var observesSystemNotifications: Bool { notifier != nil }
+
+    /// 观测者**当前确实挂着**（MAJ-5 的判据面：激活失败时它也必须为真）。
+    public var isObservingSystemNotifications: Bool { observingAttached }
 
     public func receive(_ signal: AudioSessionSignal) async {
         let decision = AudioSessionReducer.decide(signal, state: &state)
@@ -352,16 +370,66 @@ public final class AVAudioSessionAdapter: AudioSessionSystemInterface, AudioSess
     private let lock = NSLock()
     private var observerTokens: [Notification.Name: NSObjectProtocol] = [:]
     private weak var gate: AudioSessionGate?
-    private var routeProbe: (any AudioSessionSystemInterface)?
+    /// 路由探针（**weak**）：MAJ-7 附带发现 —— 门把 `system` 同时当作 `notifier` 与 `routeProbe`
+    /// 传回来，生产默认形态下这就是**自引用强环**（adapter → adapter），适配器永不释放，
+    /// 于是 `deinit` 兜底形同不存在、观测者 token 永久残留。协议不要求 `AnyObject`，
+    /// 故这里以 `AnyObject` 存弱引用、用时向下转回协议存在值。
+    private weak var routeProbe: AnyObject?
+    /// 进程内「已注册但未摘除」的 token 净数（MAJ-7 的可观测面）。
+    ///
+    /// 为什么需要一个静态账而不是实例计数：实例释放后没人能再问它「你还挂着几个观测者」，
+    /// 而那正是本条 finding 的形态 —— 只有跨对象的全局净额能证明 `deinit` 真的兜住了。
+    ///
+    /// 为什么是一盒子而不是 `static var`：Swift 6 严格并发下非隔离的全局可变量直接编译失败
+    /// （`#MutableGlobalVariable`），而临界区本来就在这只盒子里用 `NSLock` 守住。
+    private final class ObserverLedger: @unchecked Sendable {
+        private let lock = NSLock()
+        private var net = 0
+
+        func bump(_ by: Int) {
+            lock.lock()
+            net += by
+            lock.unlock()
+        }
+
+        var value: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return net
+        }
+    }
+
+    private static let observerLedger = ObserverLedger()
+
+    /// 当前进程内未摘除的观测者 token 净数（注册 +1、摘除 -1；泄漏判据）。
+    public static var netLiveObserverTokens: Int { observerLedger.value }
+
+    private static func ledgerBumped(_ by: Int) {
+        observerLedger.bump(by)
+    }
 
     public init() {}
+
+    /// 兜底摘除（MAJ-7）：忘记 `stopObserving()` 时由 `deinit` 收尾 —— 通知残留是本仓红线。
+    deinit {
+        stopObservingSynchronously()
+    }
 
     /// gate 与路由探针在 `AudioSessionGate.start()` 时回填。
     func attach(gate: AudioSessionGate, routeProbe: any AudioSessionSystemInterface) {
         lock.lock()
         defer { lock.unlock() }
         self.gate = gate
-        self.routeProbe = routeProbe
+        // 结构上只有类实例能当探针（要弱引用它）；值类型的 `AudioSessionSystemInterface`
+        // 实现在本仓不存在（生产适配器与全部测试桩都是 class）。
+        self.routeProbe = routeProbe as AnyObject
+    }
+
+    /// 取回路由探针（未回填 / 已释放 → nil，`forward` 端按「输出不可知」fail-closed 处理）。
+    private func lockedRouteProbe() -> (any AudioSessionSystemInterface)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return routeProbe as? any AudioSessionSystemInterface
     }
 
     public func configureForPlayback() throws {
@@ -453,7 +521,7 @@ public final class AVAudioSessionAdapter: AudioSessionSystemInterface, AudioSess
     /// `NSLock` 不得进 async 上下文：注册/注销收敛到同步方法。
     private func startObservingSynchronously() {
         lock.lock()
-        defer { lock.unlock() }
+        var added = 0
         for name in Self.observedNotificationNames where observerTokens[name] == nil {
             let token = NotificationCenter.default.addObserver(
                 forName: name,
@@ -463,7 +531,12 @@ public final class AVAudioSessionAdapter: AudioSessionSystemInterface, AudioSess
                 self?.forward(notification)
             }
             observerTokens[name] = token
+            added += 1
         }
+        lock.unlock()
+        // 账目在锁外推进：观测者账的锁与适配器自己的 `lock` 不得嵌套（两把锁的持有顺序
+        // 一旦在别处反过来就是死锁面）。
+        Self.ledgerBumped(added)
     }
 
     public func stopObserving() async {
@@ -477,6 +550,7 @@ public final class AVAudioSessionAdapter: AudioSessionSystemInterface, AudioSess
         gate = nil
         routeProbe = nil
         lock.unlock()
+        Self.ledgerBumped(-tokens.count)
         for token in tokens {
             NotificationCenter.default.removeObserver(token)
         }
@@ -499,14 +573,15 @@ public final class AVAudioSessionAdapter: AudioSessionSystemInterface, AudioSess
     private func forward(_ notification: Notification) {
         lock.lock()
         let target = gate
-        let probe = routeProbe
         lock.unlock()
         guard let target else { return }
         let signal = Self.normalizedSignal(
             name: notification.name.rawValue,
             payload: Self.payload(
                 from: notification,
-                routeHasActiveOutput: probe?.hasActiveOutputPorts() ?? false
+                // min-2 同源做法：探针的读取单独走同步临界区（`routeProbe` 现在是弱引用，
+                // 取用与判空必须原子，否则可能在两次读取之间被释放）。
+                routeHasActiveOutput: lockedRouteProbe()?.hasActiveOutputPorts() ?? false
             )
         )
         Task { await target.receive(signal) }
