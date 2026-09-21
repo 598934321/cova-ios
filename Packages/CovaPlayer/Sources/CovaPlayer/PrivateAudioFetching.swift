@@ -35,6 +35,9 @@ public protocol PrivateAudioFetching: Sendable {
     @discardableResult func purge(owner: PrincipalID) async -> Int
     /// 清除不属于给定 generation 的私有音频（在途旧代次结果不得被复用）。
     /// 返回**已确认删除**的文件数（口径同 `purge(owner:)`）。
+    ///
+    /// 作用域是**当前凭证快照的那个 owner**（环 4 · 第 6 批 min-5）：代次是账号内部的事实，
+    /// 跨 owner 扫描会把别的账号的旧代次文件一起删掉。凭证不可知时一律不删（fail-closed）。
     @discardableResult func purgeStale(before generation: SessionGeneration) async -> Int
     /// 全量清除（teardown）。返回**已确认删除**的文件数（口径同 `purge(owner:)`）。
     @discardableResult func purgeAll() async -> Int
@@ -57,14 +60,13 @@ public protocol PlaybackSourcePreparing: Sendable {
     ///
     /// - Parameter owner: 要清除的那个身份；`nil` 表示「身份已不可知」→ 全量清除。
     ///
-    /// 默认实现为空操作 —— 只适用于「本准备器不在磁盘上留任何私有音频字节」的实现
-    /// （纯转换型准备器、测试桩）。凡是会把私有音频落盘的实现（`PrivateAudioFetcher`）
-    /// **必须覆盖**本方法，否则上一个账号的音频会在登出后留在沙盒里。
+    /// **必须实现**（环 4 · 第 6 批 MAJ-2）：这里曾有
+    /// `public extension PlaybackSourcePreparing { func discardPrivateAudio(owner:) async {} }`
+    /// 的默认空实现，于是「第二个会往磁盘写私有音频的准备器」只要忘记覆盖，就能让登出
+    /// 静默变成空操作 —— 门面调用了、协议满足了、盘上的字节一个都没动（D8 / api-contracts §5 违例）。
+    /// 默认实现删除后，漏覆盖 = 编译不过；「没有磁盘副作用」的实现也必须显式写一行空操作，
+    /// 那一行就是它的免责申明。
     func discardPrivateAudio(owner: PrincipalID?) async
-}
-
-public extension PlaybackSourcePreparing {
-    func discardPrivateAudio(owner: PrincipalID?) async {}
 }
 
 /// owner 目录与文件命名（缓存键含 `PrincipalID`，跨账号互不可见）。

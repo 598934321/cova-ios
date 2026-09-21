@@ -11,13 +11,20 @@ import Foundation
 /// **不含任何 UI**（AGENTS 硬边界 8 / 门禁 3/10 机械化拦截）。
 ///
 /// 安全：
-/// - 唯一网络出口是 `https://covalink.cn`（`CovaEnvironment`，D10）；`assetOrigin` 即该出口；
+/// - 唯一网络出口是 `https://covalink.cn`（`CovaEnvironment`，D10）；`assetOrigin` 就是这条出口
+///   的**注入点**：默认装配把它交给 `AVPlayerEngine` 作为公开直链的判定基准（MAJ-8），
+///   不再只是「被断言一次然后没人用」的字段；
 /// - 私有音频（D7）经 `PrivateAudioFetcher` 先落盘校验、再以 `file://` 播放；
 ///   Bearer / 签名地址以 `AudioURL` 形态存在，不进日志、不进持久化；
-/// - `deinit` 同步释放引擎（`stopAndRelease`），不留时间观察者与远端 target。
+/// - `deinit` 同步释放引擎（`stopAndRelease`）并**退掉系统面**（远端命令 / Now Playing），
+///   音频会话观测者由 `AVAudioSessionAdapter.deinit` 兜底摘除（MAJ-7）。
 @MainActor
 public final class CovaPlayer {
     /// 资源出口（钉死为生产 origin；既有 `CovaTests` 断言其语义，不得退化）。
+    ///
+    /// MAJ-8：这个值**被消费**——未注入引擎时，门面用 `assetOrigin` 装配默认
+    /// `AVPlayerEngine`，而该引擎拿它当公开直链的出口判定基准。改出口必须动这里，
+    /// 只改断言不会生效。
     public let assetOrigin: URL
 
     public let coordinator: PlaybackCoordinator
@@ -44,9 +51,14 @@ public final class CovaPlayer {
     }
 
     /// 依赖注入形态（单测与 M1 装配用）。
+    ///
+    /// - Parameter engine: 播放引擎；`nil` = 生产默认 `AVPlayerEngine(egressOrigin: assetOrigin)`。
+    ///   刻意把「默认引擎」的构造放进 `init` 体内而不是参数默认值里 —— 只有这样才能让
+    ///   `assetOrigin` 真的决定引擎承认的那台出口（MAJ-8）。注入别的引擎（单测桩）时
+    ///   出口判定由该实现自己负责，门面不做二次猜测。
     public init(
         assetOrigin: URL = CovaEnvironment.apiBaseURL,
-        engine: any PlayerEngine = AVPlayerEngine(),
+        engine: (any PlayerEngine)? = nil,
         clock: any CovaClock = SystemClock(),
         reporter: PlayReportCoordinator? = nil,
         audioSystem: any AudioSessionSystemInterface = AVAudioSessionAdapter(),
@@ -58,15 +70,16 @@ public final class CovaPlayer {
         // 未注入上报器时使用 `UnavailablePlayReporter`：NEEDS-2 未解锁期间**显式挂起**，
         // 而不是静默丢包（集次停留在未决态，可经 pendingCount() 观测）。
         let report = reporter ?? PlayReportCoordinator(submitter: UnavailablePlayReporter())
+        let playbackEngine = engine ?? AVPlayerEngine(egressOrigin: assetOrigin)
         let playback = PlaybackCoordinator(
-            engine: engine,
+            engine: playbackEngine,
             clock: clock,
             reporter: report,
             nowPlaying: controller,
             sourcePreparer: sourcePreparer
         )
         self.assetOrigin = assetOrigin
-        self.engine = engine
+        self.engine = playbackEngine
         self.clock = clock
         self.commandRouter = router
         self.nowPlaying = controller
@@ -253,8 +266,9 @@ public final class CovaPlayer {
         await coordinator.teardown()
         await reporter.teardown()
         await audioSession.stop()
-        // D8：私有音频一个字节都不留。两道面都走：协议清理面（覆盖「不是 fetcher 但会落盘」的
-        // 准备器）与取回清理面（覆盖「忘了覆盖默认空实现」的 fetcher）—— 二者都是幂等全清。
+        // D8：私有音频一个字节都不留。两道面都走：协议清理面（覆盖「任何会落盘的准备器」，
+        // MAJ-2 之后它是必须实现的成员）与取回清理面（覆盖 `PrivateAudioFetching` 那一侧）
+        // —— 二者都是幂等全清。
         await sourcePreparer?.discardPrivateAudio(owner: nil)
         if let fetcher {
             _ = await fetcher.purgeAll()

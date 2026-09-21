@@ -64,12 +64,18 @@ public protocol PrivateAudioTransport: Sendable {
 
 /// 权威一致性判定（缺陷 C2 的纯决策面，零 URLSession 可断言）。
 enum AudioAuthorityMatch {
-    /// `scheme://host:port` 归一化 origin；host 缺失或非 https 时为 nil。
+    /// `scheme://host[:port]` 归一化 origin（**规范端口折叠**）；host 缺失或非 https 时为 nil。
+    ///
+    /// min-2：`https://covalink.cn` 与 `https://covalink.cn:443` 是**同一台**主机 ——
+    /// `CovaEnvironment.isProductionOrigin` 早就把显式 443 当作合法规范端口放行，
+    /// 而这里的旧归一化把端口写进字符串，于是服务端一次带端口的合法重定向就会被判成
+    /// 「权威换人」而误杀（NEEDS-15 未解锁前又多一处堵点）。两处的口径必须同源：
+    /// **只有非规范端口才算另一台主机**。
     static func origin(of url: URL?) -> String? {
         guard let url, let scheme = url.scheme?.lowercased(), scheme == "https",
               let host = url.host?.lowercased(), !host.isEmpty
         else { return nil }
-        if let port = url.port { return "\(scheme)://\(host):\(port)" }
+        if let port = url.port, port != CovaEnvironment.apiPort { return "\(scheme)://\(host):\(port)" }
         return "\(scheme)://\(host)"
     }
 

@@ -24,6 +24,12 @@ final class AVPlayerEngineTests: XCTestCase {
 
     // MARK: - 纯映射
 
+    /// 装载闸门的两条腿（MAJ-8 加固后的完整口径）：
+    /// ① 需 Bearer 的一律拒绝（D7）；② `.publicDirect` 必须落在**唯一生产出口**上才可播。
+    ///
+    /// 「接受公开直链」这一腿的夹具主机从 `cdn.covalink.example` 换成了生产出口 ——
+    /// 不是弱化：断言数量只增不减，且新增了三条拒绝腿（异主机 / 显式非规范端口 / 注入非法出口）。
+    /// 全程零网络：这里断言的是纯映射结果，没有任何 `AVPlayerItem` 真的去装载这条地址。
     func testPlayableURLRefusesBearerItemsAndAcceptsDirectAndLocalized() {
         guard case .failure(let failure) = AVPlayerEngine.playableURL(for: bearerItem()) else {
             return XCTFail("需 Bearer 的条目不得被交给播放器（D7）")
@@ -37,10 +43,69 @@ final class AVPlayerEngineTests: XCTestCase {
         }
         XCTAssertEqual(url.scheme, "file")
 
-        guard case .success(let publicURL) = AVPlayerEngine.playableURL(for: TestItems.make("pub")) else {
-            return XCTFail("公开直链应可直接播")
+        guard case .success(let publicURL) = AVPlayerEngine.playableURL(for: TestItems.makeProduction()) else {
+            return XCTFail("生产出口上的公开直链应可直接播")
         }
         XCTAssertEqual(publicURL.scheme, "https")
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(publicURL))
+        // MAJ-8：曾经零判定的那条路 —— 另一台主机的 https 直链照样 `.success`。
+        let foreignHost = TestItems.make("cdn-other", source: .publicDirect(
+            try! AudioURL(https: URL(string: "https://cdn-other.invalid/a.m4a")!)
+        ))
+        guard case .failure(let rejected) = AVPlayerEngine.playableURL(for: foreignHost) else {
+            return XCTFail("MAJ-8：非生产出口的公开直链必须被拒绝（旧实现返回 .success）")
+        }
+        XCTAssertEqual(rejected.kind, .invalidSourceURL)
+        XCTAssertFalse(
+            rejected.description.contains("cdn-other"),
+            "拒绝理由不得回显被拒主机：\(rejected.description)"
+        )
+        // 显式非规范端口不是生产出口（`isProductionOrigin` 已有判据，这里验的是引擎真的吃到它）。
+        let oddPort = TestItems.make("port", source: .publicDirect(
+            try! AudioURL(https: URL(string: "https://covalink.cn:8443/a.m4a")!)
+        ))
+        guard case .failure = AVPlayerEngine.playableURL(for: oddPort) else {
+            return XCTFail("显式非 443 端口不得被当作生产出口")
+        }
+        // 注入的出口不能把判定放宽到别处（fail-closed 的第二重）。
+        let injected = AVPlayerEngine(egressOrigin: URL(string: "https://cdn.covalink.example")!)
+        let injectedOrigin = injected.currentEgressOrigin
+        XCTAssertFalse(CovaEnvironment.isProductionOrigin(injectedOrigin), "前置：注入的是非法出口")
+        guard case .failure = AVPlayerEngine.playableURL(for: TestItems.makeProduction(), egressOrigin: injectedOrigin) else {
+            return XCTFail("MAJ-8：注入别的出口只会一律拒绝，绝不放宽到那台主机")
+        }
+        // 正向对照（TD-9）：规范端口的生产地址仍是同一台出口（min-2 的口径一致性）。
+        let canonicalPort = TestItems.make("canonical", source: .publicDirect(
+            try! AudioURL(https: URL(string: "https://covalink.cn:443/audio/one.m4a")!)
+        ))
+        guard case .success = AVPlayerEngine.playableURL(for: canonicalPort) else {
+            return XCTFail("min-2：`:443` 与不带端口是同一台主机，不得误杀")
+        }
+    }
+
+    /// MAJ-8：引擎侧的出口判定本身（纯函数穷举，零 AVPlayer）。
+    func testEngineEgressJudgementTable() {
+        let origin = CovaEnvironment.apiBaseURL
+        func allowed(_ raw: String) -> Bool {
+            guard let url = URL(string: raw) else { return false }
+            return AVPlayerEngine.isAllowedEgress(url, origin: origin)
+        }
+        XCTAssertTrue(allowed("https://covalink.cn/api/media/one.m4a"))
+        XCTAssertTrue(allowed("https://covalink.cn:443/api/media/one.m4a"), "min-2：规范端口同一台")
+        XCTAssertTrue(allowed("https://covalink.cn/api/media/one.m4a?sig=deadbeef"), "签名查询不影响权威")
+        XCTAssertFalse(allowed("https://cdn-other.invalid/a.m4a"))
+        XCTAssertFalse(allowed("https://cdn.covalink.example/a.m4a"), "子域/别的域都不是出口")
+        XCTAssertFalse(allowed("http://covalink.cn/a.m4a"), "降级到 http 不是出口")
+        XCTAssertFalse(allowed("https://covalink.cn:8443/a.m4a"))
+        XCTAssertFalse(allowed("https://user@covalink.cn/a.m4a"), "内嵌 userinfo 一律拒绝")
+        XCTAssertFalse(allowed("file:///tmp/a.m4a"), "本地地址不走这条判定")
+        // 注入非法出口 = 一律拒绝（绝不因此放宽）。
+        XCTAssertFalse(AVPlayerEngine.isAllowedEgress(
+            URL(string: "https://covalink.cn/a.m4a")!,
+            origin: URL(string: "https://evil.invalid")!
+        ))
+        let engine = AVPlayerEngine()
+        XCTAssertEqual(engine.currentEgressOrigin, CovaEnvironment.apiBaseURL, "默认出口就是生产出口")
     }
 
     func testTimeConversionRejectsIndefiniteInvalidAndNegative() {

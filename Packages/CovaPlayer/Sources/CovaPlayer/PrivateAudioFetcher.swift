@@ -133,15 +133,41 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             switch shared {
             case .failure:
                 return shared
-            case .success:
-                // 加入者绝不因为「有人在下载」就放弃自己的完成性校验：
-                // 自己的期望长度复核不过 → 继续往下自己重取。
-                if let verified = existingValidFile(at: target, expectedBytes: request.expectedBytes) {
-                    return .success(verified)
+            case .success(let delivered):
+                // min-3：合流者**绝不换件**。旧注释说的「自己的期望长度复核不过 → 自己重取」
+                // 实际是「往同一个目标路径再覆盖提交一次」—— 于是先交付方拿到的 24 字节被
+                // 后加入方的 48 字节换掉（盘上实得 48），与 `testConcurrentSameKeyRequestsTriggerExactlyOneTransfer`
+                // 自陈的「两个调用者必须拿到同一份内容」直接冲突。
+                // 现在：同一 key 的字节数只由那一次传输决定；期望与实得不一致就是**元数据打架**，
+                // 如实报截断并把决定权交回上层，一次覆盖都不做。
+                if let verdict = mergedOutcome(at: target, delivered: delivered, expectedBytes: request.expectedBytes) {
+                    return verdict
                 }
             }
         }
         return await startTransfer(for: request, owner: owner, target: target, key: key)
+    }
+
+    /// 合流交付复核（min-3）：返回 nil 才允许自己另起一路。
+    ///
+    /// 与缓存复用腿（`existingValidFile`）**相反**，这里一个字节都不删：目标文件是别人那一次
+    /// 传输的交付物，删除或覆盖它就是把「换件」写进成功路径。只有「文件确实不见了」
+    /// （被清理、被系统回收）才退回自己重取。
+    private func mergedOutcome(
+        at url: URL,
+        delivered: AudioURL,
+        expectedBytes: Int?
+    ) -> Result<AudioURL, PlayerError>? {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path) else { return nil }
+        let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
+        if let expectedBytes, expectedBytes != size {
+            return .failure(.truncated(expected: expectedBytes, actual: size))
+        }
+        guard size > 0 else { return .failure(.emptyDownload) }
+        // 权限位不合格也不换件：那是「别人的交付物」，不是本路可以重写的东西。
+        guard Self.hasPrivateAudioFileMode(attributes) else { return .failure(.writeFailed(EACCES)) }
+        guard let verified = try? AudioURL(file: url) else { return .failure(.pathEscape) }
+        return .success(verified)
     }
 
     /// 登记并等待一次传输（同一时刻只有一个登记动作：本函数到 `inflightTransfers[key] = …`
@@ -300,28 +326,36 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
     public func purgeStale(before generation: SessionGeneration) async -> Int {
         await transport.cancelInFlightTransfers()
         discardInflightRegistry()
-        let root = PrivateAudioPath.rootDirectory(base: baseDirectory)
-        guard let owners = try? fileManager.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
+        // min-5：作用域收窄到**当前凭证快照的那个 owner**。旧实现扫遍缓存根下的每个 owner 目录，
+        // 于是 A 账号的一次代次推进会把 B 账号的旧代次文件一并删掉 —— 当前单账号装配没有实害，
+        // 但「跨 owner 误删」在类型上没人守住，而 M8 的 owner 校验（空 principal → 缓存根）
+        // 就是同一族缺陷留下过的那道口子。
+        // 凭证不可知（登出中 / 读取失败）时一个都不删：宁可留孤儿文件给下一次 `purge`，
+        // 也不替不明的身份做删除决定。
+        guard let owner = await currentCredentialOwner() else { return 0 }
+        let directory = PrivateAudioPath.ownerDirectory(base: baseDirectory, owner: owner)
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else { return 0 }
         var removed = 0
-        for ownerDirectory in owners where fileManager.fileExists(atPath: ownerDirectory.path) {
-            guard let files = try? fileManager.contentsOfDirectory(
-                at: ownerDirectory,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            ) else { continue }
-            for file in files {
-                let stored = PrivateAudioPath.generation(infileName: file.lastPathComponent)
-                guard let stored, stored < generation else { continue }
-                if removeVerified(at: ownerDirectory.appendingPathComponent(file.lastPathComponent)) > 0 {
-                    removed += 1
-                }
+        for file in files {
+            let stored = PrivateAudioPath.generation(infileName: file.lastPathComponent)
+            guard let stored, stored < generation else { continue }
+            if removeVerified(at: directory.appendingPathComponent(file.lastPathComponent)) > 0 {
+                removed += 1
             }
         }
         return removed
+    }
+
+    /// 当前凭证快照里的身份（不做任何网络调用；读取失败 / 未登录 → nil）。
+    private func currentCredentialOwner() async -> PrincipalID? {
+        // `try?` 会把「抛错」与「快照为 nil」压成同一个 nil：两种形态都不该被当作
+        // 「有身份」处理，因此这里不区分它们 —— 拿不到 owner 就不删任何东西。
+        guard let snapshot = try? await credentials.currentSession() else { return nil }
+        return snapshot.principal
     }
 
     @discardableResult

@@ -241,10 +241,75 @@ final class PrivateAudioTransportTests: XCTestCase {
             requestURL: base,
             responseURL: URL(string: "HTTPS://AUDIO.INVALID/private/one.m4a")!
         ))
+        // min-2：规范端口（443）**不**参与权威字符串 —— `covalink.cn` 与 `covalink.cn:443`
+        // 是同一台主机，旧口径把端口写进 origin，于是服务端一次合法的重定向就被误杀。
         XCTAssertEqual(
             AudioAuthorityMatch.origin(of: URL(string: "https://audio.invalid:443/one.m4a")!),
-            "https://audio.invalid:443"
+            "https://audio.invalid"
         )
+        XCTAssertEqual(
+            AudioAuthorityMatch.origin(of: URL(string: "https://audio.invalid:443/one.m4a")!),
+            AudioAuthorityMatch.origin(of: base)
+        )
+        // 非规范端口仍然是「另一台主机」（判定不得因为折叠而变宽）。
+        XCTAssertNotEqual(
+            AudioAuthorityMatch.origin(of: URL(string: "https://audio.invalid:8443/one.m4a")!),
+            AudioAuthorityMatch.origin(of: base)
+        )
+    }
+
+    /// min-2（复审探针同名）：同源判定与出口守卫必须同口径 ——
+    /// `isProductionOrigin` 放行 `https://covalink.cn:443`，那么同源判定就不能把它判成另一台主机，
+    /// 否则 NEEDS-15 未解锁之前又多了一个人工堵点（合法的带端口重定向被当成权威换人而 `.hostRejected`）。
+    func testCanonicalPortMatchesProductionAuthority() {
+        let plain = URL(string: "https://covalink.cn/api/media/one.m4a?sig=a")!
+        let canonical = URL(string: "https://covalink.cn:443/api/media/one.m4a?sig=b")!
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(plain))
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(canonical), "前置：出口守卫放行规范端口")
+        XCTAssertTrue(
+            AudioAuthorityMatch.matches(requestURL: plain, responseURL: canonical),
+            "min-2：两台「同一台主机」不得被判成换人（合法重定向被误杀）"
+        )
+        XCTAssertTrue(AudioAuthorityMatch.matches(requestURL: canonical, responseURL: plain))
+        // 反向对照（TD-9）：非规范端口与别的 host 一律仍是换人。
+        XCTAssertFalse(AudioAuthorityMatch.matches(
+            requestURL: plain,
+            responseURL: URL(string: "https://covalink.cn:8443/api/media/one.m4a")!
+        ))
+        XCTAssertFalse(AudioAuthorityMatch.matches(
+            requestURL: plain,
+            responseURL: URL(string: "https://cdn.covalink.cn/api/media/one.m4a")!
+        ))
+        XCTAssertFalse(AudioAuthorityMatch.matches(
+            requestURL: plain,
+            responseURL: URL(string: "http://covalink.cn/api/media/one.m4a")!
+        ))
+        // 零主机名/空 host 一律 fail-closed。
+        XCTAssertNil(AudioAuthorityMatch.origin(of: URL(string: "https://:443/x")!))
+    }
+
+    /// min-2 在真实管道上的那一腿：带 `:443` 的**合法同权威落地**必须照常交付字节，
+    /// 而不是在写盘之前被 `.hostRejected` 掐掉。
+    func testLandingOnCanonicalPortStillDeliversBytes() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 200,
+            chunks: [],
+            contentLength: nil,
+            failure: nil,
+            landedURLString: "https://audio.invalid:443/private/moved.m4a?sig=rotated",
+            landingChunks: [Data(repeating: 0x4b, count: 18)],
+            respondsAsPlainURLResponse: false,
+            midStreamFailure: nil,
+            chunksBeforeFailure: 1
+        ))
+        let file = target(in: directory)
+        let receipt = try await makeTransport().writeAudio(
+            from: sourceURL(), authorization: nil, to: file, expectedBytes: nil
+        )
+        XCTAssertEqual(receipt.bytesWritten, 18, "min-2：规范端口落地不是换权威")
+        XCTAssertEqual(try Data(contentsOf: file).count, 18)
     }
 
     // MARK: - 环 4 · 第 6 批 MAJ-4：读循环里的取消必须归一，不许算成写失败

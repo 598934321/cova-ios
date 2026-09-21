@@ -623,6 +623,61 @@ final class CovaPlayerFacadeTests: XCTestCase {
         XCTAssertFalse(system.holdsGate)
     }
 
+    // MARK: - 环 4 · 第 6 批 MAJ-2 / MAJ-8：第二个会写文件的准备器 + 出口真的被消费
+
+    /// MAJ-2：`discardPrivateAudio(owner:)` 的**协议默认空实现已删除**（漏覆盖 = 编译不过）。
+    /// 本用例守的是另一半：一个不是 `PrivateAudioFetching` 的、**真的往磁盘写字节**的准备器，
+    /// 覆盖了自己的清理面之后，登出必须把文件真的清掉 —— 门面只调协议那一句，
+    /// 没有任何「顺手去够实现方的 purge」可依赖。
+    func testSecondFileWritingPreparerIsDiscardedThroughProtocolSurfaceOnLogout() async throws {
+        let sandbox = TemporaryDirectory(subdirectory: "preparer-discard")
+        defer { sandbox.remove() }
+        let preparer = FileWritingPrivateAudioPreparer(
+            directory: sandbox.url.appendingPathComponent("private-audio", isDirectory: true)
+        )
+        let player = makePlayer(sourcePreparer: preparer)
+        await player.bindSession(authenticated())
+        _ = await player.start(items: [TestItems.make("priv", source: .bearerRequired(privateURL()))])
+        let prepared = await Signals.wait(target: 1, counter: preparer.preparedSignal)
+        XCTAssertTrue(prepared, "前置条件：准备器真的写过文件")
+        let written = await preparer.survivingFiles
+        XCTAssertEqual(written.count, 1, "前置条件：登出前文件确实在沙盒里")
+
+        await player.bindSession(.unauthenticated)
+
+        let called = await Signals.wait(target: 1, counter: preparer.discardedSignal)
+        XCTAssertTrue(called, "MAJ-2：登出必须经协议面调用清理（而不是靠 fetcher 支路）")
+        let survivors = await preparer.survivingFiles
+        XCTAssertTrue(survivors.isEmpty, "MAJ-2：登出之后磁盘上不得有残留：\(survivors.map(\.lastPathComponent))")
+        let owners = await preparer.discardedOwners
+        XCTAssertEqual(owners.count, 1)
+        XCTAssertEqual(owners.first ?? nil, PrincipalID(rawValue: "principal-1"), "必须带着**上一个身份**去清")
+        await player.teardown()
+    }
+
+    /// MAJ-8：`assetOrigin` 不再是死字段 —— 未注入引擎时它就是引擎的出口判定基准。
+    func testAssetOriginIsConsumedByTheDefaultEngine() {
+        let production = CovaPlayer()
+        let origin = production.assetOrigin
+        let engine = production.engine as? AVPlayerEngine
+        let wired = engine?.currentEgressOrigin
+        XCTAssertEqual(origin, CovaEnvironment.apiBaseURL)
+        XCTAssertEqual(wired, origin, "MAJ-8：默认装配必须把出口交给引擎")
+
+        // 注入别的 origin：引擎判定基准跟着走（字段被消费的正面证据）。
+        let custom = CovaPlayer(assetOrigin: URL(string: "https://cdn.covalink.example")!)
+        let customOrigin = custom.assetOrigin
+        let customEngine = custom.engine as? AVPlayerEngine
+        XCTAssertEqual(customEngine?.currentEgressOrigin, customOrigin)
+        // 而判定本身仍是 fail-closed：非生产出口一律拒绝（见 `AVPlayerEngineTests` 的判定表）。
+        XCTAssertFalse(CovaEnvironment.isProductionOrigin(customOrigin), "前置：这条出口不合法")
+
+        // 显式注入引擎时门面不做二次猜测（桩引擎没有出口可言）。
+        let scripted = CovaPlayer(assetOrigin: CovaEnvironment.apiBaseURL, engine: ScriptedEngine())
+        let scriptedEngine = scripted.engine as? AVPlayerEngine
+        XCTAssertNil(scriptedEngine, "注入的引擎不得被换掉")
+    }
+
     /// 生产默认的 `audioSystem` 类型（`AVAudioSessionAdapter`）本身就是通知源 —— 上条用例的
     /// 「生产形态」与真实类型必须是同一判据，否则「桩过了、真的没接」仍然可能。
     func testProductionDefaultAudioSystemIsItsOwnNotificationCenterSource() {
@@ -636,4 +691,6 @@ final class CovaPlayerFacadeTests: XCTestCase {
         let stubObserves = (stub as? any AudioSessionNotificationObserving) != nil
         XCTAssertFalse(stubObserves, "不具备观测能力的桩不得被误判为已接线")
     }
+
+    // MARK: - 环 4 · 第 6 批 MAJ-5 / MAJ-7：系统面生命周期
 }

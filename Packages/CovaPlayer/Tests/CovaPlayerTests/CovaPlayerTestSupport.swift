@@ -567,6 +567,45 @@ actor StubPrivateAudioTransport: PrivateAudioTransport {
     private(set) var cancellationCount = 0
 }
 
+/// 会计数的凭证提供器（环 4 · 第 6 批 min-3 的会合点）。
+///
+/// 为什么需要它：合流判据要求「加入者在先交付方结束**之前**走到登记表」，而 `localizedURL`
+/// 从凭证返回到读登记表之间没有任何网络动作可观测。凭证读取正是那一段里唯一的挂起点：
+/// 它一返回，加入者的续体就被排进取回器的 actor 信箱（FIFO），测试随后的一次 actor 回合
+/// 必然排在它之后 —— 于是不靠让步、不靠猜时间就能确定性地会合（D16⑤）。
+struct SignallingCredentialProvider: APICredentialProviding {
+    let calls = SignalCounter()
+    private let snapshot: AuthSessionSnapshot?
+
+    init(principal: String = "principal-1", generation: SessionGeneration = .initial) {
+        snapshot = AuthSessionSnapshot(
+            principal: PrincipalID(rawValue: principal),
+            generation: generation,
+            accessToken: SecretString("stub-access-token-value")
+        )
+    }
+
+    /// 未登录形态：读取成功但快照为 nil。
+    init(signedOut: Bool) {
+        snapshot = signedOut ? nil : AuthSessionSnapshot(
+            principal: PrincipalID(rawValue: "principal-1"),
+            generation: .initial,
+            accessToken: SecretString("stub-access-token-value")
+        )
+    }
+
+    var callCount: Int { calls.value }
+
+    func currentSession() async throws -> AuthSessionSnapshot? {
+        calls.bump()
+        return snapshot
+    }
+
+    func refreshAccessToken(for snapshot: AuthSessionSnapshot) async throws -> SecretString {
+        snapshot.accessToken
+    }
+}
+
 /// 记录型源准备器。
 actor StubSourcePreparer: PlaybackSourcePreparing {
     enum Mode: Sendable {
@@ -599,6 +638,15 @@ actor StubSourcePreparer: PlaybackSourcePreparing {
             return .failure(error)
         }
     }
+
+    /// MAJ-2：协议的默认空实现已删除 → 本桩不在磁盘上留任何私有音频字节，
+    /// 因此这一行就是它的**免责申明**（显式空操作），而不是「忘记实现」。
+    func discardPrivateAudio(owner: PrincipalID?) async {
+        discardedOwners.append(owner)
+    }
+
+    private(set) var discardedOwners: [PrincipalID?] = []
+    var discardCount: Int { discardedOwners.count }
 }
 
 /// **在途可控**的源准备器：指定 id 的条目在 `prepareSource` 里挂起，直到测试点名放行。
@@ -651,6 +699,9 @@ actor GatedSourcePreparer: PlaybackSourcePreparing {
         }
     }
 
+    /// MAJ-2：本桩不落盘（只回 `.success(item)`），显式空操作 = 免责申明。
+    func discardPrivateAudio(owner: PrincipalID?) async {}
+
     var callCount: Int { requests.count }
     var requestedIDs: [String] { requests }
     func returnedCount() -> Int { returnedSignal.value }
@@ -677,9 +728,24 @@ actor StubArtworkAttacher: NowPlayingArtworkAttaching {
 
 enum TestItems {
     static let publicHost = "https://cdn.covalink.example"
+    /// 唯一生产出口上的主机（环 4 · 第 6 批 MAJ-8：引擎现在**判出口**，
+    /// 所以「可播的公开直链」这一类夹具必须真的落在 `CovaEnvironment.isProductionOrigin` 上。
+    /// 仍是零网络：`https://covalink.cn` 只出现在从未被解析的 `URL` 值里，
+    /// 引擎侧的 `AVPlayerItem(url:)` 在模拟器上不会、也不该发出任何真实请求（本仓所有相关用例
+    /// 只断言纯映射与事件形状，不装载这条地址）。
+    static let productionHost = "https://covalink.cn"
 
     static func audioURL(_ path: String = "/audio/one.m4a") -> AudioURL {
         try! AudioURL(https: URL(string: "\(publicHost)\(path)")!)
+    }
+
+    static func productionAudioURL(_ path: String = "/audio/one.m4a") -> AudioURL {
+        try! AudioURL(https: URL(string: "\(productionHost)\(path)")!)
+    }
+
+    /// 生产出口上的公开直链条目（引擎侧「可播」的正向夹具）。
+    static func makeProduction(_ id: String = "pub", path: String = "/audio/one.m4a") -> PlaybackItem {
+        make(id, source: .publicDirect(productionAudioURL(path)))
     }
 
     static func fileURL(_ path: String) -> AudioURL {
@@ -960,6 +1026,60 @@ actor RecordingPrivateAudioPreparer: PlaybackSourcePreparing {
     }
 
     var discardCount: Int { discardedOwners.count }
+}
+
+/// **会往磁盘写字节**的第二类准备器（环 4 · 第 6 批 MAJ-2 的判据形态）。
+///
+/// 它是复审给出的那个形态：只实现 `prepareSource`（真的落盘）+ 协议清理面。
+/// 它**不是** `PrivateAudioFetching`，所以门面无从「顺手去够实现方的 purge」——
+/// 登出后盘上干净与否，完全取决于协议面那一次调用有没有被真的实现、真的执行。
+/// 旧协议带着 `discardPrivateAudio` 的默认空实现时，「忘记覆盖」是编译通过的静默失效；
+/// 默认实现删除后漏覆盖直接编译不过（该义务的可证面因此从运行时上移到编译期，
+/// 本类型守的是另一半：调用面真的清到了盘）。
+actor FileWritingPrivateAudioPreparer: PlaybackSourcePreparing {
+    let preparedSignal = SignalCounter()
+    let discardedSignal = SignalCounter()
+    private let directory: URL
+    private let fileManager = FileManager.default
+    private(set) var writtenURLs: [URL] = []
+    private(set) var discardedOwners: [PrincipalID?] = []
+
+    init(directory: URL) {
+        self.directory = directory
+    }
+
+    func prepareSource(
+        for item: PlaybackItem,
+        session: PlaybackSessionContext
+    ) async -> Result<PlaybackItem, PlayerError> {
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let target = directory.appendingPathComponent("\(item.id).privateaudio")
+            // 非空文件：与真实私有音频同形（「校验非空」那条判据也吃得到它）。
+            try Data(repeating: 0x31, count: 12).write(to: target)
+            writtenURLs.append(target)
+            preparedSignal.bump()
+            return .success(item.localized(to: try AudioURL(file: target)))
+        } catch {
+            return .failure(.writeFailed(Int32(truncatingIfNeeded: (error as NSError).code)))
+        }
+    }
+
+    /// MAJ-2：必须实现（协议默认空实现已删除）；实现了就得真的清到磁盘。
+    func discardPrivateAudio(owner: PrincipalID?) async {
+        discardedOwners.append(owner)
+        if writtenURLs.isEmpty == false || fileManager.fileExists(atPath: directory.path) {
+            try? fileManager.removeItem(at: directory)
+        }
+        discardedSignal.bump()
+    }
+
+    var discardCount: Int { discardedOwners.count }
+
+    /// 仍然躺在盘上的「私有音频」文件（判据本体）。
+    var survivingFiles: [URL] {
+        writtenURLs.filter { fileManager.fileExists(atPath: $0.path) }
+    }
 }
 
 // MARK: - 环 4 · 第 6 批：取消可观测的传输原语（MAJ-1 / MAJ-3 / MAJ-4）

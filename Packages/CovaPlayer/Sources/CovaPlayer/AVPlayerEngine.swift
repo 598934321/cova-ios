@@ -1,4 +1,5 @@
 import AVFoundation
+import CovaCore
 import Foundation
 
 /// `AVPlayer` 薄适配器（D4）。
@@ -6,8 +7,11 @@ import Foundation
 /// 刻意做薄：只做「地址 → AVPlayerItem → 事件」的搬运，
 /// 一切队列 / 循环 / ±15s / 失败连击决策都在 `PlaybackCoordinator`（可确定性测试）。
 ///
-/// 边界守卫：`load(_:)` 只接受**可直接播**的条目（公开直链或已本地化 `file://`）；
-/// 需 Bearer 的条目在这里被拒绝（`.localizationRequired`），于是 D7 有第二道闸。
+/// 边界守卫（**两道**）：`load(_:)` 只接受**可直接播**的条目 ——
+/// 1. 需 Bearer 的条目在这里被拒绝（`.localizationRequired`），D7 的第二道闸；
+/// 2. `.publicDirect` 的 https 地址必须落在**唯一生产出口**（MAJ-8：AGENTS 硬边界 2 / D10）。
+///    这道判定只能在这里做：`AVPlayer` 自己发起网络请求，而公开直链**从不经过**私有音频准备器
+///    （准备器只管 Bearer 那一路），所以出口守卫在引擎以下没有任何执行点。
 ///
 /// 不使用 Combine KVO（Swift 6 下 `Observable` 已弃用会报警告），改用传统字符串 KVO +
 /// 通知中心；所有观测者与 token 都在 `stopAndRelease()` 中移除（通知残留是本仓红线）。
@@ -17,6 +21,9 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
 
     private let lock = NSLock()
     private let player: AVPlayer
+    /// 本引擎承认的唯一媒体出口（MAJ-8）。门面的 `assetOrigin` 就是从这里进生产路径的
+    /// —— 它不再是「只被断言一次、没人消费的死字段」。
+    private let egressOrigin: URL
     private var item: AVPlayerItem?
     private var timeObserverToken: Any?
     private var endNotificationToken: NSObjectProtocol?
@@ -45,15 +52,26 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
         return gate.episode
     }
 
-    public override init() {
+    public convenience override init() {
+        self.init(egressOrigin: CovaEnvironment.apiBaseURL)
+    }
+
+    /// 指定出口形态（MAJ-8）：`CovaPlayer` 用它的 `assetOrigin` 装配生产默认引擎。
+    /// 注入别的 origin **不会**放宽任何判定 —— `isAllowedEgress` 的第一重永远是
+    /// `CovaEnvironment.isProductionOrigin`，因此非法出口只会「一律拒绝」（fail-closed）。
+    public init(egressOrigin: URL) {
         // 有界缓冲会把 .ended/.failed 挤掉，故用 unbounded（消费者是常驻循环，不会积压）
         let pairing = AsyncStream.makeStream(of: PlayerEvent.self, bufferingPolicy: .unbounded)
         self.stream = pairing.0
         self.continuation = pairing.1
+        self.egressOrigin = egressOrigin
         self.player = AVPlayer()
         super.init()
         self.player.actionAtItemEnd = .pause
     }
+
+    /// 当前生效的唯一媒体出口（诊断与冒烟断言用）。
+    public var currentEgressOrigin: URL { egressOrigin }
 
     public var events: AsyncStream<PlayerEvent> { stream }
 
@@ -64,7 +82,7 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     // MARK: - PlayerEngine
 
     public func load(_ item: PlaybackItem) async {
-        switch Self.playableURL(for: item) {
+        switch Self.playableURL(for: item, egressOrigin: egressOrigin) {
         case .failure(let failure):
             // 被拒绝的装载**不推进代际**：此时引擎里仍是上一件在播（既没换件也没摘观测者），
             // 上一件的事件依然是事实，不得丢弃。失败本身由协调器侧的装载代际账本收敛。
@@ -128,20 +146,49 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
 
     // MARK: - 纯映射（可零硬件单测）
 
-    /// 条目 → 可播地址。需 Bearer 的一律拒绝（D7 的第二道闸）。
-    public static func playableURL(for item: PlaybackItem) -> Result<URL, PlayerFailure> {
+    /// 条目 → 可播地址。需 Bearer 的一律拒绝（D7 的第二道闸）；
+    /// 公开直链还必须落在唯一生产出口（MAJ-8，AGENTS 硬边界 2 / D10）。
+    ///
+    /// - Parameter egressOrigin: 本引擎承认的那一台主机。默认就是生产 origin，
+    ///   因此「忘了传」只会走向最严的一侧。
+    public static func playableURL(
+        for item: PlaybackItem,
+        egressOrigin: URL = CovaEnvironment.apiBaseURL
+    ) -> Result<URL, PlayerFailure> {
         switch item.audioSource {
         case .bearerRequired:
             return .failure(PlayerFailure(
                 kind: .localizationRequired,
                 message: "私有音频必须先本地化再播放"
             ))
-        case .publicDirect(let url), .localized(let url):
-            guard url.isLocalized || url.scheme == .https else {
+        case .localized(let url):
+            guard url.isLocalized else {
+                return .failure(PlayerFailure(kind: .invalidSourceURL, message: "本地地址形态异常"))
+            }
+            return .success(url.value)
+        case .publicDirect(let url):
+            guard url.scheme == .https else {
                 return .failure(PlayerFailure(kind: .invalidSourceURL, message: "地址协议不受支持"))
+            }
+            // 判在**交给 AVPlayerItem 之前**：一旦交出去，网络请求就是 `AVPlayer` 自己发的，
+            // 本层再也拦不住（`.publicDirect` 不经过私有音频准备器，那里那道出口守卫管不到它）。
+            guard Self.isAllowedEgress(url.value, origin: egressOrigin) else {
+                return .failure(PlayerFailure(
+                    kind: .invalidSourceURL,
+                    message: "公开直链不在唯一生产出口（D10）"
+                ))
             }
             return .success(url.value)
         }
+    }
+
+    /// 公开直链的出口判定（MAJ-8）：两重都必须成立。
+    /// ① `CovaEnvironment.isProductionOrigin` —— 与私有音频准备器**同一判据、同一实现**（D10）；
+    /// ② 权威仍是门面声明的那个出口（scheme + host + 规范端口折叠同源，见 `AudioAuthorityMatch`）。
+    /// ②让 `assetOrigin` 真的说了算，①保证注入任何别的 origin 都不可能把出口放宽到别处。
+    public static func isAllowedEgress(_ url: URL, origin: URL) -> Bool {
+        guard CovaEnvironment.isProductionOrigin(url) else { return false }
+        return AudioAuthorityMatch.origin(of: url) == AudioAuthorityMatch.origin(of: origin)
     }
 
     /// `CMTime` → 秒（未定/无效一律 nil，避免 NaN 污染状态）。

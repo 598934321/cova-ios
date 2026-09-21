@@ -1039,6 +1039,118 @@ final class PrivateAudioFetcherTests: XCTestCase {
         XCTAssertFalse(PrivateAudioFetcher.isCancellationShaped(URLError(.networkConnectionLost)))
     }
 
+    // MARK: - 环 4 · 第 6 批 min-3 / min-5：合流不换件、旧代次回收不跨 owner
+
+    /// min-3（复审探针同名）：同键合流在 `expectedBytes` 不一致时**不得换件**。
+    ///
+    /// 旧实现：加入者复核自己的期望长度不过 → 「另起一路往同一个目标路径覆盖提交」——
+    /// 先交付方已经拿到的 24 字节被后加入方的 48 字节换掉（盘上实得 48），
+    /// 与 `testConcurrentSameKeyRequestsTriggerExactlyOneTransfer` 自陈的
+    /// 「两个调用者必须拿到同一份内容」直接冲突。
+    /// 现在：一个 key 的字节数只由那一次传输决定；期望与实得不一致就是元数据打架，
+    /// 如实报 `.truncated` 交回上层裁决，一次覆盖都不做。
+    func testMergedSameKeyRequestsCommitOneConsistentPayload() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let transport = CancellablePrivateAudioTransport()
+        let credentials = SignallingCredentialProvider()
+        let fetcher = makeFetcherOn(in: directory, transport: transport, credentials: credentials)
+        let small = request(expectedBytes: 24)
+        let large = request(expectedBytes: 48)
+
+        let first = Task { await fetcher.localizedURL(for: small) }
+        let entered = await Signals.wait(target: 1, counter: transport.enteredSignal)
+        XCTAssertTrue(entered, "前置条件：先交付方真的在途")
+        // 先交付方在 parked 之前读了几次凭证？用它把加入者放到同一条会合轨道上。
+        let firstReads = credentials.callCount
+        XCTAssertGreaterThanOrEqual(firstReads, 1)
+
+        let second = Task { await fetcher.localizedURL(for: large) }
+        let joined = await Signals.wait(target: firstReads + 1, counter: credentials.calls)
+        XCTAssertTrue(joined, "前置条件：加入者必须已进入 `localizedURL`")
+        // 一次 actor 回合：加入者的续体（从凭证返回到读登记表之间无任何挂起点）必然先被处理。
+        let registry = await fetcher.inflightTransferCount
+        XCTAssertEqual(registry, 1, "加入者只能在既有那一路上传输（登记表有且仅有一条）")
+
+        await transport.release()
+        let a = await first.value
+        let b = await second.value
+        guard case .success(let urlA) = a else { return XCTFail("先交付方必须成功：\(a)") }
+        let calls = await transport.callCount
+        XCTAssertEqual(calls, 1, "min-3：加入者不得另起第二路出站（Bearer 地址重复外发）")
+        let payload = try Data(contentsOf: urlA.value)
+        XCTAssertEqual(payload.count, 24, "min-3：交付的必须就是那一次传输的字节，不得被换件")
+        switch b {
+        case .success(let urlB):
+            XCTFail("期望 48 而实得 24 的加入者不得拿到成功：\(urlB)")
+        case .failure(.truncated(let expected, let actual)):
+            XCTAssertEqual(expected, 48)
+            XCTAssertEqual(actual, 24)
+        case .failure(let other):
+            XCTFail("应为 `.truncated(48,24)`：\(other)")
+        }
+        let stillThere = try Data(contentsOf: urlA.value)
+        XCTAssertEqual(stillThere.count, 24, "加入者的失败不得顺手删掉别人的交付物")
+        let cached = await fetcher.cachedFileCount()
+        XCTAssertEqual(cached, 1, "一份内容 = 一个文件")
+        let bytes = await transport.payload()
+        XCTAssertEqual(try Data(contentsOf: urlA.value), bytes, "盘上内容 == 那唯一一次传输的字节")
+    }
+
+    /// min-5：`purgeStale(before:)` 只回收**当前凭证快照那个 owner** 的旧代次。
+    /// 旧实现扫遍缓存根下每个 owner 目录，于是 A 的一次代次推进会把 B 的旧代次文件一并删掉。
+    func testPurgeStaleNeverReachesAnotherOwnersFiles() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let alice = PrincipalID(rawValue: "principal-1")
+        let bob = PrincipalID(rawValue: "principal-2")
+        let transport = StubPrivateAudioTransport()
+        let fetcher = makeFetcher(in: directory, transport: transport)
+        let other = try! PrivateAudioFetcher(
+            transport: transport,
+            credentials: StubCredentialProvider(principal: "principal-2"),
+            baseDirectory: directory.url
+        )
+        // 两个账号各留一份 g0（对 alice 而言都是旧代次）。
+        _ = await fetcher.localizedURL(for: request(itemID: "alice"))
+        _ = await other.localizedURL(for: request(
+            itemID: "bob",
+            session: Self.authenticatedContext(principal: "principal-2")
+        ))
+        let bobFile = try PrivateAudioPath.fileURL(
+            base: directory.url, owner: bob, itemID: "bob", generation: .initial
+        )
+        let aliceFile = try PrivateAudioPath.fileURL(
+            base: directory.url, owner: alice, itemID: "alice", generation: .initial
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: bobFile.path), "前置条件：两份 g0 都在盘上")
+
+        let removed = await fetcher.purgeStale(before: SessionGeneration(value: 5))
+        XCTAssertEqual(removed, 1, "min-5：只回收本账号那一份")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: aliceFile.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: bobFile.path),
+            "别的账号的旧代次不归本次推进管"
+        )
+        let bobStill = await other.cachedFileCount()
+        XCTAssertEqual(bobStill, 1)
+
+        // fail-closed：身份不可知（未登录）时一个都不删 —— 宁可留孤儿，也不替不明的身份做删除决定。
+        let anonymous = try! PrivateAudioFetcher(
+            transport: transport,
+            credentials: StubCredentialProvider(principal: nil),
+            baseDirectory: directory.url
+        )
+        let blind = await anonymous.purgeStale(before: SessionGeneration(value: 9))
+        XCTAssertEqual(blind, 0)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: bobFile.path),
+            "凭证不可知不得变成一次全目录扫描"
+        )
+        let stillCached = await other.cachedFileCount()
+        XCTAssertEqual(stillCached, 1)
+    }
+
     // MARK: - 夹具（环 4 新增）
 
     /// 缓存根下的 owner 目录名（`.inflight` 是隐藏目录，不计入 owner 集合）。
@@ -1058,6 +1170,19 @@ final class PrivateAudioFetcherTests: XCTestCase {
         try! PrivateAudioFetcher(
             transport: transport,
             credentials: StubCredentialProvider(),
+            baseDirectory: directory.url
+        )
+    }
+
+    /// 同上 + 凭证面可注入（min-3 需要可观测的凭证读取作为会合点）。
+    private func makeFetcherOn(
+        in directory: TemporaryDirectory,
+        transport: any PrivateAudioTransport,
+        credentials: any APICredentialProviding
+    ) -> PrivateAudioFetcher {
+        try! PrivateAudioFetcher(
+            transport: transport,
+            credentials: credentials,
             baseDirectory: directory.url
         )
     }
