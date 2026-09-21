@@ -1753,6 +1753,155 @@ final class PlaybackCoordinatorTests: XCTestCase {
         }
     }
 
+    // MARK: - 环 4 · 第 12 批：第 7 轮复审三条探针转成的永久测试
+
+    /// 缺陷 R7B（Major，第 7 轮隔离复审；**11B 自己留下的「修一半」**）：
+    /// 装载在途时用户按暂停，`pause()` 把 `.loading` 折成 `.paused`，而 11B 的收敛腿守卫
+    /// 只看 `state == .loading` ⇒ 这条交错下整条腿跳过，状态留在 `.paused` 而引擎从未拿到
+    /// 这一项，`advanceOutcome` 照 `.paused` 回 `.advanced`。同一个谎换了状态外衣就躲过了
+    /// 自己的守卫。修法：守卫改按**事实**判 —— 「这一代装载结束了，而引擎没拿到当前项」。
+    func testCancelledLoadEndingUnderPauseStillConvergesAndNeverClaimsAdvanced() async {
+        for error in [PlayerError.cancelled, PlayerError.staleSession] {
+            let engine = ScriptedEngine()
+            let nowPlaying = RecordingNowPlaying()
+            let preparer = AttemptScriptedPreparer(gating: [0], outcomes: [0: error])
+            let subject = PlaybackCoordinator(
+                engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+            )
+            let scene = "error=\(error)"
+            let started = Task { await subject.start(items: TestItems.makeMany(["a"])) }
+            await assertSignalReached(
+                target: 1, counter: preparer.requestSignal, what: "\(scene) 装载进入在途"
+            )
+            // 关键交错：**先暂停**，再让这一趟以取消收场。
+            await subject.pause()
+            let mid = await subject.currentSnapshot()
+            XCTAssertEqual(mid.state, .paused, "前置：\(scene) 暂停落在装载在途之上")
+            await preparer.releasePendingAttempt()
+            await assertSignalReached(
+                target: 1, counter: preparer.returnedSignal, what: "\(scene) 装载返回"
+            )
+            let outcome = await started.value
+            let snap = await subject.currentSnapshot()
+
+            XCTAssertFalse(
+                snap.state == .paused && engine.loads.isEmpty,
+                "R7B：\(scene) 取消收场不得留下「暂停 + 引擎无装载」这一格"
+            )
+            XCTAssertNotEqual(
+                snap.state, .paused, "R7B：\(scene) 「暂停」承诺有位置可续，而引擎里什么都没有"
+            )
+            XCTAssertEqual(snap.state, .stopped, "R7B：\(scene) 交还给事实 = 停止")
+            if case .advanced(let to, let item, _) = outcome {
+                XCTFail(
+                    "R7B：\(scene) 引擎从未装载 \(item.id)，start() 却回 .advanced(to: \(to))；"
+                        + "同一形状在 `.loading` 腿上已被 11B 判为谎报"
+                )
+            }
+            XCTAssertEqual(outcome, .stopped, "R7B：\(scene)")
+            XCTAssertFalse(snap.isFailureTerminal, "R7B：\(scene) 取消仍不是故障")
+            assertNoFakeTerminal(snap, "R7B \(scene)")
+            XCTAssertEqual(snap.failureStreak, 0, "R7B：\(scene) 计数侧无账")
+            XCTAssertEqual(snap.lastFailure?.kind, .cancelled, "R7B：\(scene) 回显账留着")
+            XCTAssertTrue(engine.loads.isEmpty, "D7：\(scene) 取消的条目绝不交给引擎")
+            // 停止 ≠ 卡死：随后一次起播必须真装一次。
+            let retry = await subject.start()
+            XCTAssertEqual(retry, .advanced(to: 0, item: TestItems.make("a"), wrapped: false))
+            let resumed = await subject.currentSnapshot()
+            XCTAssertEqual(resumed.state, .playing, "R7B：\(scene) 用户随后要听 → 真装一次")
+            XCTAssertEqual(engine.loads.last?.id, "a", "R1：\(scene)")
+        }
+    }
+
+    /// 缺陷 R7C（Major，第 7 轮隔离复审）：`Configuration.consecutiveFailureLimit` 没有下界
+    /// 校验，取 0（或负数）时 `handleFailure` 里「不自增」与「已达上限」两条**同时成立** ⇒
+    /// 一次计数失败就在 `failureStreak == 0` 上打开终态 —— 正面违反 D18「终态只能长在计数账上」
+    /// 与本套件每条场景都跑的 `assertNoFakeTerminal`。这条不变量过去只靠「默认值是 3」侥幸成立，
+    /// 而全部既有测试没有一个注入过自定义 `Configuration`（本轮实测：`configuration:` 在测试里
+    /// 零调用点）—— 这就是它能活到第 7 轮的原因。
+    func testIllegalConfigurationCannotOpenTerminalWithoutCountedLedger() async {
+        for limit in [0, -5] {
+            let engine = ScriptedEngine()
+            let subject = PlaybackCoordinator(
+                engine: engine, clock: clock,
+                configuration: PlaybackCoordinator.Configuration(
+                    seekStep: 15, consecutiveFailureLimit: limit, nowPlayingTimeSyncInterval: 1
+                ),
+                nowPlaying: nowPlaying
+            )
+            _ = await subject.replaceQueue(TestItems.makeMany(["a"]))
+            _ = await subject.start()
+            await subject.receive(.failed(PlayerFailure(kind: .network)))
+            let snap = await subject.currentSnapshot()
+            XCTAssertGreaterThan(
+                snap.failureStreak, 0,
+                "R7C：limit=\(limit) 时终态若成立，计数账必须非空（clamp 到 1，而不是 0 次就终态）"
+            )
+            assertNoFakeTerminal(snap, "R7C limit=\(limit)")
+            XCTAssertTrue(snap.isFailureTerminal, "R7C：clamp 后第一次计数失败即达上限")
+            // 另外两个旋钮的合法性口径一并钉住（别只修被点名的那一半）。
+            let fallbacks = PlaybackCoordinator.Configuration(
+                seekStep: 0, consecutiveFailureLimit: 3, nowPlayingTimeSyncInterval: -1
+            )
+            XCTAssertEqual(fallbacks.seekStep, PlaybackCoordinator.Configuration.fallbackSeekStep, "R7C：非正 seekStep 回落")
+            XCTAssertEqual(
+                fallbacks.nowPlayingTimeSyncInterval, PlaybackCoordinator.Configuration.fallbackTimeSyncInterval,
+                "R7C：负节流间隔回落"
+            )
+            let nan = PlaybackCoordinator.Configuration(
+                seekStep: .nan, consecutiveFailureLimit: 3, nowPlayingTimeSyncInterval: .infinity
+            )
+            XCTAssertEqual(nan.seekStep, PlaybackCoordinator.Configuration.fallbackSeekStep, "R7C：NaN 不得进引擎 seek")
+            XCTAssertTrue(
+                nan.nowPlayingTimeSyncInterval.isFinite, "R7C：无限节流会把时间同步整条关掉"
+            )
+            XCTAssertEqual(
+                PlaybackCoordinator.Configuration(seekStep: 7, consecutiveFailureLimit: 99, nowPlayingTimeSyncInterval: 2)
+                    .consecutiveFailureLimit,
+                99, "R7C：合法值必须原样通过（clamp 不是把配置写死）"
+            )
+        }
+    }
+
+    /// 缺陷 R7D（第 7 轮隔离复审）：`toggle()` 只把 `.playing`/`.buffering` 当「正在响」，
+    /// 于是**装载在途**（用户已经看到进度）时按一次 ⏯ 走的是 `resume()` → 起新一轮装载并
+    /// 声称 `.playing`；用户想停必须按第二次，而锁屏与耳机按键只给一次。
+    func testToggleDuringInFlightLoadPausesInsteadOfStartingNewPlayback() async {
+        let engine = ScriptedEngine()
+        let preparer = GatedSourcePreparer(gating: ["priv"])
+        // `reporter:` 必须注入 —— 不注入时 `reportEpisodeIfNeeded` 直接 no-op，
+        // 下面那条「没播起来就不许多报一次」会**恒真**（假绿比假红更难发现）。
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, reporter: reporter, nowPlaying: nowPlaying,
+            sourcePreparer: preparer
+        )
+        _ = await subject.replaceQueue(
+            [TestItems.make("priv", source: .bearerRequired(TestItems.audioURL()))]
+        )
+        let started = Task { await subject.start() }
+        await assertSignalReached(target: 1, counter: preparer.requestSignal, what: "装载进入在途")
+        let mid = await subject.currentSnapshot()
+        XCTAssertEqual(mid.state, .loading, "前置：真有装载在途")
+
+        let toggled = await subject.toggle()
+        var snap = await subject.currentSnapshot()
+        XCTAssertNotEqual(toggled, .playing, "R7D：在途时按 ⏯ 不得变成「起播」")
+        XCTAssertEqual(snap.state, .paused, "R7D：`.loading` 归「正要响」一侧 → 这一按是暂停")
+
+        await preparer.release("priv")
+        _ = await started.value
+        snap = await subject.currentSnapshot()
+        // F-1 的既有裁决不得退化：条目照常进引擎，但绝不命令出声、不声称 `.playing`。
+        XCTAssertEqual(snap.state, .paused, "R7D/F-1：装载照常落地，但不许越过用户的暂停")
+        XCTAssertEqual(engine.loads.last?.id, "priv")
+        XCTAssertFalse(
+            engine.calls.contains("play"),
+            "R7D：暂停意图成立时不得命令引擎出声"
+        )
+        let submitted = await submitter.callCount
+        XCTAssertEqual(submitted, 0, "R7D：没播起来就不许提交播放上报")
+    }
+
     /// F-8（Minor，评审探针 `testG01`）：`PlayerEngine` 契约的「load 失败经 `.failed` 表达」
     /// 在 `loadCurrent` 里不被消费 —— 引擎说装载失败，续体照样 `state = .playing` 并**提交一次
     /// 播放上报**（少报/多报同族的口径偏差）。

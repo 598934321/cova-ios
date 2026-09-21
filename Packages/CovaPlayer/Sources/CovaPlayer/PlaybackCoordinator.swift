@@ -218,12 +218,28 @@ public actor PlaybackCoordinator {
         public var consecutiveFailureLimit: Int
         /// Now Playing 时间信息的节流间隔（元数据变更不受节流影响）。
         public var nowPlayingTimeSyncInterval: TimeInterval
-        public static let `default` = Configuration(seekStep: 15, consecutiveFailureLimit: 3, nowPlayingTimeSyncInterval: 1)
+        public static let `default` = Configuration(
+            seekStep: fallbackSeekStep, consecutiveFailureLimit: 3,
+            nowPlayingTimeSyncInterval: fallbackTimeSyncInterval
+        )
+
+        /// 构造期兜底值（也是 `default` 用的那一组）。
+        public static let fallbackSeekStep: Double = 15
+        public static let fallbackTimeSyncInterval: TimeInterval = 1
 
         public init(seekStep: Double, consecutiveFailureLimit: Int, nowPlayingTimeSyncInterval: TimeInterval) {
-            self.seekStep = seekStep
-            self.consecutiveFailureLimit = consecutiveFailureLimit
-            self.nowPlayingTimeSyncInterval = nowPlayingTimeSyncInterval
+            // **三个旋钮都在构造点守住各自的不变量**（R7C，第 7 轮复审探针）。过去只有
+            // `default` 是 3，`init` 原样存 —— 于是 `consecutiveFailureLimit <= 0` 时
+            // `handleFailure` 里「不自增」与「已达上限」两条同时成立，终态会在
+            // `failureStreak == 0` 上被打开，正面违反 D18「终态只能长在计数账上」。
+            // 一条只能靠默认值侥幸成立的不变量，等于没有不变量。
+            // 取 clamp（而不是抛错）：`Configuration` 是值类型，也用于预览与测试装配，
+            // 构造点崩溃会把一个非法数字升级成整 App 起不来。
+            self.seekStep = seekStep.isFinite && seekStep > 0 ? seekStep : Self.fallbackSeekStep
+            self.consecutiveFailureLimit = max(1, consecutiveFailureLimit)
+            self.nowPlayingTimeSyncInterval =
+                nowPlayingTimeSyncInterval.isFinite && nowPlayingTimeSyncInterval >= 0
+                ? nowPlayingTimeSyncInterval : Self.fallbackTimeSyncInterval
         }
     }
 
@@ -565,7 +581,12 @@ public actor PlaybackCoordinator {
 
     /// 播放/暂停切换（锁屏 togglePlayPause 与 UI 中央钮共用）。
     public func toggle() async -> PlaybackState {
-        if state == .playing || state == .buffering {
+        // `.loading` 归到「**正要响**」那一侧（R7D，第 7 轮复审探针）：装载在途时按 ⏯，
+        // 用户的意图是「别播这首」，而不是「再起一轮装载」。旧写法只认 `.playing` /
+        // `.buffering`，于是在途那一下落到 `resume()` → 新代次装载并把状态写成 `.playing`，
+        // 用户想停必须按第二次 —— 而锁屏与耳机按键本来就只给一次。
+        // `pause()` 在 `.loading` 上是成立的：它先落意图（F-1），当代装载回来时自己落暂停。
+        if state == .playing || state == .buffering || state == .loading {
             await pause()
         } else {
             await resume()
@@ -1040,8 +1061,15 @@ public actor PlaybackCoordinator {
                 guard continuationIsCurrent(
                     generation: generation, claimingEngineItem: nil, requiresPlaybackIntent: false
                 ) else { return }
-                await handleFailure(PlayerFailure(kind: Self.kind(for: error), message: error.description))
-                await convergeStalledLoad(generation: generation)
+                let preparedFailure = PlayerFailure(
+                    kind: Self.kind(for: error), message: error.description
+                )
+                await handleFailure(preparedFailure)
+                // 「谁该走收敛腿」在**调用点**说清楚，不靠守卫猜状态：只有不计数的取消需要它。
+                // 计数腿由 `handleFailure` 自己去装下一件或进 halt（那条腿自己写 `.stopped`）。
+                if !preparedFailure.countsTowardFailureStreak {
+                    await convergeStalledLoad(generation: generation)
+                }
                 return
             }
         } else if item.requiresLocalization {
@@ -1049,8 +1077,11 @@ public actor PlaybackCoordinator {
             guard continuationIsCurrent(
                 generation: generation, claimingEngineItem: nil, requiresPlaybackIntent: false
             ) else { return }
+            // 这条腿**不**挂 `convergeStalledLoad`（§20）：`.localizationRequired` 是计数形态，
+            // `handleFailure` 的三个出口（达上限自写 `.stopped` / 装下一件并推进代际 /
+            // `.repeated` 因 streak≥1 必进 halt）都不会留下「仍停在 `.loading` 或 `.paused`
+            // 且仍是当代」的窗口 —— 挂上去是一行永远不做事的假覆盖。
             await handleFailure(PlayerFailure(kind: .localizationRequired, message: "缺少私有音频本地化器"))
-            await convergeStalledLoad(generation: generation)
             return
         } else {
             prepared = item
@@ -1068,7 +1099,12 @@ public actor PlaybackCoordinator {
             // 引擎账本尚未记账，所以「无处可跳」会由 `apply(.repeated)` 的闸门收敛成终态。
             inFlightLoad?.failure = nil
             await handleFailure(failure)
-            await convergeStalledLoad(generation: generation)
+            // 同上：引擎上报的失败若是不计数的取消形态（`PlayerEngine` 契约允许任意 Kind，
+            // 生产 `AVPlayerEngine` 目前只发 `invalidSourceURL` / `mediaInvalid`），这一代
+            // 装载同样没有交付过引擎条目 ⇒ 走协议边界这一侧的收敛腿。计数形态不归本腿管。
+            if !failure.countsTowardFailureStreak {
+                await convergeStalledLoad(generation: generation)
+            }
             return
         }
         // 引擎账本先落，再谈播放状态（R1）。
@@ -1114,11 +1150,23 @@ public actor PlaybackCoordinator {
     /// 改写，或已换成更新一代的在途装载），那时本函数必须是无操作 —— 否则就会把用户刚刚
     /// 起播的新一轮装载打成 `.stopped`。
     private func convergeStalledLoad(generation: UInt64) async {
-        guard state == .loading, inFlightLoad?.generation == generation else { return }
+        // 守卫按**事实**判，不按「状态还写着 `.loading`」判（R7B，第 7 轮复审探针）：
+        // 装载在途时用户按暂停，`pause()` 会把 `.loading` 折成 `.paused` —— 于是只看
+        // `state == .loading` 的旧守卫在这条交错下整条腿跳过，状态留在 `.paused` 而引擎
+        // 从未拿到这一项，`advanceOutcome` 照样回 `.advanced`。同一个谎换了个状态外衣就
+        // 躲过自己的守卫，这是「修一半」的第二种形态。
+        // 真正的事实是：**这一代装载结束了，而引擎没拿到当前项**。
+        guard inFlightLoad?.generation == generation, engineEpisodeItemID == nil else { return }
+        // 刻意**不**列状态白名单。第一版写 `state == .loading` 被评审用「装载在途时先按暂停」
+        // 打穿（`.paused` 躲过守卫）；改成 `.loading || .paused` 只是把同一个错误换个更长的
+        // 清单再犯一次 —— 引擎上报 `.buffering` 一类的过渡态照样躲得过。**按症状写守卫必然
+        // 漏**：症状是别人写的，事实才是自己的。
+        // 「谁该走这条腿」改由调用点说清楚：只有**不计数**的取消腿调用本函数；计数腿自己会
+        // 经 `apply` 去装下一件或进 halt（那条腿自己写 `.stopped`），在这里再摁一次引擎、
+        // 再发一次回显只是噪声。
         userWantsPlayback = false
         state = .stopped
         position = 0
-        engineEpisodeItemID = nil
         await closeEpisodeIfNeeded()
         // 装载入口没有先摁住引擎（换件由 `engine.load` 顶替旧项）：取消意味着永远不会有那次
         // 顶替，此刻响着的可能是**上一件**。不暂停就是「读数说停止了，耳朵里却还在播」。
