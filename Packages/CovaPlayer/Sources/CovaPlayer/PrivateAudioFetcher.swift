@@ -37,6 +37,28 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
     /// 当前在途传输数（可观测面：去重与清理真的生效）。
     public var inflightTransferCount: Int { inflightTransfers.count }
 
+    /// 等待一条在途传输，并把「调用者被取消」真的传导进那一路传输（MAJ-1）。
+    ///
+    /// 为什么必须在**这里**做而不是在传输层：合流用的是无结构 `Task`（为了在 actor 重入前
+    /// 先把登记表填上），无结构任务**不继承**调用者的取消状态，`await task.value` 本身也不做
+    /// 取消检查 —— 于是旧行为是「`caller.cancel()` 生效、下载照跑、结果照投递」（TD-40 由此
+    /// 从「未证明」变成「已证否」）。D16② 要求的是相反形态：已发起（已授权）的传输必须被立即
+    /// 取消，且结果不得投递。取消对合流者是**共享**的：同一 key 只有一路真实传输，
+    /// 一人取消即终止那一路，其余合流者同样收到 `.cancelled`（而不是拿到一份「自己没要」的字节）。
+    private func awaitTransfer(_ task: Task<Result<AudioURL, PlayerError>, Never>) async -> Result<AudioURL, PlayerError> {
+        let outcome = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        guard Task.isCancelled == false else {
+            // 完成与取消撞在同一瞬间时也不投递可播地址（`cancel()` 对已结束的任务是空操作）。
+            task.cancel()
+            return .failure(.cancelled)
+        }
+        return outcome
+    }
+
     public init(
         transport: any PrivateAudioTransport,
         credentials: any APICredentialProviding,
@@ -63,6 +85,8 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
     // MARK: - 本地化
 
     public func localizedURL(for request: PrivateAudioRequest) async -> Result<AudioURL, PlayerError> {
+        // MAJ-1：调用者已取消时一个出站动作都不许发生（D16②「结果不得投递」的最早形态）。
+        if Task.isCancelled { return .failure(.cancelled) }
         switch await sessionBinding(for: request) {
         case .success:
             break
@@ -105,7 +129,7 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             generation: request.session.generation.value
         )
         if let entry = inflightTransfers[key] {
-            let shared = await entry.task.value
+            let shared = await awaitTransfer(entry.task)
             switch shared {
             case .failure:
                 return shared
@@ -143,7 +167,7 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             )
         }
         inflightTransfers[key] = InflightTransfer(token: token, task: task)
-        return await task.value
+        return await awaitTransfer(task)
     }
 
     /// 传输本体（在合流后的唯一一路里执行）。
@@ -158,6 +182,8 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
         defer {
             if inflightTransfers[key]?.token == token { inflightTransfers[key] = nil }
         }
+        // MAJ-1：任务在「登记之后、真正出站之前」被取消 → 直接收尾，一次传输都不发。
+        if Task.isCancelled { return .failure(.cancelled) }
         do {
             try prepareDirectories(owner: owner)
             let receipt = try await transport.writeAudio(
@@ -178,6 +204,11 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
                 removeItem(at: temporary)
                 return .failure(.emptyDownload)
             }
+            // MAJ-1 / D16②：提交前复核取消状态 —— 被取消的传输绝不产出可播地址。
+            if Task.isCancelled {
+                removeItem(at: temporary)
+                return .failure(.cancelled)
+            }
             // 提交前复核会话：下载途中登出/换号则丢弃（旧代次结果绝不落库）。
             switch await sessionBinding(for: request) {
             case .success:
@@ -185,6 +216,10 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             case .failure(let error):
                 removeItem(at: temporary)
                 return .failure(error)
+            }
+            if Task.isCancelled {
+                removeItem(at: temporary)
+                return .failure(.cancelled)
             }
             try commitMove(from: temporary, to: target)
             removeItem(at: temporary)
@@ -200,6 +235,13 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             return .failure(.cancelled)
         } catch {
             removeItem(at: temporary)
+            // MAJ-4：被作废的传输抛上来的多是裸 `NSURLError(-999)`（`for try await byte` 与
+            // `handle.synchronize()` 都不在任何 `catch` 里）。不归一就会被算成「写入失败」→
+            // `missingFile` → **计入失败连击**，于是登出/断网造成的取消会喂 design §9 的
+            // 「连续 3 次失败停止」。取消不是失败。
+            if Self.isCancellationShaped(error) {
+                return .failure(.cancelled)
+            }
             return .failure(.writeFailed(Self.status(of: error)))
         }
     }
@@ -323,6 +365,20 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
     /// 从任意底层错误只取整数码（与 `PlayerError` 一致：不回显路径/地址/描述）。
     static func status(of error: Error) -> Int32 {
         Int32(truncatingIfNeeded: (error as NSError).code)
+    }
+
+    /// 「这其实是一次取消」的归一判据（MAJ-4，D16②）。
+    ///
+    /// 覆盖三种真实形态：Swift `CancellationError`、已经归一过的 `PlayerError.cancelled`、
+    /// 以及 Foundation/URLSession 的裸 `NSURLErrorDomain / NSURLErrorCancelled(-999)`
+    /// （会话 `invalidateAndCancel()` 之后在途字节流抛上来的就是这一条）。
+    /// 判据只认 domain + code，不看描述文本（描述里可能带任务标识，不进错误值）。
+    static func isCancellationShaped(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let playerError = error as? PlayerError, playerError == .cancelled { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        let bridge = error as NSError
+        return bridge.domain == NSURLErrorDomain && bridge.code == NSURLErrorCancelled
     }
 
     /// 校验 owner/generation 与凭证快照一致（不做任何网络调用）。

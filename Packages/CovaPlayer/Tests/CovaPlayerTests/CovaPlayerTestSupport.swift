@@ -557,6 +557,14 @@ actor StubPrivateAudioTransport: PrivateAudioTransport {
             statusCode: 200
         )
     }
+
+    /// MAJ-3：`cancelInFlightTransfers()` 已删除协议默认空实现 —— 桩也必须显式实现
+    /// （本桩没有底层在途请求，所以显式记账 + 空动作即是正确语义）。
+    func cancelInFlightTransfers() async {
+        cancellationCount += 1
+    }
+
+    private(set) var cancellationCount = 0
 }
 
 /// 记录型源准备器。
@@ -952,4 +960,187 @@ actor RecordingPrivateAudioPreparer: PlaybackSourcePreparing {
     }
 
     var discardCount: Int { discardedOwners.count }
+}
+
+// MARK: - 环 4 · 第 6 批：取消可观测的传输原语（MAJ-1 / MAJ-3 / MAJ-4）
+
+/// 一路在途传输的**唤醒票据**：放行、出口作废、调用者取消三方争同一个槽。
+///
+/// 为什么需要它（而不是沿用 `GatedPrivateAudioTransport` 的 `waitUntilReleased`）：
+/// 那只桩的挂起点**不尊重 Swift 任务取消**，于是「上层取消有没有真的终止下载」在它身上
+/// 读不出来 —— 而那正是 MAJ-1 的判据。真实 `URLSession.bytes` 流的形态是「以错误结束」，
+/// 所以这里的取消会唤醒等待者并抛出 `cancelError`。
+///
+/// `settle` 保证 continuation 恰好恢复一次（后到的一方无操作），因此不需要任何让步或睡眠
+/// 就能把「谁先到」变成确定性的事实（D16⑤）。
+final class TransferWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var outcome: Result<Void, Error>?
+    let cancelError: Error
+
+    init(cancelError: Error) {
+        self.cancelError = cancelError
+    }
+
+    /// 决出这一路（首次生效）。返回是否真的由本次调用决出。
+    @discardableResult
+    func settle(_ result: Result<Void, Error>) -> Bool {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        let first = outcome == nil
+        if first { outcome = result }
+        lock.unlock()
+        guard first, let pending else { return false }
+        pending.resume(with: result)
+        return true
+    }
+
+    /// 已被决出（用于登记前的粘性判定，避免「放行发生在登记之前」时漏掉结论）。
+    var isSettled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return outcome != nil
+    }
+
+    /// 挂起等待；任务被取消时以 `cancelError` 收尾（`onTerminate` 只在本次取消真的决出了
+    /// 这一路时触发一次 —— 它就是测试读取「传输终止了」的那个信号）。
+    /// `honorsCancellation == false` 时**完全不理会取消**：只能由 `release()` 放行，
+    /// 用来造出「不合作的出口」这一最坏形态（准备器提交前的取消复核是唯一防线）。
+    func waitCancelling(onTerminate: @Sendable () -> Void, honorsCancellation: Bool = true) async throws {
+        if honorsCancellation, Task.isCancelled {
+            if settle(.failure(cancelError)) { onTerminate() }
+            throw cancelError
+        }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                if let outcome {
+                    lock.unlock()
+                    continuation.resume(with: outcome)
+                    return
+                }
+                self.continuation = continuation
+                lock.unlock()
+            }
+        } onCancel: {
+            guard honorsCancellation else { return }
+            if self.settle(.failure(self.cancelError)) { onTerminate() }
+        }
+    }
+}
+
+/// **取消可观测**的落盘传输桩（MAJ-1 / MAJ-3 / MAJ-4 的触发面）。
+///
+/// 与真实出口同形的三件事：
+/// 1. 在途挂起点尊重 Swift 任务取消（上层取消 → 这一路终止，不交付回执）；
+/// 2. `cancelInFlightTransfers()` 作废**当前在途**而不打死出口（之后的请求照常服务）；
+/// 3. 作废/取消抛上来的默认是**裸** `NSURLErrorDomain/-999`（真实形态），
+///    于是「归一为取消、不计入失败连击」（MAJ-4）这条判据必须经过生产代码而不是桩自己。
+///
+/// `release()` 是粘性的：已放行之后的新调用直接通过，保证「实现走偏」时测试变红而不是挂死。
+actor CancellablePrivateAudioTransport: PrivateAudioTransport {
+    /// 已进入传输的次数。
+    let enteredSignal = SignalCounter()
+    /// 以「取消」形态终止的传输数（MAJ-1 / MAJ-3 的可观测面）。
+    let terminatedSignal = SignalCounter()
+    /// `cancelInFlightTransfers()` 被调用的次数（MAJ-3：清理前作废在途是义务）。
+    let cancelledSignal = SignalCounter()
+
+    private(set) var destinations: [URL] = []
+    private(set) var hosts: [String?] = []
+    private(set) var sentAuthorizations: [Bool] = []
+    private(set) var completedCount = 0
+    private(set) var cancellationRequests = 0
+
+    private var pending: [TransferWaiter] = []
+    private var released = false
+    var bytesToWrite = 24
+    /// true = 抛裸 `NSURLError(-999)`（真实形态，判 MAJ-4 的归一腿）；
+    /// false = 抛已经归一过的 `PlayerError.cancelled`。
+    var throwsRawCancellationError = true
+    /// false = **完全不理会任务取消**的不合作出口（真实世界里对应「字节已在缓冲、
+    /// 取消要到下一块才被看到」这一窗口）。此时唯一还站得住的防线就是准备器提交前的
+    /// 那次取消复核 —— MAJ-1 的「不投递结果」腿只有用它才杀得掉。
+    var honorsTaskCancellation = true
+    /// 落盘字节（`release()` 路径才写盘：被取消的一路一个字节都不该交付）。
+    var marker: UInt8 = 0x6c
+
+    var callCount: Int { destinations.count }
+    var inFlightCount: Int { pending.count }
+
+    /// 设定「合作 / 不合作」（actor 隔离属性，测试经方法改）。
+    func configureHonoringCancellation(_ honoring: Bool) {
+        honorsTaskCancellation = honoring
+    }
+
+    func writeAudio(
+        from url: URL,
+        authorization: SecretString?,
+        to fileURL: URL,
+        expectedBytes: Int?
+    ) async throws -> PrivateAudioReceipt {
+        destinations.append(fileURL)
+        hosts.append(url.host)
+        sentAuthorizations.append(authorization != nil)
+        enteredSignal.bump()
+        let waiter = TransferWaiter(cancelError: cancellationError())
+        if released {
+            waiter.settle(.success(()))
+        } else {
+            pending.append(waiter)
+        }
+        let honoring = honorsTaskCancellation
+        do {
+            try await waiter.waitCancelling(
+                onTerminate: { [terminatedSignal] in terminatedSignal.bump() },
+                honorsCancellation: honoring
+            )
+        } catch {
+            pending.removeAll { $0 === waiter }
+            throw error
+        }
+        pending.removeAll { $0 === waiter }
+        guard honoring == false || Task.isCancelled == false else {
+            // 放行与取消撞上同一瞬间：取消优先（已作废的传输不得投递结果，D16②）。
+            throw cancellationError()
+        }
+        completedCount += 1
+        FileManager.default.createFile(atPath: fileURL.path, contents: payload())
+        return PrivateAudioReceipt(
+            bytesWritten: bytesToWrite,
+            expectedBytes: bytesToWrite,
+            statusCode: 200
+        )
+    }
+
+    func payload() -> Data { Data(repeating: marker, count: max(0, bytesToWrite)) }
+
+    /// 真实出口在会话被作废后交上来的就是这一条裸错误（MAJ-4 的机理起点）。
+    private func cancellationError() -> Error {
+        throwsRawCancellationError
+            ? NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+            : PlayerError.cancelled
+    }
+
+    /// 作废**当前在途**（MAJ-3）：协议默认空实现已删除，桩必须显式实现；
+    /// 出口本身继续可用（之后的新调用照常服务）。
+    func cancelInFlightTransfers() async {
+        cancellationRequests += 1
+        cancelledSignal.bump()
+        let dying = pending
+        pending = []
+        for waiter in dying where waiter.settle(.failure(waiter.cancelError)) {
+            terminatedSignal.bump()
+        }
+    }
+
+    /// 放行全部在途（粘性）。
+    func release() {
+        released = true
+        let waiting = pending
+        pending = []
+        for waiter in waiting { waiter.settle(.success(())) }
+    }
 }

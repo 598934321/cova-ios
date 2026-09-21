@@ -23,6 +23,13 @@ private final class StubAudioURLProtocol: URLProtocol {
         var landingChunks: [Data]?
         /// 环 4（C2）：非 HTTP 响应（走 `URLResponse`），用于「响应形态不对就 fail-closed」。
         var respondsAsPlainURLResponse = false
+        /// 环 4 第 6 批（MAJ-4）：**响应头与部分字节已交出之后**再抛出的错误 ——
+        /// 这才是真实会话被 `invalidateAndCancel()` 时的形态（`bytes(for:)` 已经返回了，
+        /// 裸 `-999` 从 `for try await byte` 那一段冒出来）。nil = 正常收尾。
+        var midStreamFailure: Error?
+        /// 环 4 第 6 批（MAJ-4）：`midStreamFailure` 生效前先交出的块数（默认 1，
+        /// 保证「已经写了字节」再失败 —— 零字节失败走的是 `bytes(for:)` 那条已归一的腿）。
+        var chunksBeforeFailure = 1
     }
 
     private static let lock = NSLock()
@@ -82,6 +89,14 @@ private final class StubAudioURLProtocol: URLProtocol {
             )!
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if let midStream = current.midStreamFailure {
+            // 先写掉一部分字节再失败：错误从**读循环**里冒出来，而不是从 `bytes(for:)`。
+            for chunk in body.prefix(max(0, current.chunksBeforeFailure)) {
+                client?.urlProtocol(self, didLoad: chunk)
+            }
+            client?.urlProtocol(self, didFailWithError: midStream)
+            return
+        }
         for chunk in body {
             client?.urlProtocol(self, didLoad: chunk)
         }
@@ -230,6 +245,120 @@ final class PrivateAudioTransportTests: XCTestCase {
             AudioAuthorityMatch.origin(of: URL(string: "https://audio.invalid:443/one.m4a")!),
             "https://audio.invalid:443"
         )
+    }
+
+    // MARK: - 环 4 · 第 6 批 MAJ-4：读循环里的取消必须归一，不许算成写失败
+
+    /// MAJ-4：会话被 `invalidateAndCancel()`（登出 / 换号 / 上层取消）之后，在途字节流抛上来的是
+    /// 裸 `NSURLErrorDomain/-999`。旧实现里 `for try await byte` 与 `handle.synchronize()`
+    /// **都不在任何 `catch` 内**（只有 `bytes(for:)` 那一段做了归一），于是裸错误一路逃到
+    /// 准备器 → `writeFailed(-999)` → `missingFile` → **计入失败连击**。
+    /// 本用例走的是**真实** `URLSessionPrivateAudioTransport` + 真实读循环。
+    func testRealTransportCancellationTerminatesInFlightStream() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 200,
+            chunks: [Data(repeating: 0x5a, count: 32)],
+            contentLength: nil,
+            failure: nil,
+            respondsAsPlainURLResponse: false,
+            midStreamFailure: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled),
+            chunksBeforeFailure: 1
+        ))
+        let file = target(in: directory)
+        do {
+            _ = try await makeTransport().writeAudio(
+                from: sourceURL(), authorization: SecretString("stub-token"), to: file, expectedBytes: nil
+            )
+            XCTFail("在途流被作废必须抛错")
+        } catch let error as PlayerError {
+            XCTAssertEqual(error, .cancelled, "MAJ-4：读循环里的 -999 必须归一为取消：\(error)")
+        }
+        let kind = PlaybackCoordinator.kind(for: PlayerError.cancelled)
+        XCTAssertEqual(kind, .cancelled)
+        XCTAssertFalse(
+            PlayerFailure(kind: kind, message: "").countsTowardFailureStreak,
+            "取消绝不进 design §9 的失败连击"
+        )
+        let described = String(describing: PlayerError.cancelled)
+        XCTAssertFalse(described.contains("999"), "归一后的错误不回显底层码：\(described)")
+    }
+
+    /// MAJ-4 的对照腿（TD-9：判据不许过宽）：读循环里冒出来的**非取消**网络错误仍然是失败，
+    /// 而且必须归到「网络类可重试」而不是「写入失败」。
+    func testMidStreamNetworkFailureIsNotSilentlyTreatedAsCancellation() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 200,
+            chunks: [Data(repeating: 0x11, count: 16)],
+            contentLength: nil,
+            failure: nil,
+            respondsAsPlainURLResponse: false,
+            midStreamFailure: URLError(.networkConnectionLost),
+            chunksBeforeFailure: 1
+        ))
+        do {
+            _ = try await makeTransport().writeAudio(
+                from: sourceURL(), authorization: nil, to: target(in: directory), expectedBytes: nil
+            )
+            XCTFail("半路断线必须抛错")
+        } catch let error as PlayerError {
+            XCTAssertEqual(error, .badStatus(0), "非取消的流内错误仍按网络失败分类：\(error)")
+            XCTAssertTrue(
+                PlayerFailure(kind: PlaybackCoordinator.kind(for: error), message: "")
+                    .countsTowardFailureStreak,
+                "它照旧计入连击（归一不得顺手放宽）"
+            )
+        }
+    }
+
+    /// MAJ-4 的纯函数面：归一判据本身可穷举（零 URLSession，防止「只测了一条真实路径」）。
+    func testStreamErrorNormalizationTable() {
+        XCTAssertEqual(
+            URLSessionPrivateAudioTransport.normalizedStreamError(
+                NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+            ),
+            .cancelled
+        )
+        XCTAssertEqual(URLSessionPrivateAudioTransport.normalizedStreamError(CancellationError()), .cancelled)
+        XCTAssertEqual(URLSessionPrivateAudioTransport.normalizedStreamError(PlayerError.cancelled), .cancelled)
+        // 已分类的 PlayerError（m14 的短写）原样上抛，不得被顺手改写。
+        XCTAssertEqual(
+            URLSessionPrivateAudioTransport.normalizedStreamError(PlayerError.writeFailed(ENOSPC)),
+            .writeFailed(ENOSPC)
+        )
+        XCTAssertEqual(
+            URLSessionPrivateAudioTransport.normalizedStreamError(URLError(.timedOut)),
+            .badStatus(0)
+        )
+        XCTAssertEqual(
+            URLSessionPrivateAudioTransport.normalizedStreamError(
+                NSError(domain: NSCocoaErrorDomain, code: 516)
+            ),
+            .writeFailed(516)
+        )
+    }
+
+    /// MAJ-3 的出口腿：`cancelInFlightTransfers()` 已从「协议默认空实现」变成**必须实现**，
+    /// 真实出口实现的是「掐当前这一代 + 换代」，且之后的请求照常服务。
+    func testInFlightCancellationIsARequiredWitnessNotADefaultNoOp() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let transport: any PrivateAudioTransport = makeTransport()
+        // 协议面（无具体类型可 `as?`）也必须能调用作废 —— 这就是「义务在类型里」的含义。
+        await transport.cancelInFlightTransfers()
+        let concrete = try XCTUnwrap(transport as? URLSessionPrivateAudioTransport)
+        XCTAssertEqual(concrete.cancellationCount, 1, "没有默认实现可躲：真实出口自己记账了这一次作废")
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 200, chunks: [Data(repeating: 0x27, count: 9)], contentLength: 9, failure: nil
+        ))
+        let receipt = try await transport.writeAudio(
+            from: sourceURL(), authorization: nil, to: target(in: directory), expectedBytes: nil
+        )
+        XCTAssertEqual(receipt.bytesWritten, 9, "作废只掐旧代，出口仍在新代服务")
+        XCTAssertEqual(concrete.sessionGeneration, 2)
     }
 
     // MARK: - 环 4 · m12：落盘权限收紧

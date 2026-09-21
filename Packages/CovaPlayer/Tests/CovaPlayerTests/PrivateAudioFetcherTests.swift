@@ -835,6 +835,210 @@ final class PrivateAudioFetcherTests: XCTestCase {
         XCTAssertEqual(everything, 0)
     }
 
+    // MARK: - 环 4 · 第 6 批 MAJ-1：上层取消必须真的终止合流那一路下载
+
+    /// MAJ-1（原 TD-40 的证否）：`caller.cancel()` 过去只是让调用者自己退出 ——
+    /// 合流用的无结构 `Task` **不继承**调用者取消，`await task.value` 也不查取消，
+    /// 于是下载照跑、文件照提交、结果照投递。本用例把三件事逐一钉住：
+    /// 传输那一路确实终止、沙盒里没有任何交付物、调用者拿不到可播地址。
+    func testUpperLayerCancellationTerminatesInFlightTransfer() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let transport = CancellablePrivateAudioTransport()
+        let fetcher = makeFetcherOn(in: directory, transport: transport)
+        let shared = request()
+
+        let caller = Task { await fetcher.localizedURL(for: shared) }
+        let entered = await Signals.wait(target: 1, counter: transport.enteredSignal)
+        XCTAssertTrue(entered, "前置条件：传输必须真的在途（否则什么都没测到）")
+        let inflightBefore = await fetcher.inflightTransferCount
+        XCTAssertEqual(inflightBefore, 1)
+
+        caller.cancel()
+        // 等待有上界：取消没传导时这里变红，而不是把测试挂死（D16⑤）。
+        let terminated = await Signals.wait(target: 1, counter: transport.terminatedSignal)
+        XCTAssertTrue(terminated, "MAJ-1：上层取消必须终止合流中的下载（旧行为：caller.isCancelled 而下载照跑）")
+        // 兜底放行：只有「已经变红」的实现才需要它来解锁（TD-35 的教训）。
+        // 正确实现下这一路已由取消决出，`settle` 首次生效原则让这里的放行成为空操作。
+        await transport.release()
+
+        let outcome = await caller.value
+        guard case .failure(let error) = outcome else {
+            return XCTFail("被取消的调用绝不许拿到可播地址：\(outcome)")
+        }
+        XCTAssertEqual(error, .cancelled, "取消必须归一为 `.cancelled`：\(error)")
+        let committed = await fetcher.cachedFileCount()
+        XCTAssertEqual(committed, 0, "取消的一路不得提交任何文件")
+        let inflightAfter = await fetcher.inflightTransferCount
+        XCTAssertEqual(inflightAfter, 0, "终止后的传输必须从登记表摘除")
+        let completed = await transport.completedCount
+        XCTAssertEqual(completed, 0, "桩侧也必须观测到「没有一次完成」")
+        let leftovers = (try? FileManager.default.contentsOfDirectory(
+            atPath: PrivateAudioPath.temporaryDirectory(base: directory.url).path
+        )) ?? []
+        XCTAssertTrue(leftovers.isEmpty, "在途分片必须被删净：\(leftovers)")
+    }
+
+    /// MAJ-1 的合流腿：同一 key 的多个调用者共享那一路真实传输（去重本身由
+    /// `testConcurrentSameKeyRequestsTriggerExactlyOneTransfer` 钉住），因此**任何一方**退出时
+    /// 都不许留下「别人替它决定的一份字节」。本用例刻意把两个调用者一起取消：
+    /// 于是「加入者是否已经走到合流分支」不再影响结论（不依赖调度顺序，D16⑤），
+    /// 判据仍然是硬的两条 —— 谁都没拿到地址、盘上一个文件都没有。
+    func testCancellationByBothMergedCallersDeliversNoPlayableURL() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let transport = CancellablePrivateAudioTransport()
+        let fetcher = makeFetcherOn(in: directory, transport: transport)
+        let shared = request()
+
+        let first = Task { await fetcher.localizedURL(for: shared) }
+        let entered = await Signals.wait(target: 1, counter: transport.enteredSignal)
+        XCTAssertTrue(entered, "前置条件：第一路已进入传输")
+        let merged = await fetcher.inflightTransferCount
+        XCTAssertEqual(merged, 1, "登记表里就该有一条在途传输")
+        let second = Task { await fetcher.localizedURL(for: shared) }
+
+        first.cancel()
+        second.cancel()
+        let terminated = await Signals.wait(target: 1, counter: transport.terminatedSignal)
+        XCTAssertTrue(terminated, "MAJ-1：合流后调用者的取消必须终止那一路真实传输（无结构任务不继承取消）")
+        await transport.release() // 兜底解锁（见上一条用例的注释）
+        let a = await first.value
+        let b = await second.value
+        guard case .failure(let errorA) = a else { return XCTFail("取消方不得拿到地址：\(a)") }
+        XCTAssertEqual(errorA, .cancelled)
+        guard case .failure(let errorB) = b else { return XCTFail("合流方同样不得拿到地址：\(b)") }
+        XCTAssertEqual(errorB, .cancelled)
+        let committed = await fetcher.cachedFileCount()
+        XCTAssertEqual(committed, 0, "被作废的传输不得留下交付物")
+        let inflight = await fetcher.inflightTransferCount
+        XCTAssertEqual(inflight, 0, "终止后的传输必须从登记表摘除")
+        let completed = await transport.completedCount
+        XCTAssertEqual(completed, 0)
+    }
+
+    /// MAJ-1 的第二腿（最难的那种形态）：出口**不理会**任务取消时，取消仍不得产出交付物。
+    ///
+    /// 只测「合作型出口」会漏掉真实风险：字节可能已在缓冲、取消要等到下一块才被看到，
+    /// 于是传输真的跑完了、真的把文件写到了临时路径。此时唯一还站得住的防线是
+    /// 准备器**提交前**的取消复核 —— 少了它，`.cancelled` 虽然回给了调用者，
+    /// 盘上却多出一份没人认领的私有音频（缓存复用腿下次会把它当可用缓存交付出去）。
+    func testUncooperativeTransportStillCannotDeliverAfterCancellation() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let transport = CancellablePrivateAudioTransport()
+        await transport.configureHonoringCancellation(false)
+        let fetcher = makeFetcherOn(in: directory, transport: transport)
+        let shared = request()
+
+        let caller = Task { await fetcher.localizedURL(for: shared) }
+        let entered = await Signals.wait(target: 1, counter: transport.enteredSignal)
+        XCTAssertTrue(entered, "前置条件：传输已进入不合作出口")
+        caller.cancel()
+        let inflight = await fetcher.inflightTransferCount
+        XCTAssertEqual(inflight, 1)
+        // 不合作的出口只能由测试放行：它会把整份字节写完并交出回执。
+        await transport.release()
+
+        let outcome = await caller.value
+        guard case .failure(let error) = outcome else {
+            return XCTFail("MAJ-1：出口跑完也不得投递可播地址：\(outcome)")
+        }
+        XCTAssertEqual(error, .cancelled)
+        let completed = await transport.completedCount
+        XCTAssertEqual(completed, 1, "前置条件：传输确实**跑完了**（否则这条判据什么都没测到）")
+        let committed = await fetcher.cachedFileCount()
+        XCTAssertEqual(committed, 0, "MAJ-1：跑完的被取消传输绝不提交（提交前必须复核取消）")
+        let leftovers = (try? FileManager.default.contentsOfDirectory(
+            atPath: PrivateAudioPath.temporaryDirectory(base: directory.url).path
+        )) ?? []
+        XCTAssertTrue(leftovers.isEmpty, "临时分片必须被删净：\(leftovers)")
+        // 缓存复用面也不得把它当可用缓存交出去（第二次请求仍是一次真实取回）。
+        let second = await fetcher.localizedURL(for: shared)
+        guard case .success = second else { return XCTFail("重取应成功：\(second)") }
+        let calls = await transport.callCount
+        XCTAssertEqual(calls, 2, "上一次没留下任何可复用的东西")
+        let afterSecond = await fetcher.cachedFileCount()
+        XCTAssertEqual(afterSecond, 1)
+    }
+
+    // MARK: - 环 4 · 第 6 批 MAJ-3：清理前作废在途是**义务**（默认空实现已删除）
+
+    /// MAJ-3：`purgeAll()` / `purge(owner:)` 必须先让出口作废在途，否则那一路会在清理之后
+    /// 跑完并投递结果。旧协议带着 `cancelInFlightTransfers()` 的**默认空实现**，因此
+    /// 「只实现 `writeAudio` 的出口」照样编得过、照样把私有音频写回沙盒 ——
+    /// 盘上干净只是 `commitMove` 撞 ENOENT 的巧合。本用例用一个**真的会终止在途**的出口，
+    /// 把「作废 → 终止 → 不投递 → 之后仍可服务」这条链钉死。
+    func testPurgeIsNotDefeatedByInFlightTransferOnRequiredCancellation() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let transport = CancellablePrivateAudioTransport()
+        let fetcher = makeFetcherOn(in: directory, transport: transport)
+        let shared = request()
+        let caller = Task { await fetcher.localizedURL(for: shared) }
+        let entered = await Signals.wait(target: 1, counter: transport.enteredSignal)
+        XCTAssertTrue(entered, "前置条件：在途传输已开始（已授权）")
+
+        let removed = await fetcher.purge(owner: PrincipalID(rawValue: "principal-1"))
+        XCTAssertEqual(removed, 0, "此刻还没有已提交的缓存可删")
+        let requests = await transport.cancellationRequests
+        XCTAssertEqual(requests, 1, "D16②：清理之前必须作废在途")
+        let terminated = await Signals.wait(target: 1, counter: transport.terminatedSignal)
+        XCTAssertTrue(terminated, "MAJ-3：作废必须真的终止那一路（默认空实现下它会跑完并投递结果）")
+        await transport.release() // 兜底解锁（见 MAJ-1 用例的注释）：只在已经变红时才用得上
+
+        let outcome = await caller.value
+        guard case .failure(let error) = outcome else {
+            return XCTFail("清理之后到达的结果不得投递：\(outcome)")
+        }
+        XCTAssertEqual(error, .cancelled)
+        // 出口没被打死：作废只掐当前在途，清理之后仍须能为新会话取音频（D16② 的另一半）。
+        let afterPurge = await fetcher.localizedURL(for: request(itemID: "after-purge"))
+        guard case .success = afterPurge else {
+            return XCTFail("作废在途不是打死出口：清理之后必须仍能取回：\(afterPurge)")
+        }
+        let committed = await fetcher.cachedFileCount()
+        XCTAssertEqual(committed, 1, "只有清理之后新起的那一路有交付物")
+    }
+
+    /// MAJ-4 的账目腿：被作废的传输必须归一为「取消」，**不得**计入失败连击。
+    ///
+    /// 机理：真实传输在会话被作废后抛的是裸 `NSURLError(-999)`；不归一时它会经
+    /// `writeFailed(-999)` → `missingFile` → `countsTowardFailureStreak == true`，
+    /// 于是登出/断网造成的取消会喂 design §9「连续 3 次失败停止」。
+    func testInvalidatedTransferNeverCountsTowardFailureStreak() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let transport = CancellablePrivateAudioTransport()
+        let fetcher = makeFetcherOn(in: directory, transport: transport)
+        let shared = request()
+        let caller = Task { await fetcher.localizedURL(for: shared) }
+        let entered = await Signals.wait(target: 1, counter: transport.enteredSignal)
+        XCTAssertTrue(entered, "前置条件：出口已交出裸 -999 的形态（未归一就是失败）")
+        await transport.cancelInFlightTransfers()
+        let outcome = await caller.value
+        guard case .failure(let error) = outcome else { return XCTFail("作废后不得投递：\(outcome)") }
+        XCTAssertEqual(error, .cancelled, "MAJ-4：裸 -999 必须在准备器侧归一为取消：\(error)")
+
+        let kind = PlaybackCoordinator.kind(for: error)
+        XCTAssertEqual(kind, .cancelled, "协调器口径同样是取消")
+        let failure = PlayerFailure(kind: kind, message: error.description)
+        XCTAssertFalse(failure.countsTowardFailureStreak, "取消不得进 design §9 的失败连击")
+
+        // TD-9 反向对照（判据不许过宽）：非取消形态的底层错误仍然是「失败」。
+        let stray = NSError(domain: NSCocoaErrorDomain, code: 516)
+        XCTAssertFalse(PrivateAudioFetcher.isCancellationShaped(stray), "别域错误不得被当成取消")
+        XCTAssertEqual(PrivateAudioFetcher.status(of: stray), 516)
+        XCTAssertTrue(
+            PlayerFailure(kind: PlaybackCoordinator.kind(for: .writeFailed(516)), message: "")
+                .countsTowardFailureStreak,
+            "真实写失败照旧计连击"
+        )
+        XCTAssertTrue(PrivateAudioFetcher.isCancellationShaped(CancellationError()))
+        XCTAssertTrue(PrivateAudioFetcher.isCancellationShaped(URLError(.cancelled)))
+        XCTAssertFalse(PrivateAudioFetcher.isCancellationShaped(URLError(.networkConnectionLost)))
+    }
+
     // MARK: - 夹具（环 4 新增）
 
     /// 缓存根下的 owner 目录名（`.inflight` 是隐藏目录，不计入 owner 集合）。

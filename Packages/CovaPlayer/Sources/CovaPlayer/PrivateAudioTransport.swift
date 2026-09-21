@@ -53,12 +53,13 @@ public protocol PrivateAudioTransport: Sendable {
     /// 语义是「作废当前在途」而不是「关掉出口」：登出/换号之后 App 还要为新会话取音频，
     /// 因此实现不得让出口永久不可用（终态下线请用 `shutDown()`）。
     ///
-    /// 默认实现为空操作 —— 只适用于「没有底层在途请求可作废」的桩件与内存实现。
+    /// **这是必须实现的义务，不是可选钩子**（环 4 · 第 6 批 MAJ-3）：协议里曾有
+    /// `public extension PrivateAudioTransport { func cancelInFlightTransfers() async {} }`
+    /// 的默认空实现，于是「清理前作废在途」变成一个可以被静默跳过的动作 ——
+    /// 只实现 `writeAudio` 的出口照样能编过、照样把私有音频写进沙盒，而 `purgeAll()` 之后
+    /// 那一路传输会跑完并投递结果（盘上干净只是 `commitMove` 撞 ENOENT 的巧合，不是设计保证）。
+    /// 默认实现删除后，漏实现 = 编译不过。
     func cancelInFlightTransfers() async
-}
-
-public extension PrivateAudioTransport {
-    func cancelInFlightTransfers() async {}
 }
 
 /// 权威一致性判定（缺陷 C2 的纯决策面，零 URLSession 可断言）。
@@ -267,25 +268,46 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
         var written = 0
         var buffer = Data()
         buffer.reserveCapacity(Self.writeChunkBytes)
-        for try await byte in stream {
-            // 取消（Swift 任务或会话代际作废）都必须在这里立刻收尾：
-            // 「已作废的传输不得继续投递结果」（D16②）。半文件由上层删除。
-            if Task.isCancelled { throw PlayerError.cancelled }
-            buffer.append(byte)
-            if buffer.count >= Self.writeChunkBytes {
-                written += try writeChunk(buffer, to: handle)
-                buffer.removeAll(keepingCapacity: true)
+        // MAJ-4：字节循环与 `synchronize()` 的**每一个**抛出点都在这里归一，绝不让裸
+        // `NSURLError(-999)` 逃到上层（逃出去就会被分类成 `missingFile` 并计入失败连击，
+        // 见 `PrivateAudioFetcher.performTransfer` 的注释）。`bytes(for:)` 那段早就做了归一，
+        // 本段是它漏掉的另一半。
+        do {
+            for try await byte in stream {
+                // 取消（Swift 任务或会话代际作废）都必须在这里立刻收尾：
+                // 「已作废的传输不得继续投递结果」（D16②）。半文件由上层删除。
+                if Task.isCancelled { throw PlayerError.cancelled }
+                buffer.append(byte)
+                if buffer.count >= Self.writeChunkBytes {
+                    written += try writeChunk(buffer, to: handle)
+                    buffer.removeAll(keepingCapacity: true)
+                }
             }
+            if buffer.isEmpty == false {
+                written += try writeChunk(buffer, to: handle)
+            }
+            try handle.synchronize()
+        } catch {
+            throw Self.normalizedStreamError(error)
         }
-        if buffer.isEmpty == false {
-            written += try writeChunk(buffer, to: handle)
-        }
-        try handle.synchronize()
+        // 收尾前最后一次取消检查：整条流读完后才被判取消时，同样不得交付回执。
+        if Task.isCancelled { throw PlayerError.cancelled }
         return PrivateAudioReceipt(
             bytesWritten: written,
             expectedBytes: expected,
             statusCode: http.statusCode
         )
+    }
+
+    /// 流式读取段的错误归一（MAJ-4）：取消 → `.cancelled`（不计入失败连击）；
+    /// 已分类的 `PlayerError`（短写等）原样上抛；其余网络错误 → `.badStatus(0)`；
+    /// 其余底层错误保持既有口径（`writeFailed(整数码)`），只出整数、不带描述。
+    static func normalizedStreamError(_ error: Error) -> PlayerError {
+        if let classified = error as? PlayerError { return classified }
+        if PrivateAudioFetcher.isCancellationShaped(error) { return .cancelled }
+        // 只认 NSURLErrorDomain（`URLError` 桥接后同域）：其余域一律保持既有「本地写入失败」口径。
+        if error is URLError || (error as NSError).domain == NSURLErrorDomain { return .badStatus(0) }
+        return .writeFailed(PrivateAudioFetcher.status(of: error))
     }
 
     /// 写一块并做**短写判定**（m14）：推进量与请求量不等即以 `writeFailed(ENOSPC)` 抛出，
