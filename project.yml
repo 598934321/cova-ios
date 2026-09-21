@@ -81,8 +81,10 @@ targets:
         #     修 M7（并发在途去重）/ M4·F-13（登出换号必须清私有音频）/ M3（生产默认真注册音频会话通知）
         # → 0.2.34/45 G3-e 环 4 状态机组 F-1…F-8：续体守卫收敛（装载代际 + 引擎归属 + 用户意图三条件一处定义）+
         #     在途装载台账（迟到失败归因 / 在途 seek 拒绝 / load 失败被消费）+ 推进结果与快照自洽 + `.loading` 语义诚实化
-        CFBundleShortVersionString: "0.2.38"
-        CFBundleVersion: "49"
+        # → 0.2.39/50 G3-e 环 4 第 5 批 F-A/F-B/F-C：`.repeated` 两条腿分离（良性导航不再进伪失败终态、保持位置与引擎账本）+
+        #     失效面清失败账、快照暴露 `tornDown` + 上报集次「在途标记」（提交与回前台补发重叠不再写两次）
+        CFBundleShortVersionString: "0.2.39"
+        CFBundleVersion: "50"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

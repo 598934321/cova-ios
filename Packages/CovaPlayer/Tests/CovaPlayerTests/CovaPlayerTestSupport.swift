@@ -367,6 +367,73 @@ actor RecordingNowPlaying: NowPlayingControlling {
 
 // MARK: - 上报提交桩
 
+/// **在途可控**的上报提交桩（F-C 的触发面）。
+///
+/// 用途：`retryPending` 只看「这一集次还没 submitted」，于是「提交在途 + 回前台补发」重叠时
+/// 同一次实际播放会被写两次（同键）。要把它变成可断言的事实，需要两件事同时成立：
+/// - 第一次提交**真的挂在那里**（`submit` 进入后等放行）—— 这就是重叠窗口；
+/// - 之后的调用**照常直通** —— 否则「实现走偏（真的发了第二次）」时用例挂死而不是变红。
+///
+/// 因此闸门只挡前 `blockingCalls` 次（默认 1 次）；`maxConcurrentInFlight` 把
+/// 「同一刻有两路写在途」本身变成可读取的事实，全程不需要让步或睡眠（D16⑤）。
+/// `release()` 是**粘性**的：已放行之后的新调用直接通过。
+actor GatedPlayReportSubmitter: PlayReportSubmitting {
+    /// 第 n 次 `submit` 已进入（请求已记录、尚未返回 = 提交在途）。
+    let enteredSignal = SignalCounter()
+
+    /// 挡挂在途的调用次数（超出的调用直通，保证错误实现是「变红」而不是「挂死」）。
+    private var blockingCalls: Int
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var inFlight = 0
+
+    private(set) var requests: [PlayReportRequestDto] = []
+    private(set) var maxConcurrentInFlight = 0
+
+    init(blockingFirstCallCount: Int = 1) {
+        blockingCalls = blockingFirstCallCount
+    }
+
+    var callCount: Int { requests.count }
+    var keys: [IdempotencyKey] { requests.map(\.idempotencyKey) }
+    var trackIDs: [String] { requests.map(\.trackId) }
+
+    func submit(_ request: PlayReportRequestDto) async throws -> PlayReportResponseDto {
+        requests.append(request)
+        inFlight += 1
+        maxConcurrentInFlight = max(maxConcurrentInFlight, inFlight)
+        enteredSignal.bump()
+        if blockingCalls > 0 {
+            blockingCalls -= 1
+            await waitUntilReleased()
+        }
+        inFlight -= 1
+        return try JSONDecoder().decode(
+            PlayReportResponseDto.self,
+            from: Data(#"{"recorded":true,"idempotentReplay":false,"authenticated":true}"#.utf8)
+        )
+    }
+
+    private func waitUntilReleased() async {
+        if released { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            if released {
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
+        }
+    }
+
+    /// 放行全部在途（粘性：之后的调用直接通过）。
+    func release() {
+        released = true
+        let pending = waiters
+        waiters = []
+        for continuation in pending { continuation.resume() }
+    }
+}
+
 /// 可编程的播放上报桩（**绝不触碰网络**）。
 actor StubPlayReportSubmitter: PlayReportSubmitting {
     struct Script: Sendable {

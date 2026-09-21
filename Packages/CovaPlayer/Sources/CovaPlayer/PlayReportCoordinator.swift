@@ -24,12 +24,15 @@ public enum PlayReportSuppression: String, Equatable, Sendable, CustomStringConv
     case alreadyReported
     /// 服务端去重命中（响应 `idempotentReplay == true`）。
     case idempotentReplay
+    /// 同一集次已有一路提交在途（补发与在途重叠）：让路，不重复发起写请求。
+    case submissionInFlight
 
     public var description: String {
         switch self {
         case .privateCandidate: return "私有候选音频不上报"
         case .alreadyReported: return "本次播放已上报"
         case .idempotentReplay: return "服务端判定为幂等重放"
+        case .submissionInFlight: return "同一集次的提交仍在途，本次补发让路"
         }
     }
 }
@@ -136,6 +139,8 @@ public struct CovaAPIClientPlayReporter: PlayReportSubmitting {
 /// - 集次结束（播完 / 换曲 / teardown）后同一曲目再次播放 → 新集次 → **新键**；
 /// - 私有候选音频一律不上报（design §8）；
 /// - 前后台转场共用同一去重态：后台不发起新提交，回前台只补发未决集次（同键）；
+/// - 同一集次的提交**已在途**时，补发/重投一律让路（`.submissionInFlight`）：
+///   「未决」不等于「可以发」，一次实际播放只允许一个写请求在写（F-C）；
 /// - 未认证：分配并保留键 → `.queued(.unauthenticated)`，**不静默丢包**；
 /// - generation 推进（登出/换号）：未决集次作废，且不产生任何提交。
 public actor PlayReportCoordinator {
@@ -148,6 +153,12 @@ public actor PlayReportCoordinator {
         let token: IdempotentRequestToken
         var submitted = false
         var attempts = 0
+        /// **提交在途标记**（F-C）：此刻是否已有一路 `submit` 挂在这个集次上。
+        ///
+        /// `submitted` 只在提交**成功返回后**才成立，因此「在途」是第三种事实：
+        /// 只看 `!submitted` 的补发（回前台 / 网络恢复 / 同一集次重投）会在重叠窗口里
+        /// 把同一次实际播放写成两个请求。标记是**每集次**的，所以不同集次仍可并行提交。
+        var inFlight = false
     }
 
     private let submitter: any PlayReportSubmitting
@@ -271,6 +282,9 @@ public actor PlayReportCoordinator {
     }
 
     /// 补发全部未决集次（各自**复用原键**）。
+    ///
+    /// 刻意不在这里过滤「已在途」的集次：判定只住在 `deliver` 一处（唯一咽喉），
+    /// 新增补发入口时不可能忘记它 —— 与 F-A/F-1 同一个教训：一条事实分两处判必然分叉。
     @discardableResult
     public func retryPending() async -> [PlayReportOutcome] {
         guard !tornDown, phase.allowsSubmission else { return [] }
@@ -300,8 +314,19 @@ public actor PlayReportCoordinator {
     }
 
     /// 提交一个集次：成功即记账并转入去重账本；失败则保留供**同键**重试。
+    ///
+    /// **全部提交入口的唯一咽喉**（`playbackStarted` 的复用腿 / `retryPending` / 回前台补发），
+    /// 所以「一次实际播放只写一个请求」的在途闸门只写在这里（F-C）：调用方一律不许自己
+    /// 判断「是否该发」，否则又多一处各写一份、各漏一处的账（同 F-1/F-2 的病根）。
     private func deliver(_ episode: Episode) async -> PlayReportOutcome {
         var current = episode
+        // F-C：同一集次此刻已有一路 `submit` 挂在半路 → 让路，不重复发起写请求。
+        // 早退前不动任何账（`attempts` / 集次实体都不改）：在途那一路自己会收尾。
+        // 键层面本来就不会破（两路携带同一个键，服务端 `idempotentReplay` 兜得住），
+        // 这里保的是 api-contracts §5「一次实际播放 = 一个写请求」的**写放大**口径。
+        guard !current.inFlight else {
+            return .suppressed(itemID: current.itemID, reason: .submissionInFlight)
+        }
         current.attempts += 1
         episodes[current.id] = current
         let key = current.token.key
@@ -323,6 +348,10 @@ public actor PlayReportCoordinator {
             // 键由本类型按 .playReport 生成，理论上不可达；保留 fail-closed 分支。
             return .failed(itemID: current.itemID, key: key, reason: .unknown)
         }
+        // 下面唯一的挂起点之前立牌；`defer` 覆盖成功 / 抛错 / `idempotentReplay` 三条返回路径，
+        // 漏摘一次就会把这个集次的后续补发永久挡死（比 F-C 更严重）。
+        beginSubmission(current)
+        defer { endSubmission(id: current.id) }
         do {
             let response = try await submitter.submit(request)
             markSent(current)
@@ -333,6 +362,20 @@ public actor PlayReportCoordinator {
         } catch {
             return .failed(itemID: current.itemID, key: key, reason: PlayReportFailure.classify(error))
         }
+    }
+
+    /// 立「在途」牌（F-C）：只标当前集次，不影响其它集次并行提交。
+    private func beginSubmission(_ episode: Episode) {
+        var flagged = episode
+        flagged.inFlight = true
+        episodes[flagged.id] = flagged
+    }
+
+    /// 摘「在途」牌：集次已被失效面丢弃时无事可做（不得把它写回来）。
+    private func endSubmission(id: UInt64) {
+        guard var stored = episodes[id], stored.inFlight else { return }
+        stored.inFlight = false
+        episodes[stored.id] = stored
     }
 
     private func markSent(_ episode: Episode) {

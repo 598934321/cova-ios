@@ -51,8 +51,17 @@ public struct PlaybackSnapshot: Equatable, Sendable {
     public var failureStreak: Int
     public var lastFailure: PlayerFailure?
     /// 自动推进已停止的终态。两个来源（详见 `docs/log/20260921.md` §5.1 环 4 新规则）：
-    /// ① 连续失败达上限；② 失败后队列已无可跳目标（且引擎里没有可播的条目）。
+    /// ① 连续失败达上限；② 失败后队列已无可跳目标，**且引擎里没有装载当前项**（守卫腿 (b)）。
+    ///
+    /// 两者都以「先有失败」为前提：`failureStreak == 0` 而本字段为 true 就是谎报（F-A），
+    /// 用户的良性动作（暂停中按 ⏭）一律落在 `.held`，不进终态。
+    /// 失效面（登出 / 换号 / `teardown`）会连同失败账一并清除（F-B）。
     public var isFailureTerminal: Bool
+    /// 播放器是否已永久释放（`teardown()` 之后恒真且不可复位，缺陷 P3 / F-B）。
+    ///
+    /// UI 必须靠它区分「空闲待播」（`state == .idle`、还能起播）与
+    /// 「播放器已释放」（任何请求都会被拒），否则会把已死的播放器渲染成「失败已停止」。
+    public var tornDown: Bool
     public var session: PlaybackSessionContext
 
     public init(
@@ -67,6 +76,7 @@ public struct PlaybackSnapshot: Equatable, Sendable {
         failureStreak: Int = 0,
         lastFailure: PlayerFailure? = nil,
         isFailureTerminal: Bool = false,
+        tornDown: Bool = false,
         session: PlaybackSessionContext = .unauthenticated
     ) {
         self.state = state
@@ -80,6 +90,7 @@ public struct PlaybackSnapshot: Equatable, Sendable {
         self.failureStreak = failureStreak
         self.lastFailure = lastFailure
         self.isFailureTerminal = isFailureTerminal
+        self.tornDown = tornDown
         self.session = session
     }
 
@@ -94,7 +105,8 @@ public enum AdvanceOutcome: Equatable, Sendable {
     case repeated(at: Int, item: PlaybackItem)
     /// `.off` 末项播完：进入停止态，不 wrap。
     case stopped
-    /// 边界保持（`.off`/`.one` 下显式越过首尾）。
+    /// 边界保持（`.off`/`.one` 下显式越过首尾，或 F-A：回绕只能落回当前项而用户此刻不想听）。
+    /// 共同点：什么都没发生 —— 不换曲、不动位置、不记失败、不进终态。
     case held
     case rejected(AdvanceRejection)
 }
@@ -304,6 +316,7 @@ public actor PlaybackCoordinator {
             failureStreak: failureStreak,
             lastFailure: lastFailure,
             isFailureTerminal: isFailureTerminal,
+            tornDown: tornDown,
             session: session
         )
     }
@@ -715,6 +728,8 @@ public actor PlaybackCoordinator {
     ///
     /// **终态**：`tornDown` 一旦置位就不复位，之后所有变更入口一律拒绝（缺陷 P3 的裁决）；
     /// 同时推进装载代际，让在途装载回来时自行丢弃。
+    /// 失效面（F-B）与登出走同一个收敛点 `clearQueueAndStop()` —— 队列、时间账、**失败账**
+    /// 一起作废，快照只剩 `state == .idle` + `tornDown == true` 可表达「播放器已释放」。
     public func teardown() async {
         guard !tornDown else { return }
         tornDown = true
@@ -754,19 +769,32 @@ public actor PlaybackCoordinator {
             // 失败链也可能已经走得更远（F-3）。落点一律按**当下队列**投影。
             return advanceOutcome(wrapped: wrapped)
         case .repeated:
-            // 引擎账本 + 用户意图都要过守卫（R1 / F-6）：引擎里根本没有这一项时，
-            // 「重播当前项」就是无中生有 → 收敛为「停止 + 终态」，等用户处置。
-            guard let claimed = queue.current?.id,
-                  continuationIsCurrent(
-                    generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: true
-                  ) else {
+            // 引擎账本 + 用户意图都要过守卫（R1 / F-6），但**两条腿的收敛结果必须分离**（F-A）：
+            //   · (b) 引擎归属不成立 → 这一项压根不在引擎里，「重播当前项」是无中生有
+            //     → 收敛为「停止 + 失败终态」，等用户处置；
+            //   · (c) 意图不成立而 (b) 成立 → 什么都没坏，只是用户此刻不想听
+            //     → 边界保持（位置、引擎账本、状态一律不动）。
+            // 旧实现把两者并进同一个 `haltBecauseNothingIsLoaded()`，于是「单曲 + `.all` +
+            // 暂停中按 ⏭」这类良性动作进入**伪失败终态**（`isFailureTerminal = true` 而
+            // `failureStreak = 0`、`lastFailure = nil`），并抹平位置、清空引擎账本。
+            // `claimed` 只读一次：它就是这次「重播当前项」宣称要落到的那一件，两个复核点
+            // 必须比对同一件（F-1 的口径），不能让 await 之后的重读替换掉它。
+            let claimed = queue.current?.id
+            switch repeatGuardVerdict(claiming: claimed) {
+            case .nothingLoaded:
                 return await haltBecauseNothingIsLoaded()
+            case .holdWithoutPlaying:
+                return await holdCurrentItemWithoutPlaying()
+            case .mayReplay:
+                break
             }
             position = 0
             await engine.seek(to: 0)
             await engine.play()
             // 两个 await 之后再复核一次（F-1 的同一把守卫）：期间用户完全可能已经暂停或
             // 换曲，此时状态必须交还给事实，而不是把 `.playing` 补写在用户的暂停之后。
+            // 此处两条腿仍然合并：走到这里说明重播**已经**发起，落点一律按当下事实投影，
+            // 不需要（也不允许）再判一次「该不该停止」。
             guard continuationIsCurrent(
                 generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: true
             ) else {
@@ -823,6 +851,10 @@ public actor PlaybackCoordinator {
     /// 一致性收敛（状态必须与实际装载一致）：「回绕 / 重播当前项」落到一个引擎里
     /// 根本不存在的项目上时，绝不进入 `.playing`，而是停止自动推进并进入终态，
     /// 等用户处置（design §9「停止并提示」；由 `resume()` / `start()` 显式重试恢复）。
+    ///
+    /// **只用于装载事实不成立那一腿**（F-A）：用户此刻没有播放意图不是「装载不符」，
+    /// 那种情形走 `holdCurrentItemWithoutPlaying()`，绝不允许进到这里 —— 本函数会写
+    /// `isFailureTerminal = true`，而终态的定义是先有失败（design §9）。
     private func haltBecauseNothingIsLoaded() async -> AdvanceOutcome {
         isFailureTerminal = true
         userWantsPlayback = false
@@ -833,6 +865,48 @@ public actor PlaybackCoordinator {
         await engine.pause()
         await publishNowPlaying(force: true)
         return .stopped
+    }
+
+    /// `.repeated` 守卫的**分离结果**（F-A）。
+    private enum RepeatGuardVerdict: Equatable {
+        /// 三条腿全成立：可以重播当前项并声称 `.playing`。
+        case mayReplay
+        /// 装载事实成立、仅用户意图不成立：良性保持，不写任何账。
+        case holdWithoutPlaying
+        /// 装载事实不成立（无当前项 / 换代在途 / 引擎没持有这一项 / 已释放）：停止 + 终态。
+        case nothingLoaded
+    }
+
+    /// 把 `.repeated` 的两条腿**分别**折算成各自的收敛结果 —— 这是 F-A 的全部修法。
+    ///
+    /// 之所以不直接调 `continuationIsCurrent(requiresPlaybackIntent:)` 再一分为二：
+    /// 那个函数返回单个布尔，「(b) 不成立」与「(c) 不成立」在它手里是同一个事实，
+    /// 于是必然重演 F-A（把良性动作收敛成失败终态）。装载事实腿仍然只由
+    /// `continuationIsCurrent` 定义，意图腿只由 `hasPlaybackIntent` 定义（一处一份，无就地重写）。
+    /// 本函数不公开：三条腿的**组合结果**只服务 `.repeated` 一个调用点，
+    /// 让外面能查「两腿合一的裁决」只会诱导就地重写条件（F-1/F-2 的老病根）。
+    private func repeatGuardVerdict(claiming claimed: String?) -> RepeatGuardVerdict {
+        guard let claimed,
+              continuationIsCurrent(
+                generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: false
+              ) else { return .nothingLoaded }
+        guard hasPlaybackIntent else { return .holdWithoutPlaying }
+        return .mayReplay
+    }
+
+    /// 良性保持（F-A）：队列数学只能「重播当前项」，而用户此刻没有播放意图。
+    ///
+    /// 与 `haltBecauseNothingIsLoaded()` 相反，这里**什么都不改写**：位置、`loopMode`、
+    /// 引擎账本（`engineEpisodeItemID`）、失败账（`failureStreak` / `lastFailure` /
+    /// `isFailureTerminal`）、集次（不关闭 → 续播复用同一幂等键）全部保持，
+    /// 只把「还在响的引擎」按意图摁住，并如实回 `.held`（design §4/§6「越界保持」）。
+    private func holdCurrentItemWithoutPlaying() async -> AdvanceOutcome {
+        if state == .playing || state == .buffering {
+            state = .paused
+            await engine.pause()
+        }
+        await publishNowPlaying(force: true)
+        return .held
     }
 
     private func handleItemEnded() async -> AdvanceOutcome {
@@ -1016,10 +1090,18 @@ public actor PlaybackCoordinator {
         }
         // (c) 用户意图
         if requiresPlaybackIntent {
-            guard userWantsPlayback, !isFailureTerminal else { return false }
+            guard hasPlaybackIntent else { return false }
         }
         return true
     }
+
+    /// 守卫 (c)：**用户此刻是否要听当前项**（F-A 起单独成一条判据，好让它的失效结果
+    /// 与守卫 (b)「引擎里到底有没有这一项」分开收敛）。
+    ///
+    /// 置位/复位点：`start` / `resume` / 推进装载 → `true`；`pause` / 失败终态 / 释放 /
+    /// 整队换代 / `.off` 队列尾播完 → `false`。「意图不成立」是**正常状态**（暂停里按 ⏭
+    /// 就是它），不是故障，因此它的收敛结果只能是「保持」，不能是失败终态。
+    private var hasPlaybackIntent: Bool { userWantsPlayback && !isFailureTerminal }
 
     /// 守卫 (b)：引擎此刻装着的是不是这一项。
     ///
@@ -1144,6 +1226,12 @@ public actor PlaybackCoordinator {
         return await reporter.retryPending()
     }
 
+    /// 失效收敛点（F-B）：登出 / 换号 / generation 推进 与 `teardown` 共用这一条。
+    ///
+    /// 除了队列与时间账，**失败账也一并作废**：`failureStreak` / `lastFailure` / `isFailureTerminal`
+    /// 数的是「当前这一串连续失败的曲目」，队列已经没了、引擎已经停了，继续携带只会让 UI
+    /// 把「已释放 / 空闲」渲染成「失败已停止」（且 `isFailureTerminal` 的自述要求先有失败）。
+    /// 与 `resetItemTimingState()` 同一口径，两者都不是「用户重试」——重试的清零在 `resume`。
     private func clearQueueAndStop() async {
         reportedEpisodeItemID = nil
         _ = queue.removeAll()
@@ -1152,6 +1240,9 @@ public actor PlaybackCoordinator {
         lastTimeSyncStamp = nil
         position = 0
         duration = nil
+        failureStreak = 0
+        lastFailure = nil
+        isFailureTerminal = false
         state = .stopped
     }
 

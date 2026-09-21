@@ -367,6 +367,60 @@ final class CovaPlayerFacadeTests: XCTestCase {
         await player.teardown()
     }
 
+    // MARK: - 环 4 · 第 5 批 F-C / F-B：门面链上的事实
+
+    /// F-C 的门面腿：`handleLifecycle(.active)` → `retryPending` 与起播时那一路**在途的**
+    /// 提交重叠 → 旧实现写两次（同键）。这里跑的是真实接线（门面 → 协调器 → 上报器），
+    /// 免得「协调器层修好了、门面那条链没接上」蒙过去。
+    func testForegroundRetryDuringInFlightSubmissionNeverDoubleSubmits() async {
+        let gated = GatedPlayReportSubmitter()
+        let player = CovaPlayer(
+            engine: ScriptedEngine(),
+            clock: FakeClock(),
+            reporter: PlayReportCoordinator(submitter: gated),
+            audioSystem: StubAudioSessionSystem()
+        )
+        await player.bindSession(authenticated())
+        let startTask = Task { await player.start(items: TestItems.makeMany(["a"])) }
+        let opened = await Signals.wait(target: 1, counter: gated.enteredSignal)
+        XCTAssertTrue(opened, "前置：起播的提交未进入在途")
+
+        let backgrounded = await player.handleLifecycle(.background)
+        XCTAssertTrue(backgrounded.isEmpty, "转后台不产生新提交")
+        let resumed = await player.handleLifecycle(.active)
+        XCTAssertEqual(
+            resumed,
+            [.suppressed(itemID: "a", reason: .submissionInFlight)],
+            "F-C：回前台补发要让路给在途的那一路"
+        )
+
+        await gated.release()
+        let outcome = await startTask.value
+        guard case .advanced = outcome else { return XCTFail("起播本身要成功：\(outcome)") }
+        let calls = await gated.callCount
+        XCTAssertEqual(calls, 1, "F-C：一次实际播放 = 一个写请求")
+        let snapshot = await player.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .playing, "让路不得打断播放本身")
+        await player.teardown()
+    }
+
+    /// F-B 的门面腿：UI 唯一读取面必须能区分「空闲待播」与「播放器已永久释放」，
+    /// 且释放后不再携带失败账（否则已死的播放器会被渲染成「失败已停止」）。
+    func testSnapshotDistinguishesIdleFromReleased() async {
+        let player = makePlayer()
+        _ = await player.start(items: TestItems.makeMany(["a"]))
+        var snapshot = await player.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .playing)
+        XCTAssertFalse(snapshot.tornDown, "F-B：活着的播放器不得自称已释放")
+
+        await player.teardown()
+        snapshot = await player.currentSnapshot()
+        XCTAssertEqual(snapshot.state, .idle)
+        XCTAssertTrue(snapshot.tornDown, "F-B：teardown 之后快照必须自称已释放")
+        XCTAssertFalse(snapshot.isFailureTerminal)
+        XCTAssertEqual(snapshot.failureStreak, 0)
+    }
+
     // MARK: - 环 4 · M4 / F-13：登出换号必须真的清私有音频
 
     private func makeFetchers(_ directory: TemporaryDirectory) -> PrivateAudioFetcher {

@@ -229,6 +229,9 @@ public final class CovaPlayer {
     }
 
     /// 前后台转场（共用同一去重态；不产生第二次上报）。
+    ///
+    /// F-C：回前台的补发与**仍在途**的那一路提交撞上同一集次时让路
+    /// （`.submissionInFlight`），于是一次实际播放始终只有一个写请求。
     public func handleLifecycle(_ phase: PlaybackLifecyclePhase) async -> [PlayReportOutcome] {
         await reporter.lifecyclePhaseChanged(phase)
     }

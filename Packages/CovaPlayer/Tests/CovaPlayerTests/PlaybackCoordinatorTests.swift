@@ -1702,4 +1702,252 @@ final class PlaybackCoordinatorTests: XCTestCase {
         let key = await reporter.activeEpisodeKey()
         XCTAssertNil(key, "F-8：未成功的装载不得占用集次幂等键")
     }
+
+    // MARK: - 环 4 · 第 5 批 F-A：`.repeated` 的两条腿必须分离（伪失败终态）
+
+    /// 「终态 ⟹ 先有失败」的统一探针（F-A 的判据本身）。
+    ///
+    /// design §9 的终态定义是「连续 3 次失败」，`PlaybackSnapshot.isFailureTerminal` 的自述 likewise
+    /// 要求先有失败。任何**良性动作**（用户按 ⏭/⏮）都不许把它翻成 true —— 否则 UI 会提示
+    /// 「已停止（失败）」而实际上一次都没失败过。
+    private func assertNoFakeTerminal(_ snap: PlaybackSnapshot, _ scene: String, line: UInt = #line) {
+        guard snap.isFailureTerminal else { return }
+        XCTAssertGreaterThan(
+            snap.failureStreak, 0,
+            "F-A：\(scene) 出现无失败的终态（streak=\(snap.failureStreak)）", line: line
+        )
+        XCTAssertNotNil(snap.lastFailure, "F-A：\(scene) 终态却没有失败记录", line: line)
+    }
+
+    /// 缺陷 F-A（Major，第 4 轮隔离复审实测）：单曲队列 + `.all` + **用户暂停中**按 ⏭ ——
+    /// 队列数学只能给 `.repeated`，而 `.repeated` 的守卫把「用户此刻没有播放意图」（腿 (c)）
+    /// 与「引擎里根本没有装载」（腿 (b)）收敛成同一个结果 → 良性动作落进
+    /// `haltBecauseNothingIsLoaded()`：快照 `state = .stopped` + `isFailureTerminal = true`，
+    /// 而 `failureStreak = 0`、`lastFailure = nil`、引擎**确实装着**这一项；
+    /// 顺带抹平暂停位置、清空引擎账本（下一次 `resume()` 因此多余重新装载）。
+    func testPausedUserNextOnSingleItemQueueUnderAllHoldsInsteadOfFakeTerminal() async {
+        await subject.setLoopMode(.all)
+        _ = await subject.replaceQueue(TestItems.makeMany(["a"]))
+        _ = await subject.start()
+        await subject.pause()
+        await subject.receive(.position(seconds: 40))
+        let before = await snapshot()
+        XCTAssertEqual(before.state, .paused, "前置：用户已暂停")
+        assertNoFakeTerminal(before, "前置")
+        let loadsBefore = engine.count(of: "load")
+        let playsBefore = engine.count(of: "play")
+        let pausesBefore = engine.count(of: "pause")
+        let seeksBefore = engine.count(of: "seek")
+
+        let outcome = await subject.next()
+        XCTAssertEqual(
+            outcome, .held,
+            "F-A：无处可去 + 用户没有播放意图 = 边界保持，不是「停止 + 失败终态」"
+        )
+        var after = await snapshot()
+        XCTAssertEqual(after.state, .paused, "F-A：暂停不得被一次 ⏭ 打成 .stopped")
+        XCTAssertFalse(after.isFailureTerminal, "F-A：终态的定义是连续 3 次失败（design §9）")
+        XCTAssertEqual(after.failureStreak, 0)
+        XCTAssertNil(after.lastFailure)
+        assertNoFakeTerminal(after, "next 之后")
+        XCTAssertEqual(after.item?.id, "a", "F-A：曲目身份不变")
+        XCTAssertEqual(after.position, 40, "F-A：暂停位置不得被抹平为 0")
+        XCTAssertEqual(engine.count(of: "seek"), seeksBefore, "F-A：没重播就不许把 seek(0) 写进引擎")
+        XCTAssertEqual(engine.count(of: "play"), playsBefore, "F-A：用户没要听，绝不命令引擎出声")
+        XCTAssertEqual(engine.count(of: "pause"), pausesBefore, "F-A：本来就已经暂停，不必再摁一次")
+        let published = await nowPlaying.lastPublished
+        XCTAssertEqual(published?.isPlaying, false, "F-A：锁屏不得收到 isPlaying=true")
+
+        // 引擎账本必须保住：旧实现把 `engineEpisodeItemID` 清了，于是随后的续播要重新装载一次。
+        await subject.resume()
+        after = await snapshot()
+        XCTAssertEqual(after.state, .playing, "F-A：用户随后要听 → 直接续播")
+        XCTAssertEqual(after.position, 40, "F-A：保持位置是这条裁决的一部分")
+        XCTAssertEqual(engine.count(of: "load"), loadsBefore, "F-A：引擎一直装着这一项 → 不该重新装载")
+        XCTAssertEqual(engine.count(of: "play"), playsBefore + 1)
+        assertNoFakeTerminal(after, "resume 之后")
+    }
+
+    /// F-A 的 ⏮ 同族（单曲 + `.all` 在首项后退同样只能回绕到当前项）。
+    func testPausedUserPreviousOnSingleItemQueueUnderAllKeepsPositionAndLedger() async {
+        await subject.setLoopMode(.all)
+        _ = await subject.replaceQueue(TestItems.makeMany(["a"]))
+        _ = await subject.start()
+        await subject.pause()
+        await subject.receive(.position(seconds: 25))
+        let loadsBefore = engine.count(of: "load")
+
+        let outcome = await subject.previous()
+        XCTAssertEqual(outcome, .held, "F-A：⏮ 与 ⏭ 同一条腿")
+        let after = await snapshot()
+        XCTAssertEqual(after.state, .paused)
+        XCTAssertFalse(after.isFailureTerminal, "F-A：无失败的终态就是伪终态")
+        XCTAssertEqual(after.position, 25)
+        await subject.resume()
+        let resumed = await snapshot()
+        XCTAssertEqual(resumed.state, .playing)
+        XCTAssertEqual(engine.count(of: "load"), loadsBefore, "F-A：引擎账本未被清空")
+    }
+
+    /// F-A 的 `.stopped` 同族：单元素队列在 `.off` 下播完进入**合法**停止态后切到 `.all`
+    /// 再按 ⏭ —— 同样只能回绕到当前项，位置必须保住、终态必须不出现。
+    /// （既有裁决 `testStoppedThenUserNextDoesNotRevivePlayback` 钉的是「stopped 下良性导航
+    /// 不得复活播放」；本用例钉的是同一条路径不得伪造失败终态 —— 两者必须同时成立。）
+    func testStoppedSingleItemQueueNextUnderAllHoldsPositionWithoutFakeTerminal() async {
+        _ = await subject.replaceQueue(TestItems.makeMany(["a"]))
+        _ = await subject.start()
+        await subject.receive(.position(seconds: 60))
+        await subject.receive(.ended)
+        var after = await snapshot()
+        XCTAssertEqual(after.state, .stopped, "前置：`.off` 末项播完 → 停止（不 wrap）")
+        XCTAssertFalse(after.isFailureTerminal, "前置：播完不是失败")
+        await subject.setLoopMode(.all)
+
+        let outcome = await subject.next()
+        XCTAssertEqual(outcome, .held, "F-A：stopped 下的越界导航同样是良性动作")
+        after = await snapshot()
+        XCTAssertEqual(after.state, .stopped, "F-A：状态保持（既不复活播放，也不改口成失败）")
+        XCTAssertFalse(after.isFailureTerminal)
+        XCTAssertEqual(after.failureStreak, 0)
+        XCTAssertNil(after.lastFailure)
+        XCTAssertEqual(after.position, 60, "F-A：位置不得被抹平")
+        XCTAssertEqual(after.item?.id, "a")
+    }
+
+    /// F-A 的**对照组**（复审指认：三曲队列的同一动作是 `.advanced` + `.playing`、不进终态）：
+    /// 说明旧判据是「过宽」而不是「必要代价」。
+    func testPausedUserNextOnThreeItemQueueUnderAllAdvancesAndPlays() async {
+        await subject.setLoopMode(.all)
+        _ = await subject.replaceQueue(TestItems.makeMany(["a", "b", "c"]))
+        _ = await subject.start(at: 2)
+        await subject.pause()
+        let outcome = await subject.next()
+        XCTAssertEqual(outcome, .advanced(to: 0, item: TestItems.make("a"), wrapped: true))
+        let after = await snapshot()
+        XCTAssertEqual(after.state, .playing, "对照组：三曲队列的同一动作正常推进")
+        XCTAssertFalse(after.isFailureTerminal, "对照组：不进终态")
+        XCTAssertEqual(after.item?.id, "a")
+        XCTAssertEqual(after.position, 0, "对照组：推进到新曲目 → 从头开始（与「保持」相对）")
+        await assertPlayingIsBackedByEngine("F-A 对照组")
+    }
+
+    /// 普遍化（F-A 的判据面，替代逐条枚举）：**从未上报过任何失败**时，
+    /// 任何一次用户显式导航（`循环模式 × 队列长度 × 前/后 × 暂停/停止`）都不得产生失败终态。
+    /// 复审指出既有 90 条协调器用例无一条覆盖「paused/stopped × 单曲 × `.all`」，本组矩阵把该
+    /// 组合连同其邻域一起钉住。
+    func testUserNavigationNeverCreatesFailureTerminalWithoutAnyFailure() async {
+        for mode in LoopMode.allCases {
+            for ids in [["a"], ["a", "b", "c"]] {
+                for basePaused in [true, false] {
+                    for goForward in [true, false] {
+                        await assertNavigationFrom(mode: mode, ids: ids, basePaused: basePaused, forward: goForward)
+                    }
+                }
+            }
+        }
+    }
+
+    private func assertNavigationFrom(
+        mode: LoopMode, ids: [String], basePaused: Bool, forward: Bool, line: UInt = #line
+    ) async {
+        let engine = ScriptedEngine()
+        let nowPlaying = RecordingNowPlaying()
+        let subject = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: nowPlaying)
+        let scene = "mode=\(mode) items=\(ids) base=\(basePaused ? "paused" : "stopped") nav=\(forward ? "next" : "previous")"
+        _ = await subject.setLoopMode(.off)
+        _ = await subject.start(items: ids.map { TestItems.make($0) }, at: ids.count - 1)
+        await subject.receive(.position(seconds: 40))
+        if basePaused {
+            await subject.pause()
+        } else {
+            await subject.receive(.ended)   // `.off` 末项播完 → 合法停止态
+        }
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.failureStreak, 0, "前置：\(scene) 从未发生失败")
+        XCTAssertNil(snap.lastFailure, "前置：\(scene)")
+        _ = await subject.setLoopMode(mode)
+        let baseState = snap.state
+        let baseItemID = snap.item?.id
+
+        let outcome = forward ? await subject.next() : await subject.previous()
+        snap = await subject.currentSnapshot()
+        assertNoFakeTerminal(snap, scene, line: line)
+        XCTAssertNil(snap.lastFailure, "F-A：\(scene) 良性导航不得记账失败", line: line)
+        XCTAssertEqual(snap.failureStreak, 0, "F-A：\(scene)", line: line)
+        if outcome == .held {
+            XCTAssertEqual(snap.state, baseState, "F-A：\(scene) 边界保持不得改写状态", line: line)
+            XCTAssertEqual(snap.item?.id, baseItemID, "F-A：\(scene) 边界保持不得换曲", line: line)
+        }
+        if snap.state == .playing {
+            XCTAssertEqual(engine.loads.last?.id, snap.item?.id, "R1：\(scene) \(line)", line: line)
+        }
+    }
+
+    // MARK: - 环 4 · 第 5 批 F-B：teardown 的失效面收敛 + 快照暴露「已释放」
+
+    /// 缺陷 F-B（Minor，第 4 轮隔离复审实测）：3 连失败进终态后 `teardown()` ——
+    /// 旧实现的失效面（`teardown` + `clearQueueAndStop`）只清队列/时间/状态，**不碰失败账**，
+    /// 于是快照 `state = .idle` 却仍 `isFailureTerminal = true` / `lastFailure = network` /
+    /// `streak = 3`；而 `PlaybackSnapshot` 没有 `tornDown` 字段，UI 无从区分
+    /// 「空闲待播」与「播放器已永久释放」，会把已死的播放器渲染成「失败已停止」。
+    func testTeardownAfterFailuresClearsFailureLedgerAndMarksSnapshotReleased() async {
+        _ = await subject.replaceQueue(TestItems.makeMany(["a", "b", "c", "d"]))
+        _ = await subject.start()
+        for _ in 0..<3 { await subject.receive(.failed(PlayerFailure(kind: .network))) }
+        let before = await snapshot()
+        XCTAssertTrue(before.isFailureTerminal, "前置：连续 3 次失败进入终态")
+        XCTAssertEqual(before.failureStreak, 3)
+        XCTAssertFalse(before.tornDown, "F-B：未释放时该字段必须为 false（否则它是个常量）")
+        XCTAssertEqual(before.state, .stopped)
+
+        await subject.teardown()
+        let after = await snapshot()
+        XCTAssertEqual(after.state, .idle)
+        XCTAssertFalse(after.isFailureTerminal, "F-B：已释放的播放器不得继续携带失败终态")
+        XCTAssertEqual(after.failureStreak, 0, "F-B：失败账随集次一起失效")
+        XCTAssertNil(after.lastFailure)
+        XCTAssertTrue(after.tornDown, "F-B：快照必须能表达「播放器已永久释放」")
+        XCTAssertEqual(after.queueCount, 0)
+        XCTAssertNil(after.item)
+
+        // 幂等：第二次 teardown 不得把任何事实改回去。
+        await subject.teardown()
+        let again = await snapshot()
+        XCTAssertTrue(again.tornDown)
+        XCTAssertFalse(again.isFailureTerminal)
+        XCTAssertEqual(engine.releaseCount, 1, "既有裁决：teardown 幂等")
+    }
+
+    /// F-B 的另一半：**登出/换号**与 teardown 走同一个失效收敛点（不得一个清、一个不清）。
+    /// 对照面同样钉住：登录（首次绑定已认证身份）不是失效面，不得把账清掉、也不得假报已释放。
+    func testLogoutInvalidationClearsFailureLedgerJustLikeTeardown() async {
+        _ = await subject.replaceQueue(TestItems.makeMany(["a", "b", "c", "d"]))
+        _ = await subject.start()
+        for _ in 0..<3 { await subject.receive(.failed(PlayerFailure(kind: .network))) }
+        let stale = await snapshot()
+        XCTAssertTrue(stale.isFailureTerminal, "前置：终态已成立")
+        XCTAssertFalse(stale.tornDown)
+
+        let next = PlaybackSessionContext(
+            owner: PrincipalID(rawValue: "p2"), generation: SessionGeneration(value: 9)
+        )
+        await subject.bindSession(next)
+        let after = await snapshot()
+        XCTAssertEqual(after.state, .stopped, "登出停止播放（既有裁决）")
+        XCTAssertFalse(after.isFailureTerminal, "F-B：失效面必须与 teardown 同口径收敛")
+        XCTAssertEqual(after.failureStreak, 0)
+        XCTAssertNil(after.lastFailure)
+        XCTAssertFalse(after.tornDown, "F-B：已释放是 teardown 专属事实")
+        XCTAssertEqual(after.session.generation, SessionGeneration(value: 9))
+
+        // 正向对照（TD-9）：登录不是失效面 —— 已经播起来的东西不得被打断、账也不清。
+        let live = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: nowPlaying)
+        _ = await live.start(items: TestItems.makeMany(["a"]))
+        await live.receive(.failed(PlayerFailure(kind: .network)))
+        await live.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p1")))
+        let loggedIn = await live.currentSnapshot()
+        XCTAssertEqual(loggedIn.state, .playing, "登录不是登出（既有裁决）")
+        XCTAssertEqual(loggedIn.failureStreak, 1, "非失效面不得顺手清失败账")
+        XCTAssertFalse(loggedIn.tornDown)
+    }
 }

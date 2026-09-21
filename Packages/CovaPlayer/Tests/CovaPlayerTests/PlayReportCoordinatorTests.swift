@@ -165,8 +165,68 @@ final class PlayReportCoordinatorTests: XCTestCase {
         XCTAssertEqual(calls, 2)
     }
 
-    // MARK: - 会话推进（登出 / 换号）
+    // MARK: - 环 4 · 第 5 批 F-C：提交在途与回前台补发重叠
 
+    /// 缺陷 F-C（Minor，第 4 轮隔离复审实测）：`retryPending` 只看 `!submitted`、`deliver`
+    /// 没有「在途」概念 —— 于是**第一次提交还挂在 `submit` 上**时经历「后台 → 前台」，
+    /// 同一次实际播放会被写两次（同键）。键层面没破（服务端 `idempotentReplay` 兜得住），
+    /// 破的是 api-contracts §5「一次实际播放 = 一个写请求」的写放大口径。
+    ///
+    /// 确定性口径：闸门只挡**第一次**提交（后续调用直通），因此「实现走偏」时用例是
+    /// 变红而不是挂死；全程不需要让步/睡眠/竞态断言（D16⑤）。
+    /// 与既有 `testForegroundBackgroundTransitionNeverReportsTwice` 的分工：那条只覆盖
+    /// 「上一次提交已完成」的形态（名字过强），本条钉的是**重叠窗口**。
+    func testRetryWhileSubmissionIsInFlightNeverSubmitsTwice() async {
+        let gated = GatedPlayReportSubmitter()
+        let subject = PlayReportCoordinator(submitter: gated)
+        let session = authenticated
+        _ = await subject.bindSession(session)
+        let startTask = Task {
+            await subject.playbackStarted(itemID: "track-1", kind: .libraryTrack, session: session)
+        }
+        let opened = await Signals.wait(target: 1, counter: gated.enteredSignal)
+        XCTAssertTrue(opened, "前置：首次提交未进入在途，本用例无从验证重叠补发")
+
+        let backgrounded = await subject.lifecyclePhaseChanged(.background)
+        XCTAssertTrue(backgrounded.isEmpty, "转后台不产生新提交")
+        let resumed = await subject.lifecyclePhaseChanged(.active)
+        XCTAssertEqual(
+            resumed,
+            [.suppressed(itemID: "track-1", reason: .submissionInFlight)],
+            "F-C：补发必须看见「同一集次已有一路在途」并让路"
+        )
+
+        await gated.release()
+        let first = await startTask.value
+        guard case .sent(_, let key) = first else { return XCTFail("在途那一路自己要把这一集次发掉：\(first)") }
+        var calls = await gated.callCount
+        XCTAssertEqual(calls, 1, "F-C：一次实际播放只有一个写请求")
+        let concurrent = await gated.maxConcurrentInFlight
+        XCTAssertEqual(concurrent, 1, "F-C：同一集次从未有两路并写在途")
+        var keys = await gated.keys
+        XCTAssertEqual(Set(keys).count, 1, "F-C：两次尝试即便发生也只带同一个键（键层面从未破）")
+        XCTAssertEqual(keys, [key])
+        var pending = await subject.pendingCount()
+        XCTAssertEqual(pending, 0)
+        let reported = await subject.reportedCount()
+        XCTAssertEqual(reported, 1)
+
+        // 正向对照（TD-9）：在途标记只挡重叠，不得把后续集次也一起挡死。
+        await subject.playbackEnded(itemID: "track-1")
+        let second = await subject.playbackStarted(
+            itemID: "track-1", kind: .libraryTrack, session: authenticated
+        )
+        guard case .sent(_, let newKey) = second else { return XCTFail("集次结束后再播是新集次：\(second)") }
+        XCTAssertNotEqual(newKey, key)
+        calls = await gated.callCount
+        XCTAssertEqual(calls, 2, "F-C：下一集次照常提交")
+        pending = await subject.pendingCount()
+        XCTAssertEqual(pending, 0)
+        keys = await gated.keys
+        XCTAssertEqual(Set(keys).count, 2, "两集次两键，去重口径不退化")
+    }
+
+    // MARK: - 会话推进（登出 / 换号）
     func testGenerationAdvanceDropsPendingWithoutSubmitting() async {
         await bind(.unauthenticated)
         _ = await start("track-1")
