@@ -755,8 +755,9 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 
 ### C′. 模拟器验收位（2026-09-22 01:55，`iPhone 17` iOS 26.5 模拟器实机安装并启动）
 
-- 产物：`docs/acceptance/20260922-g3e-app-shell.png`（**tracked**，不放 `.build/` —— 那里被
-  gitignore，`git clean` 一次就没了）。
+- 产物：`docs/acceptance/20260922-g3e-app-shell.png` 与 `20260922-g3e-final-bytes.png`
+  （均 **tracked**，不放 `.build/` —— 那里被 gitignore，`git clean` 一次就没了）。后者装的是
+  第 12 批收口后的字节（bundle 内 0.2.50/61），前者是最早一次验收位；**两张都留**，不覆盖。
 - 装进去的就是被测字节：bundle 内 `CFBundleShortVersionString 0.2.49` / `CFBundleVersion 60`
   / `UIBackgroundModes[0] = audio` / `CFBundleIdentifier cn.covalink.ios`，与 `project.yml`
   一致（`plutil` 从**产物**里读出来核对，不是从源码里读）。
