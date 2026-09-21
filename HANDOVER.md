@@ -258,6 +258,17 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
   或登记为防御层惯例。
 - TD-37：`GatedNowClock` 连装 `armNowGate`（未放行再装第二次）会覆写 `nowGate` → continuation
   泄漏。测试基建脆弱点，G4 前加断言或改多槽位。
+- TD-42（G4 前真机冒烟）：MAJ-6 的修法把锁屏命令桥从「无超时 `DispatchSemaphore.wait()`」
+  换成**受理/投递分离**（先回 `.success` 表示已受理，结果经投递接缝回写）。模拟器上无法
+  验证控制中心/耳机按键对「已受理但未完成」的真实呈现与超时行为 → 真机冒烟必须覆盖。
+- TD-43（min-6 边界）：`MPRemoteCommandCenter` 是**进程内共享单例**，系统不提供「按所有者
+  查询 target」的能力，因此「非所有者不许动共享命令面」无法安全强制 —— 强行拦截会让
+  **已经挂上的** target 永久留在系统里，比互踩更糟。现方案只做可观测票据
+  （`SharedSurfaceLedger`：认领次数/持有者可查），不做拦截。多门面并存属 M1 装配问题。
+- TD-44（min-4 未证实未证伪）：跨主机重定向时 `Authorization` 是否真的外发，在
+  `URLProtocol` 夹具上**不可观测**（桩不重放跳转链，实测只发出 1 个主机、落地请求无
+  `Authorization`）；且全仓 `willPerformHTTPRedirection` 0 命中 ⇒ 实现里根本没有可剥离凭证
+  的位置。字节侧已由 C2 的响应权威复核兜住（`.hostRejected`、零写盘），**凭证侧仍是缺口**。
 
 **持续 / 工具链**
 - TD-2：CovaCore 若真需要条件编译，必须先登记 NEEDS/decisions（禁止静默放宽）。
