@@ -4,8 +4,9 @@
 #   → 4 有效构建设置（配置×SDK）+ clean build + 实际编译语言版本 + 产物保真
 #   → 5 应用测试（xcresult passed/failed）+ xccov 采集有效性 → 6 核心层 iOS 测试
 #   → 7 核心层覆盖率（SwiftPM 插桩，含编译集合一致性与实际语言版本断言）
-#   → 8 播放器层 iOS 测试（xcresult passed/failed，采集覆盖率）
-#   → 9 播放器层行覆盖率（xccov 逐文件行数据，含编译集合一致性断言）
+#   → 8 播放器层 iOS 测试（xcresult passed/failed，产出模拟器侧插桩 profraw/profdata）
+#   → 9 播放器层行覆盖率（**与 7/10 同方法论**：8/10 的 Coverage.profdata + 测试二进制走
+#     llvm-cov lcov；含「全部 target」编译集合一致性、映射侧↔运行侧文件集一致性与产物侧无 UI 判据）
 #
 # 判定方法论（第五轮评审裁决）：
 #   * 能用机器可读产物表达的事实，一律不得用文本正则判定：
@@ -21,6 +22,19 @@
 #     而不是靠日常合法语法变体（空白/注释/条件键/路径重定向/target 级覆盖）。
 #   * 字面令牌判定可能因注释/字符串误报 —— 这是刻意的 fail-closed；若命中，请删除该文本或调整实现，
 #     不要为此弱化门禁。
+#   * 环 4 修复（G-9/G-10/G-11/G-12/G-13）新增的口径：
+#       - G-9：覆盖率判据必须**从干净 clone 可复现**。xccov 在同一份产物上会把本地包目标折叠进
+#         测试 target（干净副本实测 `CovaPlayer 0.00% (0/0)` + 报告 0 行点名 Sources），故 9/10
+#         不再消费 xccov 文本，改消费 8/10 真实运行产出的 Coverage.profdata（llvm-cov lcov）。
+#       - G-10：入库的 .env 文件**不再被 `.` source**，只做键名白名单逐行解析（否则它可以覆写
+#         脚本里钉死的常量，绕过无需改 check.sh）。
+#       - G-11：「播放器层禁 UI」不再只靠行首 import 正则：加 dump-package 的 **target 级**依赖与
+#         源路径校验、包内符号链接整类禁令、以及构建产物侧判据（目标 .o 的符号引用 + 测试二进制
+#         的 dylib 依赖）。字面正则保留为附加防线，且只收紧不放宽。
+#       - G-12：覆盖率分母必须等于「被编译且产物带 __llvm_covmap 区间」的文件集合，且运行侧点名的
+#         文件集合必须等于同一批二进制的映射侧（`--empty-profile`）集合 —— 只报局部文件的报告与
+#         陈旧二进制都不再可能放行。无区间文件（协议 / 仅 case 枚举 / 仅注释）两侧同时缺席，
+#         故不按「编译文件数」强等（那会在合法文件上误红，TD-9；见 7/10 同类结论）。
 # 任一步失败均非零退出；日志落在 .build/check/ 下（.build/ 不入 git）。
 # 用法：./Scripts/check.sh
 set -euo pipefail
@@ -44,6 +58,9 @@ RESULT_BUNDLE="$LOG_DIR/Cova.xcresult"
 CORE_RESULT_BUNDLE="$LOG_DIR/CovaCoreTests.xcresult"
 PLAYER_RESULT_BUNDLE="$LOG_DIR/CovaPlayerTests.xcresult"
 PLAYER_PACKAGE_DERIVED_DATA="$LOG_DIR/DerivedData-CovaPlayer"
+PLAYER_PROF_MARKER="$LOG_DIR/.player-profile-start-marker"
+# 3/10 从 dump-package 落盘的目标清单：pkg \t type \t 物理源目录（9/10 复用，避免二次解析口径漂移）
+TARGET_MANIFEST="$LOG_DIR/target-manifest.tsv"
 BASELINE_FILE="$ROOT/Scripts/test-count-baseline.env"
 mkdir -p "$LOG_DIR"
 
@@ -72,6 +89,20 @@ REQUIRED_LANGUAGE_VERSION="6"
 IOS_ONLY_MODULES="UIKit SwiftUI AVFoundation AVKit ARKit RealityKit CoreMotion HealthKit WidgetKit Photos PhotosUI BackgroundTasks CallKit WatchKit SpriteKit MetalKit MapKit RoomPlan"
 # CovaCore 平台声明白名单（.macOS 仅用于宿主侧覆盖率测量，不得用于产品分支）
 REQUIRED_CORE_PLATFORMS=".iOS(.v26),.macOS(.v14)"
+# 播放器层（G3-e）：包名与「禁 UI」的两级判据
+PLAYER_PKG="CovaPlayer"
+PLAYER_PKG_DIR="Packages/CovaPlayer"
+# 行首 import（附加防线的第一段）：在既有 `(@属性 )*import` 基础上**只追加**可识别的前缀形态
+# —— 块注释前缀（`/* c */ import`）与访问级修饰符（public/internal/private/fileprivate/package）。
+# 不允许 `//` 行注释前缀，故「注释掉的 import」依旧不误红（TD-9 合法工程对照）。
+PLAYER_IMPORT_LINE_RE='^[[:space:]]*(/\*[^*]*\*+([^/*][^*]*\*+)*/[[:space:]]*)*(@[A-Za-z_]+[[:space:]]+)*(public[[:space:]]+|internal[[:space:]]+|private[[:space:]]+|fileprivate[[:space:]]+|package[[:space:]]+)?import[[:space:]]'
+# UI 模块词（附加防线的第二段，与修复前逐字一致）
+PLAYER_UI_WORD_RE='SwiftUI|UIKit'
+# 产物侧判据（L3）：Swift mangling 里模块名带长度前缀，可精确归属（llvm-nm 输出形如 `_$s7SwiftUI…`）；
+# UIKit 的 ObjC 类只能按类名前缀归属（`_OBJC_CLASS_$_UIView` 等）——实测合法工程（AV*/MP*）零命中。
+# 注意：`__swift_FORCE_LOAD_$_swiftUIKit` 在**合法**工程里也存在（AVFoundation 的 Swift overlay 拖入），
+# 故不得作为判据，否则合法工程必误红（TD-9）。
+PLAYER_UI_SYMBOL_RE='\$s(7SwiftUI|5UIKit)|_OBJC_CLASS_\$_UI[A-Z]'
 
 fail() {
   echo "❌ $1"
@@ -99,13 +130,44 @@ if [ -n "${COVA_PLAYER_COVERAGE_MIN:-}" ]; then
   echo "提示：播放器层覆盖率阈值被抬高到 ${PLAYER_COVERAGE_MIN}%（基准 ${COVERAGE_FLOOR}%）"
 fi
 
-# 测试数量下限来自入库基线文件（删测试必须显式改它，随 commit 进入审查）
+# 测试数量下限来自入库基线文件（删测试必须显式改它，随 commit 进入审查）。
+# G-10：本文件**不再被 `.` source**。被 source 时它可以覆写脚本里钉死的常量
+# （CORE_COVERAGE_MIN / PLAYER_COVERAGE_MIN 在本段之后才被消费，REQUIRED_DEPLOYMENT_TARGET、
+#  IOS_ONLY_MODULES 同理），于是「阈值抬高失守 + iOS-only 扫描整轮空转」可以在不改 check.sh 一行
+# 的情况下发生。改为按键名白名单逐行解析：只接受 APP_MIN / CORE_MIN / PLAYER_MIN 三个整数键，
+# 其余任何行（其它键、赋值形态、内联注释、重复键）一律拒绝并非零退出。
 [ -f "$BASELINE_FILE" ] || fail "缺少测试数量基线文件 ${BASELINE_FILE}"
-# shellcheck disable=SC1090
-. "$BASELINE_FILE"
-case "${APP_MIN:-}" in ''|*[!0-9]*) fail "基线 APP_MIN 非法：'${APP_MIN:-}'" ;; esac
-case "${CORE_MIN:-}" in ''|*[!0-9]*) fail "基线 CORE_MIN 非法：'${CORE_MIN:-}'" ;; esac
-case "${PLAYER_MIN:-}" in ''|*[!0-9]*) fail "基线 PLAYER_MIN 非法：'${PLAYER_MIN:-}'" ;; esac
+BASELINE_KEYS="APP_MIN CORE_MIN PLAYER_MIN"
+APP_MIN="" CORE_MIN="" PLAYER_MIN=""
+BASELINE_LINENO=0
+while IFS= read -r bline || [ -n "$bline" ]; do
+  BASELINE_LINENO=$((BASELINE_LINENO + 1))
+  # 前导/行尾空白剪裁（bash 3.2 兼容写法；空白不承载语义，但也不允许夹带赋值）
+  btrim="${bline#"${bline%%[![:space:]]*}"}"
+  btrim="${btrim%"${btrim##*[![:space:]]}"}"
+  [ -n "$btrim" ] || continue                 # 空行/纯空白
+  case "$btrim" in '#'*) continue ;; esac     # 整行注释
+  case "$btrim" in
+    *=*) ;;
+    *) fail "基线文件第 ${BASELINE_LINENO} 行不是 KEY=VALUE 形态：'${btrim}'" ;;
+  esac
+  bkey="${btrim%%=*}"
+  bval="${btrim#*=}"
+  case " $BASELINE_KEYS " in
+    *" $bkey "*) ;;
+    *) fail "基线文件第 ${BASELINE_LINENO} 行含非白名单键 '${bkey}'：本文件不被 source，" \
+"只允许 ${BASELINE_KEYS} 三个整数键（否则它可以覆写门禁钉死的常量，见 G-10）" ;;
+  esac
+  case "$bval" in
+    ''|*[!0-9]*) fail "基线 ${bkey} 的值必须是纯整数（禁内联注释/空白/负数），收到 '${bval}'" ;;
+  esac
+  bprev="$(eval "printf '%s' \"\${${bkey}}\"")"
+  [ -z "$bprev" ] || fail "基线键 '${bkey}' 重复赋值（先 ${bprev} 后 ${bval}）：拒绝最后一行覆盖前一行的静默改写"
+  eval "${bkey}=\${bval}"
+done < "$BASELINE_FILE"
+[ -n "$APP_MIN" ] || fail "基线文件缺少 APP_MIN"
+[ -n "$CORE_MIN" ] || fail "基线文件缺少 CORE_MIN"
+[ -n "$PLAYER_MIN" ] || fail "基线文件缺少 PLAYER_MIN"
 [ "$APP_MIN" -ge 1 ] || fail "基线 APP_MIN=${APP_MIN} 必须 >= 1（零测试不允许）"
 [ "$CORE_MIN" -ge 1 ] || fail "基线 CORE_MIN=${CORE_MIN} 必须 >= 1（零测试不允许）"
 # 播放器层是 G3 交付物之一，下限单独收紧（与 test-count-baseline.env 的注释口径一致）：
@@ -145,6 +207,11 @@ assert_tests() { # label "passed failed skipped" baseline
   local label="$1" counts="$2" baseline="$3" p f s
   read -r p f s <<< "${counts:-}"
   case "${p:-}" in ''|*[!0-9]*) fail "${label}：无法取得可信用例计数（值='${counts:-}'）" ;; esac
+  # G-13：三个计数与基线都必须是整数 —— 否则 `[ -eq` 会先吐「integer expression expected」
+  # 再靠 set -e 退出，诊断信息被噪音淹没；这里给出明确判据（判定强度不变，仍是 fail-closed）。
+  case "${f:-}" in ''|*[!0-9]*) fail "${label}：failed 计数不是整数（值='${counts:-}'）" ;; esac
+  case "${s:-}" in ''|*[!0-9]*) fail "${label}：skipped 计数不是整数（值='${counts:-}'）" ;; esac
+  case "${baseline:-}" in ''|*[!0-9]*) fail "${label}：基线值不是整数（值='${baseline:-}'）" ;; esac
   echo "    ${label}：passed=${p} failed=${f} skipped=${s}，基线=${baseline}（只认 passed）"
   [ "$f" -eq 0 ] || fail "${label}：failed=${f} 必须为 0"
   [ "$p" -ge "$baseline" ] \
@@ -224,6 +291,7 @@ done
 echo "    结构校验通过（4 个本地包、语言模式 6、无远程包/框架/二进制制品）"
 
 echo "==> 3/10 依赖图（dump-package）+ 核心层平台中立性 + 播放器无 UI 不变量"
+: > "$TARGET_MANIFEST"
 violations=0
 for pkg in $PACKAGES; do
   load_dump "$pkg" || fail "无法获取 Packages/$pkg 的 dump-package"
@@ -248,6 +316,92 @@ for pkg in $PACKAGES; do
     esac
     k=$((k + 1))
   done
+
+  # G-11（target 级失明修复）：包级 dependencies[] 之外还必须校验 **targets[].dependencies**，
+  # 否则「在包内加一个 path: 指向包外的第二 target，并从 target 级依赖它」可以绕开第 3 步与第 9 步。
+  # 权威来源同为 dump-package：byName / target / product 三种形态逐一判定，未知形态即失败。
+  TGT_N="$(plutil -extract targets raw -o - "$DUMP_JSON" 2>/dev/null || echo 0)"
+  OWN_TGTS=""
+  z=0
+  while [ "$z" -lt "${TGT_N:-0}" ]; do
+    tname="$(plutil -extract "targets.$z.name" raw -o - "$DUMP_JSON" 2>/dev/null || true)"
+    [ -n "$tname" ] || fail "Packages/$pkg 第 $z 个目标缺 name（dump-package 形态异常）"
+    OWN_TGTS="${OWN_TGTS} ${tname}"
+    z=$((z + 1))
+  done
+  m=0
+  while [ "$m" -lt "${TGT_N:-0}" ]; do
+    tname="$(plutil -extract "targets.$m.name" raw -o - "$DUMP_JSON" 2>/dev/null || true)"
+    ttype="$(plutil -extract "targets.$m.type" raw -o - "$DUMP_JSON" 2>/dev/null || true)"
+    TD_N="$(plutil -extract "targets.$m.dependencies" raw -o - "$DUMP_JSON" 2>/dev/null || echo 0)"
+    d=0
+    while [ "$d" -lt "${TD_N:-0}" ]; do
+      dep_product="$(plutil -extract "targets.$m.dependencies.$d.product.0" raw -o - "$DUMP_JSON" 2>/dev/null || true)"
+      dep_product_pkg="$(plutil -extract "targets.$m.dependencies.$d.product.1" raw -o - "$DUMP_JSON" 2>/dev/null || true)"
+      dep_byname="$(plutil -extract "targets.$m.dependencies.$d.byName.0" raw -o - "$DUMP_JSON" 2>/dev/null || true)"
+      dep_target="$(plutil -extract "targets.$m.dependencies.$d.target.0" raw -o - "$DUMP_JSON" 2>/dev/null || true)"
+      if [ -n "$dep_product" ]; then
+        # product 依赖：归属包必须已登记且在白名单方向内
+        [ -n "$dep_product_pkg" ] \
+          || { echo "    目标 $pkg/$tname 的 product 依赖 '${dep_product}' 未指明归属包（可被解析到任意包）"; violations=1; }
+        case " $PACKAGES " in
+          *" ${dep_product_pkg} "*) ;;
+          *) echo "    目标 $pkg/$tname 依赖了未登记的包 ${dep_product_pkg}（target 级）"; violations=1 ;;
+        esac
+        case " $(allowed_deps "$pkg") " in
+          *" ${dep_product_pkg} "*) ;;
+          *) echo "    依赖方向违规（target 级）：$pkg/$tname 依赖了 ${dep_product_pkg}（D3 分层）"; violations=1 ;;
+        esac
+      elif [ -n "$dep_target" ]; then
+        # target 依赖必须指向同包目标
+        case " $OWN_TGTS " in
+          *" $dep_target "*) ;;
+          *) echo "    目标 $pkg/$tname 依赖了非本包目标 '${dep_target}'（target 级）"; violations=1 ;;
+        esac
+      elif [ -n "$dep_byname" ]; then
+        # byName 可解析到同包目标或依赖包的产品：两种身份都必须已判定
+        case " $OWN_TGTS " in
+          *" $dep_byname "*) ;;
+          *)
+            case " $(allowed_deps "$pkg") " in
+              *" $dep_byname "*) ;;
+              *) echo "    目标 $pkg/$tname 的 byName 依赖 '${dep_byname}' 既非本包目标也非白名单包（target 级）"; violations=1 ;;
+            esac ;;
+        esac
+      else
+        echo "    目标 $pkg/$tname 出现无法识别的 target 级依赖形态（第 $d 项）：新增形态需评审"
+        violations=1
+      fi
+      d=$((d + 1))
+    done
+
+    # 源路径：显式 path: 必须留在本包目录内（禁止绝对路径与 ..；符号链接另有整类禁令）
+    trel="$(plutil -extract "targets.$m.path" raw -o - "$DUMP_JSON" 2>/dev/null || true)"
+    if [ -z "$trel" ]; then
+      case "$ttype" in
+        test) trel="Tests/$tname" ;;
+        *) trel="Sources/$tname" ;;
+      esac
+    fi
+    case "$trel" in
+      /*) echo "    目标 $pkg/$tname 的源路径为绝对路径：${trel}"; violations=1; trel="" ;;
+      *..*) echo "    目标 $pkg/$tname 的源路径含 ..（越出包目录）：${trel}"; violations=1; trel="" ;;
+    esac
+    tdir=""
+    if [ -n "$trel" ]; then
+      if tdir="$(cd "$ROOT/Packages/$pkg/$trel" 2>/dev/null && pwd -P)"; then
+        case "$tdir" in
+          "$ROOT"/Packages/"$pkg"*) ;;
+          *) echo "    目标 $pkg/$tname 声明路径 '${trel}' 经符号链接解析后越出包目录：${tdir}"; violations=1; tdir="" ;;
+        esac
+      else
+        echo "    目标 $pkg/$tname 的源目录不存在：Packages/$pkg/$trel"
+        violations=1
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$pkg" "$ttype" "$tdir" "$tname" >> "$TARGET_MANIFEST"
+    m=$((m + 1))
+  done
 done
 
 # 符号链接整类禁止（CovaCore 内）：SwiftPM 会跟随并编译，而 .SwiftFileList 记录词法路径，
@@ -256,6 +410,15 @@ SYMLINKS="$(find Packages/CovaCore -type l -not -path '*/.*' 2>/dev/null || true
 if [ -n "$SYMLINKS" ]; then
   printf '%s\n' "$SYMLINKS" | head -10 | sed 's/^/    /'
   fail "CovaCore 内存在符号链接（整类禁止，点号路径除外——SwiftPM 不编译点号目录；如需共享源文件请改为仓内真实文件）"
+fi
+
+# G-11：播放器层同款禁令。BSD `grep -r` 不跟随符号链接、`find -type f` 也不计符号链接，
+# 而 SwiftPM 会跟随并编译 —— 「Sources/CovaPlayer/x.swift → 包外文件」或「目录级链接指向包外」
+# 正好落在扫描域之外（12 个 .swift 只看得到 11）。播放器层不需要符号链接。
+SYMLINKS_PLAYER="$(find Packages/CovaPlayer -type l -not -path '*/.*' 2>/dev/null || true)"
+if [ -n "$SYMLINKS_PLAYER" ]; then
+  printf '%s\n' "$SYMLINKS_PLAYER" | head -10 | sed 's/^/    /'
+  fail "CovaPlayer 内存在符号链接（整类禁止：SwiftPM 跟随编译，而 grep -r / find -type f 都不看符号链接）"
 fi
 
 # 平台中立性不变量：字面 #if 即失败（条件编译整类禁止；注释/字符串中的命中亦拦，fail-closed）
@@ -286,13 +449,34 @@ CORE_PLATFORMS="$(grep -E '^[[:space:]]*platforms:' "$CORE_PACKAGE_SWIFT" | head
 [ "$CORE_PLATFORMS" = "$REQUIRED_CORE_PLATFORMS" ] \
   || { echo "    CovaCore 平台声明为 [${CORE_PLATFORMS}]，必须恰为 [${REQUIRED_CORE_PLATFORMS}]（.macOS 仅供宿主侧覆盖率测量）"; violations=1; }
 
-# 播放器层无 UI 不变量（AGENTS 硬边界 8「G1/G2 未验收不写 UI」+ D3/D4 分层的机械化为门禁）：
-# CovaPlayer 只允许非 UI 播放能力（AVFoundation/MediaPlayer），出现 UI 框架 import 即失败。
-# 判据取「行首 import 语句」而非全词扫描：UI 代码必然需要 import，且不会因注释/文档提到
-# SwiftUI 而误红（TD-9：合法工程对照不得误红优先于 fail-closed 的字面令牌口径）。
-# 两段式：先取 import 行（含属性前缀与 `import class UIKit.UIView` 选择式导入），再按词边界取 UI 模块。
-PLAYER_UI_HITS="$(grep -rnE '^[[:space:]]*(@[A-Za-z_]+[[:space:]]+)*import[[:space:]]' \
-  Packages/CovaPlayer/Sources 2>/dev/null | grep -wE 'SwiftUI|UIKit' || true)"
+# 播放器层无 UI 不变量（AGENTS 硬边界 8「G1/G2 未验收不写 UI」+ D3/D4 分层的机械化为门禁）。
+# 三层判据（G-11）：
+#   L1 附加防线（字面）：行首 import 正则 —— 段 1 在修复前的 `^[[:space:]]*(@属性 )*import[[:space:]]`
+#      之上**只追加**了「块注释前缀」与「访问级修饰符」两类合法写法（public/internal/private/
+#      fileprivate/package），段 2 与修复前逐字相同 ⇒ 命中集合是修复前的超集（只收紧不放宽）；
+#      `//` 行注释前缀不在段 1 内，故「注释掉的 import」依旧不误红（TD-9）。
+#   L2 源集合可信性：符号链接整类禁止 + 扫描域 = 「Packages/CovaPlayer/Sources」∪ dump-package
+#      声明的每个目标源目录（BSD grep -r 与 find -type f 都不跟随符号链接，12 个 .swift 只看得到 11）。
+#   L3 构建产物侧（9/10）：目标 .o 的 Swift mangling 符号引用 + 测试二进制的 dylib 依赖表。
+player_ui_scan() { # 目录（空则跳过）
+  local d="$1"
+  if [ -z "$d" ] || [ ! -d "$d" ]; then return 0; fi
+  { find "$d" -name '*.swift' -type f -not -path '*/.*' -print0 2>/dev/null \
+      | xargs -0 grep -HnE "$PLAYER_IMPORT_LINE_RE" 2>/dev/null | grep -wE "$PLAYER_UI_WORD_RE"; } || true
+}
+PLAYER_UI_HITS="$(player_ui_scan "$PLAYER_PKG_DIR/Sources")"
+# L2：逐目标扫描（覆盖 Sources/ 之外的第二 target 目录）。范围与被测层一致：非测试目标。
+# 注意：清单是 4 列（pkg/type/dir/name），read 的最后一个变量会吞掉其余列 ⇒ 必须读满 4 个。
+PLAYER_UI_HITS_EXTRA=""
+while IFS="$(printf '\t')" read -r m_pkg m_type m_dir m_name; do
+  if [ "$m_pkg" = "$PLAYER_PKG" ] && [ "$m_type" = "regular" ]; then
+    hit="$(player_ui_scan "$m_dir")"
+    if [ -n "$hit" ]; then PLAYER_UI_HITS_EXTRA="${PLAYER_UI_HITS_EXTRA}${hit}"$'\n'; fi
+  fi
+done < "$TARGET_MANIFEST"
+# 两段扫描的域会重叠（target 目录本就在 Sources 之下）⇒ 去重，避免同一行打印两遍
+PLAYER_UI_HITS="$( { printf '%s\n' "$PLAYER_UI_HITS"; printf '%s\n' "$PLAYER_UI_HITS_EXTRA"; } \
+  | sed '/^$/d' | sort -u )"
 if [ -n "$PLAYER_UI_HITS" ]; then
   printf '%s\n' "$PLAYER_UI_HITS" | head -10 | sed 's/^/    /'
   echo "    ↑ CovaPlayer 引入了 UI 框架：设计闸门（G1/G2）未验收前禁止编写 UI 代码"
@@ -302,6 +486,29 @@ fi
 PLAYER_SRC_COUNT="$(find Packages/CovaPlayer/Sources -name '*.swift' -type f 2>/dev/null | wc -l | tr -d ' ')"
 [ "${PLAYER_SRC_COUNT:-0}" -ge 1 ] \
   || { echo "    CovaPlayer/Sources 下无任何 .swift 源文件（清空源目录不得绕过无 UI 不变量）"; violations=1; }
+# L2 反向守卫：包内**全部** .swift（含符号链接、含任意目录；只排除包根清单 Package.swift 本身）
+# 必须落在「包根声明的源目录 ∪ dump-package 每个 target 的源目录」之内，否则存在无主源文件
+# ——「未登记目标的源目录」与「目录级符号链接」正是今天的绕过面。
+PLAYER_SCANNED_DIRS="$LOG_DIR/player-scanned-dirs.txt"
+{ printf '%s\n' "$PLAYER_PKG_DIR/Sources"
+  while IFS="$(printf '\t')" read -r m_pkg m_type m_dir m_name; do
+    if [ "$m_pkg" = "$PLAYER_PKG" ] && [ -n "$m_dir" ]; then printf '%s\n' "$m_dir"; fi
+  done < "$TARGET_MANIFEST"; } | sed '/^$/d' | sort -u > "$PLAYER_SCANNED_DIRS"
+PLAYER_SWIFT_ANY="$(find "$PLAYER_PKG_DIR" -name '*.swift' \( -type f -o -type l \) \
+  -not -path '*/.*' ! -path "$PLAYER_PKG_DIR/Package.swift" 2>/dev/null \
+  | while IFS= read -r f; do realpath "$f" 2>/dev/null || printf '%s\n' "$f"; done | sort -u)"
+PLAYER_SWIFT_SCANNED="$(while IFS= read -r d; do
+    if [ -d "$d" ]; then
+      find "$d" -name '*.swift' \( -type f -o -type l \) -not -path '*/.*' 2>/dev/null \
+        | while IFS= read -r f; do realpath "$f" 2>/dev/null || printf '%s\n' "$f"; done
+    fi
+  done < "$PLAYER_SCANNED_DIRS" | sort -u)"
+PLAYER_SWIFT_UNCOVERED="$(comm -23 <(printf '%s\n' "$PLAYER_SWIFT_ANY") <(printf '%s\n' "$PLAYER_SWIFT_SCANNED"))"
+if [ -n "$PLAYER_SWIFT_UNCOVERED" ]; then
+  printf '%s\n' "$PLAYER_SWIFT_UNCOVERED" | head -10 | sed 's/^/      /'
+  echo "    ↑ CovaPlayer 包内存在无主 .swift 文件（不在任何已声明 target 的源目录内 / 符号链接目录）"
+  violations=1
+fi
 
 [ "$violations" -eq 0 ] || fail "依赖方向 / 平台中立性 / 播放器无 UI 不变量校验未通过"
 echo "    依赖图与不变量校验通过（CovaCore 无字面 #if 与 iOS-only 令牌；CovaPlayer ${PLAYER_SRC_COUNT} 个源文件且无 UI import）"
@@ -564,10 +771,13 @@ echo "    CovaCore 行覆盖率：${COV_COVERED}/${COV_TOTAL} = ${COV_PCT}%"
 awk -v p="$COV_PCT" -v m="$CORE_COVERAGE_MIN" 'BEGIN { exit !(p >= m) }' \
   || fail "核心层行覆盖率 ${COV_PCT}% < 阈值 ${CORE_COVERAGE_MIN}%"
 
-echo "==> 8/10 播放器层包测试（CovaPlayerTests，iOS Simulator，同时采集行覆盖率）"
+echo "==> 8/10 播放器层包测试（CovaPlayerTests，iOS Simulator，同时产出 9/10 的插桩产物）"
 # 与 6/10 同口径（xcresult 只认 passed、failed 必须为 0、下限读基线文件）。
 # 刻意带 -enableCodeCoverage YES：9/10 复用**同一次真实运行**的覆盖率产物，
 # 避免「测试跑一遍、覆盖率再跑一遍」造成的双份事实（也避免两次运行结果不一致时无从判断）。
+# 先清空 ProfileData 并打时间戳：9/10 只能读到**本次运行**产出的 profdata（防陈旧产物冒充）。
+rm -rf "$PLAYER_PACKAGE_DERIVED_DATA/Build/ProfileData"
+touch "$PLAYER_PROF_MARKER"
 rm -rf "$PLAYER_RESULT_BUNDLE"
 if ! (cd Packages/CovaPlayer && xcodebuild -scheme CovaPlayer -configuration Debug \
   -destination "$DESTINATION" -derivedDataPath "$PLAYER_PACKAGE_DERIVED_DATA" \
@@ -582,57 +792,296 @@ fi
 PLAYER_IOS_COUNTS="$(xcresult_counts "$PLAYER_RESULT_BUNDLE" || true)"
 assert_tests "CovaPlayerTests(iOS)" "$PLAYER_IOS_COUNTS" "$PLAYER_MIN"
 
-echo "==> 9/10 播放器层行覆盖率（xccov 逐文件行数据，阈值 ${PLAYER_COVERAGE_MIN}%）"
-echo "    说明：播放器层是 iOS-only（AVAudioSession / AVPlayer / MediaPlayer），无法沿用 7/10 的"
-echo "          macOS 宿主 SwiftPM 插桩口径；实测「-enableCodeCoverage YES」的模拟器运行会让 xccov"
-echo "          产出本地 SwiftPM 包目标的逐文件行数（见 docs/log/20260921.md §TD-1 实测），故直接取"
-echo "          该 target 行作为行覆盖率；读不到数据一律 fail-closed，阈值只允许抬高。"
-xcrun xccov view --report "$PLAYER_RESULT_BUNDLE" > "$LOG_DIR/player-xccov.txt" 2>/dev/null \
-  || fail "无法读取播放器层覆盖率报告（-enableCodeCoverage 未生效？）"
+echo "==> 9/10 播放器层行覆盖率（8/10 的 Coverage.profdata + llvm-cov lcov，阈值 ${PLAYER_COVERAGE_MIN}%）"
+echo "    说明（G-9 / TD-1）：播放器层是 iOS-only（AVAudioSession / AVPlayer / MediaPlayer），无法沿用"
+echo "          7/10 的 macOS 宿主 SwiftPM 插桩口径。原口径消费 xccov 文本，但**同一份产物**在干净 clone 上"
+echo "          会把本地包目标折叠进测试 target（实测 CovaPlayer 0.00% (0/0)、CovaPlayerTests 95.90% (5221/5444)、"
+echo "          报告 0 行点名 Packages/CovaPlayer/Sources ⇒ 门禁不可复现）。现改判据：8/10 带"
+echo "          -enableCodeCoverage 的真实模拟器运行产出的 profdata + 该次运行的 .xctest 二进制，走"
+echo "          llvm-cov lcov（与 7/10 同方法论）。域由「该包非测试 target 的编译文件集合」精确界定，"
+echo "          不用 /Tests/ 名称启发式（防止把难覆盖文件塞进名为 Tests 的子目录来缩小分母，TD-10）。"
+echo "          阈值不变（≥80%，只允许抬高），读不到数据一律 fail-closed。"
 
-# 分母可信性（口径同 7/10 的「编译集合 == 源集合」双向校验）：
-# 报告里的百分比只覆盖「真正被编译的文件」；若有人用 exclude:/sources: 把难覆盖文件请出编译集合，
-# 分母会静默变小而百分比虚高 —— 故以 CovaPlayer 目标的 .SwiftFileList 为权威，与源目录全集双向比对。
-PLAYER_FL="$(find "$PLAYER_PACKAGE_DERIVED_DATA" -name 'CovaPlayer.SwiftFileList' 2>/dev/null | head -1)"
-[ -n "$PLAYER_FL" ] || fail "未找到 CovaPlayer 目标的编译文件清单（CovaPlayer.SwiftFileList）"
-PLAYER_COMPILED="$( { while IFS= read -r l; do [ -n "$l" ] || continue; realpath "$(printf '%s' "$l" | sed 's/\\ / /g')"; done < "$PLAYER_FL"; } | sort -u )"
-# 源集合：Sources 下全部 .swift（排除点号路径分量，SwiftPM 不编译点号目录）；Tests/ 本就不在 Sources 下。
-PLAYER_SOURCES="$(find Packages/CovaPlayer/Sources -name '*.swift' -type f -not -path '*/.*' 2>/dev/null \
-  | while IFS= read -r f; do realpath "$f"; done | sort -u)"
-[ -n "$PLAYER_COMPILED" ] || fail "CovaPlayer 编译集合为空（.SwiftFileList 无可读条目）"
-[ -n "$PLAYER_SOURCES" ] || fail "CovaPlayer/Sources 下 .swift 集合为空"
-if [ "$PLAYER_COMPILED" != "$PLAYER_SOURCES" ]; then
-  echo "    仅被编译、不在源目录（realpath 后）："
-  comm -23 <(printf '%s\n' "$PLAYER_COMPILED") <(printf '%s\n' "$PLAYER_SOURCES") | head -5 | sed 's/^/      /'
-  echo "    仅在源目录、未被编译："
-  comm -13 <(printf '%s\n' "$PLAYER_COMPILED") <(printf '%s\n' "$PLAYER_SOURCES") | head -5 | sed 's/^/      /'
-  fail "CovaPlayer 编译集合与源目录 .swift 全集不一致（exclude/包外源文件均不允许）"
+lcov_sf_in_domain() { # $1=lcov $2=域清单（逐行绝对路径） -> 域内被点名的 SF（去重排序）
+  awk -v DOM="$2" '
+    BEGIN { while ((getline l < DOM) > 0) { if (l != "") dom[l] = 1 } }
+    /^SF:/ { f = substr($0, 4); if (f in dom) print f }
+  ' "$1" | sort -u
+}
+
+# lcov 的 SF 路径是「工具链当时记录的词法路径」：同一份产物里可能混用 /tmp 与 /private/tmp
+# （模拟器侧测试文件记 /tmp、包内源文件记 /private/tmp，干净副本实测），而编译集合是 realpath 过的。
+# 不归一化就会让「测试代码命中」域恒空 ⇒ 合法工程误红（TD-9）。故统一 realpath 后再判定。
+normalize_lcov() { # $1=输入 lcov $2=输出 lcov
+  while IFS= read -r line; do
+    case "$line" in
+      'SF:'*)
+        f="${line#SF:}"
+        printf 'SF:%s\n' "$(realpath "$f" 2>/dev/null || printf '%s' "$f")" ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < "$1" > "$2"
+}
+
+# ── 9.1 编译集合 ↔ 源集合：覆盖包内**全部** target（G-11：只查 CovaPlayer 目标会让「第二 target」失明）
+PLAYER_COMPILED_DIR="$LOG_DIR/player-compiled-files"
+mkdir -p "$PLAYER_COMPILED_DIR"
+rm -f "$PLAYER_COMPILED_DIR"/*.compiled "$PLAYER_COMPILED_DIR"/*.sources "$PLAYER_COMPILED_DIR"/*.instrumented
+PLAYER_OBJ_DIRS="$LOG_DIR/player-obj-dirs.txt"
+: > "$PLAYER_OBJ_DIRS"
+while IFS="$(printf '\t')" read -r m_pkg m_type m_dir m_name; do
+  if [ "$m_pkg" != "$PLAYER_PKG" ]; then continue; fi
+  [ -n "$m_name" ] || fail "目标清单缺 target 名（3/10 落盘异常）"
+  # 该 target 的 .SwiftFileList（Xcode 为每个 target 各出一份；优先模拟器变体）。
+  # 取首行用「落盘 + sed -n 1p」而不是 `| head -1`：head 提前退出会让上游 find/grep 收到 SIGPIPE，
+  # 在 set -o pipefail 下命令替换返回 141 ⇒ 合法工程随机误红（本仓已踩过同类坑）。
+  FL_CANDS="$LOG_DIR/player-fl-cands.txt"
+  find "$PLAYER_PACKAGE_DERIVED_DATA" -name "${m_name}.SwiftFileList" 2>/dev/null > "$FL_CANDS" || true
+  grep -- 'iphonesimulator' "$FL_CANDS" > "$FL_CANDS.sim" 2>/dev/null || true
+  if [ -s "$FL_CANDS.sim" ]; then
+    FL="$(sed -n '1p' "$FL_CANDS.sim")"
+  else
+    FL="$(sed -n '1p' "$FL_CANDS")"
+  fi
+  [ -n "$FL" ] || fail "未找到 ${m_name} 目标的编译文件清单（${m_name}.SwiftFileList）—— 9/10 的分母不可信"
+  COMPILED_T="$PLAYER_COMPILED_DIR/$m_type-$m_name.compiled"
+  { while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      realpath "$(printf '%s' "$l" | sed 's/\\ / /g')" 2>/dev/null || true
+    done < "$FL"; } | sort -u > "$COMPILED_T"
+  [ -s "$COMPILED_T" ] || fail "${m_name} 编译集合为空（.SwiftFileList 无可读条目）"
+  SOURCES_T="$PLAYER_COMPILED_DIR/$m_type-$m_name.sources"
+  if [ -n "$m_dir" ] && [ -d "$m_dir" ]; then
+    find "$m_dir" -name '*.swift' -type f -not -path '*/.*' 2>/dev/null \
+      | while IFS= read -r f; do realpath "$f" 2>/dev/null || true; done | sort -u > "$SOURCES_T"
+  else
+    : > "$SOURCES_T"
+  fi
+  if [ "$m_type" = "regular" ]; then
+    # 非测试目标：双向严格一致（修复前对 CovaPlayer 目标的判据，逐字保留；exclude/sources:/包外源文件均拦）
+    if ! cmp -s "$COMPILED_T" "$SOURCES_T"; then
+      echo "    目标 ${m_name} 仅被编译、不在源目录（realpath 后）："
+      comm -23 "$COMPILED_T" "$SOURCES_T" | head -5 | sed 's/^/      /'
+      echo "    目标 ${m_name} 仅在源目录、未被编译："
+      comm -13 "$COMPILED_T" "$SOURCES_T" | head -5 | sed 's/^/      /'
+      fail "CovaPlayer 目标 ${m_name} 的编译集合与源目录 .swift 全集不一致（exclude/包外源文件均不允许）"
+    fi
+    printf '%s\n' "$(dirname "$FL")" >> "$PLAYER_OBJ_DIRS"
+    # G-12（产物侧真分母）：逐源文件的 .o 是否带 __llvm_covmap —— 有可执行行的文件才有该段
+    # （实测：协议 + 仅 case 枚举 + typealias 的文件、仅注释文件的 .o 均无 __llvm_covmap）。
+    # 于是「被编译且有可执行行」的文件集合可以**由产物证明**，并要求它等于映射侧点名的集合。
+    INSTR_T="$PLAYER_COMPILED_DIR/$m_type-$m_name.instrumented"
+    : > "$INSTR_T"
+    OBJDIR_T="$(dirname "$FL")"
+    PER_FILE_OBJ=1
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      o="$OBJDIR_T/$(basename "$f" .swift).o"
+      if [ ! -f "$o" ]; then PER_FILE_OBJ=0; break; fi
+      cov_size="$( { otool -l "$o" 2>/dev/null || true; } \
+        | awk '/sectname __llvm_covmap/{have=1} have && $1 == "size" { print $2; exit }')"
+      if [ -n "$cov_size" ] && [ "$cov_size" != "0x0000000000000000" ]; then
+        printf '%s\n' "$f" >> "$INSTR_T"
+      fi
+    done < "$COMPILED_T"
+    if [ "$PER_FILE_OBJ" -eq 0 ]; then
+      rm -f "$INSTR_T"
+      echo "    注：目标 ${m_name} 的 .o 布局不是「每源文件一份」，跳过 __llvm_covmap 分母判定（防误红，TD-9）"
+    fi
+  else
+    # 测试目标：源文件必须全部被编译（防 exclude 收缩）；被编译者必须落在包内或工具链生成目录内
+    if [ -n "$(comm -23 "$SOURCES_T" "$COMPILED_T")" ]; then
+      echo "    测试目标 ${m_name} 的源文件未被编译（exclude/sources: 收缩）："
+      comm -23 "$SOURCES_T" "$COMPILED_T" | head -5 | sed 's/^/      /'
+      fail "CovaPlayer 测试目标 ${m_name} 存在未编译的源文件"
+    fi
+    TEST_OUTSIDE="$(comm -13 "$SOURCES_T" "$COMPILED_T")"
+    while IFS= read -r o; do
+      [ -n "$o" ] || continue
+      case "$o" in
+        "$ROOT"/Packages/CovaPlayer/*|"$PLAYER_PACKAGE_DERIVED_DATA"/*) ;;
+        *) fail "CovaPlayer 测试目标 ${m_name} 编译了域外文件：${o}" ;;
+      esac
+    done <<< "${TEST_OUTSIDE:-}"
+  fi
+done < "$TARGET_MANIFEST"
+
+# 包级视图：非测试 / 测试 target 的编译并集
+PLAYER_COMPILED_NONTTEST="$LOG_DIR/player-compiled-nontest.txt"
+PLAYER_COMPILED_TEST="$LOG_DIR/player-compiled-test.txt"
+{ cat "$PLAYER_COMPILED_DIR"/regular-*.compiled 2>/dev/null || true; } | sort -u > "$PLAYER_COMPILED_NONTTEST"
+{ cat "$PLAYER_COMPILED_DIR"/test-*.compiled 2>/dev/null || true; } | sort -u > "$PLAYER_COMPILED_TEST"
+[ -s "$PLAYER_COMPILED_NONTTEST" ] || fail "CovaPlayer 非测试 target 的编译并集为空"
+# 旧判据保留（防止在 Sources/ 下放置「没有任何 target 声明」的源文件）：Sources 全集必须被非测试 target 编译
+PLAYER_LEGACY_SOURCES="$LOG_DIR/player-sources-legacy.txt"
+PLAYER_LEGACY_MERGED="$LOG_DIR/player-sources-legacy-merged.txt"
+find "$PLAYER_PKG_DIR/Sources" -name '*.swift' -type f -not -path '*/.*' 2>/dev/null \
+  | while IFS= read -r f; do realpath "$f" 2>/dev/null || true; done | sort -u > "$PLAYER_LEGACY_SOURCES"
+PLAYER_UNCOMPILED="$(comm -23 "$PLAYER_LEGACY_SOURCES" "$PLAYER_COMPILED_NONTTEST")"
+if [ -n "$PLAYER_UNCOMPILED" ]; then
+  printf '%s\n' "$PLAYER_UNCOMPILED" | head -5 | sed 's/^/      /'
+  fail "Packages/CovaPlayer/Sources 下存在未被任何非测试 target 编译的源文件（缩小分母的前置动作）"
 fi
-echo "    编译集合与源集合双向一致：$(printf '%s\n' "$PLAYER_COMPILED" | wc -l | tr -d ' ') 个文件"
+# 反向：被编译的非测试文件必须落在「Sources 全集 ∪ 已声明非测试 target 源目录」内
+PLAYER_DECLARED_NONTEST="$LOG_DIR/player-declared-nontest.txt"
+{ cat "$PLAYER_COMPILED_DIR"/regular-*.sources 2>/dev/null || true; } | sort -u > "$PLAYER_DECLARED_NONTEST"
+{ cat "$PLAYER_LEGACY_SOURCES" "$PLAYER_DECLARED_NONTEST" 2>/dev/null || true; } | sort -u > "$PLAYER_LEGACY_MERGED"
+PLAYER_PHANTOM="$(comm -23 "$PLAYER_COMPILED_NONTTEST" "$PLAYER_LEGACY_MERGED")"
+if [ -n "$PLAYER_PHANTOM" ]; then
+  printf '%s\n' "$PLAYER_PHANTOM" | head -5 | sed 's/^/      /'
+  fail "CovaPlayer 非测试 target 编译了未登记的文件（符号链接/exclude/包外源文件均不允许）"
+fi
+echo "    编译集合与源集合一致（全部 target）：非测试 $(wc -l < "$PLAYER_COMPILED_NONTTEST" | tr -d ' ') 个文件 / 测试 $(wc -l < "$PLAYER_COMPILED_TEST" | tr -d ' ') 个文件"
+# L1 附加防线：对**实际被编译**的非测试文件再跑一次字面扫描（目录扫描之外的兜底）
+# NUL 分隔 + xargs -0：仓路径可能含空格（本仓目录名「ios app」），按空白切分会把路径拆坏。
+PLAYER_UI_COMPILED_HITS="$( { tr '\n' '\0' < "$PLAYER_COMPILED_NONTTEST" \
+    | xargs -0 -n 20 grep -HnE "$PLAYER_IMPORT_LINE_RE" 2>/dev/null || true; } \
+  | grep -wE "$PLAYER_UI_WORD_RE" || true)"
+if [ -n "$PLAYER_UI_COMPILED_HITS" ]; then
+  printf '%s\n' "$PLAYER_UI_COMPILED_HITS" | head -10 | sed 's/^/    /'
+  fail "被编译的 CovaPlayer 源文件引入 UI 框架（编译集合逐文件扫描）"
+fi
 
-# 目标行：报告首列为 target 名（文件行有前导缩进），Tests target 名为 CovaPlayerTests，
-# 故 '^CovaPlayer[[:space:]]' 唯一命中被测 target；分母天然只含 Sources（Tests 属另一个 target）。
-# 用 awk 而非 sed 取数：sed 的贪婪 `.*` 会把 "91.69%" 截成 "9%"（实测踩到），
-# 这里按「以 % 结尾的字段 + 紧随其后的 (covered/total) 字段」定位，形状不符即出 0（fail-closed）。
-PLAYER_COVERAGE="$({ grep -E '^CovaPlayer[[:space:]]' "$LOG_DIR/player-xccov.txt" || true; } | head -1 | awk '
-  { for (i = 1; i <= NF; i++) if ($i ~ /%$/ && $(i + 1) ~ /^\([0-9]+\/[0-9]+\)$/) { pct = $i; pair = $(i + 1) } }
-  END {
-    if (pct == "" || pair == "") { print "0 0 0"; exit }
-    sub(/%$/, "", pct); gsub(/[()]/, "", pair); split(pair, a, "/")
-    print a[1], a[2], pct
+# ── 9.2 覆盖率产物发现（零路径硬编码；必须是 8/10 本次运行产出的 profdata）
+PLAYER_PROFS="$LOG_DIR/player-profdata.txt"
+find "$PLAYER_PACKAGE_DERIVED_DATA" -name '*.profdata' -type f -newer "$PLAYER_PROF_MARKER" 2>/dev/null \
+  | sort > "$PLAYER_PROFS"
+[ -s "$PLAYER_PROFS" ] \
+  || fail "8/10 未产出 profdata（-enableCodeCoverage 未生效，或读到的是陈旧产物）—— 覆盖率不可判定为通过"
+PLAYER_PROF="$LOG_DIR/player-coverage.profdata"
+if [ "$(wc -l < "$PLAYER_PROFS" | tr -d ' ')" -eq 1 ]; then
+  cp "$(cat "$PLAYER_PROFS")" "$PLAYER_PROF"
+else
+  # 多份 profdata 需合并；同样用位置参数累积，避免路径空格被切分
+  set --
+  while IFS= read -r pf; do
+    [ -n "$pf" ] || continue
+    set -- "$@" "$pf"
+  done < "$PLAYER_PROFS"
+  xcrun llvm-profdata merge -sparse "$@" -o "$PLAYER_PROF" \
+    || fail "合并多份 profdata 失败（$(wc -l < "$PLAYER_PROFS" | tr -d ' ') 份）"
+fi
+# 承载 coverage mapping 的产物：模拟器侧 *.xctest 内的主二进制（不硬编码 bundle 名）
+PLAYER_BINS="$LOG_DIR/player-cov-bins.txt"
+: > "$PLAYER_BINS"
+while IFS= read -r cand; do
+  [ -n "$cand" ] || continue
+  # 只有「含 coverage mapping 的 Mach-O」才会成功产出 SF；据此筛选，避免把资源文件当二进制。
+  # 必须用 `grep -c`（读完全部输入）而不是 `grep -q`：-q 提前退出会让左侧收到 SIGPIPE，
+  # 在 set -o pipefail 下管道状态为 141 ⇒ 合法二进制被判定为「无 mapping」（干净副本实测踩到）。
+  SF_COUNT="$( { xcrun llvm-cov export "$cand" --empty-profile --format=lcov 2>/dev/null || true; } \
+    | { grep -c '^SF:' || true; } )"
+  if [ "${SF_COUNT:-0}" -gt 0 ]; then
+    printf '%s\n' "$cand" >> "$PLAYER_BINS"
+  fi
+done < <(find "$PLAYER_PACKAGE_DERIVED_DATA/Build/Products" -type f -path '*.xctest/*' \
+  -not -path '*dSYM*' -not -path '*_CodeSignature*' -not -name '*.plist' -not -name '*.json' \
+  -not -name '*.nib' -not -name '*.h' 2>/dev/null | sort)
+[ -s "$PLAYER_BINS" ] || fail "找不到承载 coverage mapping 的测试二进制（*.xctest 内 Mach-O）"
+# 路径含空格也必须安全：用位置参数累积，不做词分割
+set --
+while IFS= read -r b; do
+  [ -n "$b" ] || continue
+  set -- "$@" -object "$b"
+done < "$PLAYER_BINS"
+xcrun llvm-cov export -instr-profile="$PLAYER_PROF" --format=lcov "$@" \
+  > "$LOG_DIR/player-coverage.lcov" 2>/dev/null || fail "llvm-cov 导出运行侧 lcov 失败"
+# 映射侧（与运行无关的 build 事实）：同一批二进制的 coverage mapping 文件全集
+xcrun llvm-cov export --empty-profile --format=lcov "$@" \
+  > "$LOG_DIR/player-baseline.lcov" 2>/dev/null || fail "llvm-cov 导出映射侧（--empty-profile）lcov 失败"
+grep -q '^SF:' "$LOG_DIR/player-coverage.lcov" || fail "运行侧 lcov 无 SF 记录"
+echo "    产物发现：$(wc -l < "$PLAYER_PROFS" | tr -d ' ') 份 profdata + $(wc -l < "$PLAYER_BINS" | tr -d ' ') 个测试二进制（零命名硬编码）"
+
+# ── 9.3 域 = 非测试 target 的编译文件集合（分子/分母只由它决定）
+LCOV_DOMAIN="$LOG_DIR/player-lcov-domain.txt"
+TEST_DOMAIN="$LOG_DIR/player-lcov-testdomain.txt"
+normalize_lcov "$LOG_DIR/player-coverage.lcov" "$LOG_DIR/player-coverage.norm.lcov"
+normalize_lcov "$LOG_DIR/player-baseline.lcov" "$LOG_DIR/player-baseline.norm.lcov"
+grep -q '^SF:' "$LOG_DIR/player-coverage.norm.lcov" || fail "归一化后 lcov 无 SF 记录"
+lcov_sf_in_domain "$LOG_DIR/player-coverage.norm.lcov" "$PLAYER_COMPILED_NONTTEST" > "$LCOV_DOMAIN"
+lcov_sf_in_domain "$LOG_DIR/player-coverage.norm.lcov" "$PLAYER_COMPILED_TEST" > "$TEST_DOMAIN"
+# G-12：运行侧点名的文件集合必须等于「映射侧」集合（同一批二进制的 coverage mapping 全集）
+PLAYER_BASELINE_DOMAIN="$LOG_DIR/player-lcov-baseline.txt"
+lcov_sf_in_domain "$LOG_DIR/player-baseline.norm.lcov" "$PLAYER_COMPILED_NONTTEST" > "$PLAYER_BASELINE_DOMAIN"
+[ -s "$LCOV_DOMAIN" ] \
+  || fail "播放器层覆盖率报告未点名任何 CovaPlayer 非测试源文件（采集实际未生效）"
+[ -s "$TEST_DOMAIN" ] \
+  || fail "播放器层覆盖率报告未点名任何 CovaPlayer 测试源文件（该次运行未真正执行测试，拒绝出报告）"
+if ! cmp -s "$LCOV_DOMAIN" "$PLAYER_BASELINE_DOMAIN"; then
+  echo "    仅在映射侧（build 有 mapping、运行侧没数据）："
+  comm -23 "$PLAYER_BASELINE_DOMAIN" "$LCOV_DOMAIN" | head -5 | sed 's/^/      /'
+  echo "    仅在运行侧（报告点名了不存在 mapping 的文件）："
+  comm -13 "$PLAYER_BASELINE_DOMAIN" "$LCOV_DOMAIN" | head -5 | sed 's/^/      /'
+  fail "播放器层覆盖率报告的文件集合与产物 coverage mapping 全集不一致（局部报告/陈旧产物均不放行，G-12）"
+fi
+PLAYER_COV_FILES="$(wc -l < "$LCOV_DOMAIN" | tr -d ' ')"
+# G-12（真分母）：映射侧点名的文件集合必须等于「被编译且 .o 带 __llvm_covmap」的文件集合。
+# ⇒ 「只报 1 个文件的局部报告」不再可能放行：漏掉任何一个有可执行行的编译文件即红；
+#   而协议/仅 case 枚举/仅注释这类**无区间文件**两侧都不出现，故不会误红（TD-9 合法工程对照）。
+PLAYER_INSTRUMENTED="$LOG_DIR/player-instrumented.txt"
+if { ls "$PLAYER_COMPILED_DIR"/regular-*.instrumented >/dev/null 2>&1; }; then
+  { cat "$PLAYER_COMPILED_DIR"/regular-*.instrumented 2>/dev/null || true; } | sort -u > "$PLAYER_INSTRUMENTED"
+  if ! cmp -s "$PLAYER_BASELINE_DOMAIN" "$PLAYER_INSTRUMENTED"; then
+    echo "    被编译且有可执行行、却没进入覆盖率分母的文件："
+    comm -23 "$PLAYER_INSTRUMENTED" "$PLAYER_BASELINE_DOMAIN" | head -5 | sed 's/^/      /'
+    echo "    覆盖率分母里出现、但产物没有对应可执行行的文件："
+    comm -13 "$PLAYER_INSTRUMENTED" "$PLAYER_BASELINE_DOMAIN" | head -5 | sed 's/^/      /'
+    fail "播放器层覆盖率分母与编译产物不一致：点名 $(wc -l < "$PLAYER_BASELINE_DOMAIN" | tr -d ' ') 个 / 应覆盖 $(wc -l < "$PLAYER_INSTRUMENTED" | tr -d ' ') 个（G-12）"
+  fi
+  echo "    分母与产物一致：${PLAYER_COV_FILES} 个可执行行文件全部点名（.o __llvm_covmap 交叉校验）"
+fi
+# 分母不可重复计数：同一文件出现多条 SF 记录（多个二进制重叠 mapping）时，逐行 DA 会被累加两次。
+LCOV_SF_RECORDS_IN_DOMAIN="$( { awk -v DOM="$LCOV_DOMAIN" '
+    BEGIN { while ((getline l < DOM) > 0) { if (l != "") dom[l] = 1 } }
+    /^SF:/ { if (substr($0, 4) in dom) c++ }
+    END { print c + 0 }
+  ' "$LOG_DIR/player-coverage.norm.lcov"; } | tail -1 )"
+[ "${LCOV_SF_RECORDS_IN_DOMAIN:-0}" -eq "${PLAYER_COV_FILES:-0}" ] \
+  || fail "域内 SF 记录数 ${LCOV_SF_RECORDS_IN_DOMAIN} ≠ 点名文件数 ${PLAYER_COV_FILES}：同一文件多条 coverage 记录，分母不可信"
+
+# ── 9.4 行覆盖率聚合（逐行 DA 记录；分母域 = 非测试编译文件集合）
+COVERAGE="$(awk -v DOM="$LCOV_DOMAIN" -v TDOM="$TEST_DOMAIN" '
+  BEGIN {
+    while ((getline l < DOM) > 0) { if (l != "") dom[l] = 1 }
+    while ((getline l < TDOM) > 0) { if (l != "") tdom[l] = 1 }
   }
-')"
-read -r PLAYER_COVERED PLAYER_TOTAL PLAYER_PCT <<< "${PLAYER_COVERAGE:-0 0 0}" || true
-case "${PLAYER_TOTAL:-}" in ''|*[!0-9]*) fail "播放器层覆盖率不可读（值='${PLAYER_COVERAGE:-}'）" ;; esac
+  /^SF:/ { f = substr($0, 4); indom = (f in dom); intdom = (f in tdom); next }
+  /^DA:/ {
+    split(substr($0, 4), a, ",")
+    if (indom) { total++; if ((a[2] + 0) > 0) covered++ }
+    if (intdom) { if ((a[2] + 0) > 0) testhit++ }
+  }
+  END { printf "%d %d %d", covered, total, testhit }
+' "$LOG_DIR/player-coverage.norm.lcov")"
+read -r PLAYER_COVERED PLAYER_TOTAL PLAYER_TESTHIT <<< "${COVERAGE:-0 0 0}" || true
+case "${PLAYER_TOTAL:-}" in ''|*[!0-9]*) fail "播放器层覆盖率不可读（值='${COVERAGE:-}'）" ;; esac
 [ "${PLAYER_TOTAL:-0}" -gt 0 ] \
   || fail "播放器层可执行行数为 0 —— 覆盖率实际未采集，不可判定为通过"
-# 反向守卫：报告必须真的点名了 Sources 下的文件（防止 target 行来自别的产物）。
-PLAYER_COV_FILES="$( { grep -oE 'Packages/CovaPlayer/Sources/[^[:space:]]+\.swift' "$LOG_DIR/player-xccov.txt" || true; } | sort -u | wc -l | tr -d ' ' )"
-[ "${PLAYER_COV_FILES:-0}" -gt 0 ] \
-  || fail "播放器层覆盖率报告未点名任何 Packages/CovaPlayer/Sources 源文件"
-echo "    覆盖率运行有效：target CovaPlayer ${PLAYER_COVERED}/${PLAYER_TOTAL} 行，逐文件行数据覆盖 ${PLAYER_COV_FILES} 个源文件"
+# 反向守卫：测试代码自身必须有命中行，否则该次运行并未真正执行测试（与 7/10 同判据）
+[ "${PLAYER_TESTHIT:-0}" -gt 0 ] \
+  || fail "播放器层覆盖率数据中测试代码零命中：该次运行未真正执行测试，拒绝出报告"
+PLAYER_PCT="$(awk -v c="$PLAYER_COVERED" -v t="$PLAYER_TOTAL" 'BEGIN { printf "%.2f", 100 * c / t }')"
+echo "    覆盖率运行有效：测试源码命中 ${PLAYER_TESTHIT} 行，逐文件行数据点名 ${PLAYER_COV_FILES} 个源文件（= 映射侧全集）"
 echo "    CovaPlayer 行覆盖率：${PLAYER_COVERED}/${PLAYER_TOTAL} = ${PLAYER_PCT}%"
 awk -v p="$PLAYER_PCT" -v m="$PLAYER_COVERAGE_MIN" 'BEGIN { exit !(p >= m) }' \
   || fail "播放器层行覆盖率 ${PLAYER_PCT}% < 阈值 ${PLAYER_COVERAGE_MIN}%"
+
+# ── 9.5 无 UI 不变量的产物侧判据（L3，权威：编译/链接事实，不受注释与语法变体影响）
+while IFS= read -r objdir; do
+  [ -n "$objdir" ] || continue
+  UI_SYMS="$( { find "$objdir" -maxdepth 1 -name '*.o' -print0 2>/dev/null | xargs -0 xcrun llvm-nm -u 2>/dev/null || true; } \
+    | grep -E "$PLAYER_UI_SYMBOL_RE" || true)"
+  if [ -n "$UI_SYMS" ]; then
+    printf '%s\n' "$UI_SYMS" | head -10 | sed 's/^/    /'
+    fail "CovaPlayer 目标的编译产物引用了 UI 框架符号（${objdir}）：设计闸门未验收前禁止编写 UI 代码"
+  fi
+done < "$PLAYER_OBJ_DIRS"
+while IFS= read -r b; do
+  [ -n "$b" ] || continue
+  if otool -L "$b" 2>/dev/null | grep -q 'SwiftUI\.framework'; then
+    fail "CovaPlayer 测试产物直接依赖 SwiftUI.framework（${b}）：播放器层禁 UI"
+  fi
+done < "$PLAYER_BINS"
+echo "    无 UI 不变量（产物侧）：$(wc -l < "$PLAYER_OBJ_DIRS" | tr -d ' ') 个非测试 target 的 .o 无 UI 符号引用，测试二进制无 SwiftUI 依赖"
 
 echo "✅ check.sh 全部通过"
