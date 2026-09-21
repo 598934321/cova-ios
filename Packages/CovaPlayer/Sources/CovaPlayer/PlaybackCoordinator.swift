@@ -535,6 +535,12 @@ public actor PlaybackCoordinator {
         case .idle:
             return .rejected(.emptyQueue)
         case .playing, .paused, .buffering, .loading:
+            // **总闸**（MAJ-R7-1 的结构性修法，第 7 轮复审指认）：状态写着什么都行，
+            // 「已推进到这一项」只有在**引擎确实装着它**或**真有一代装载在途**时才成立。
+            // 本条 Major 只是这条总闸失守的一个实例 —— 不补总闸，将来任何新写的装载腿/事件腿
+            // 只要先把状态改成「非 `.loading`」，就能重演同一个谎（`NowPlayingStatusMapping`
+            // 把 `.advanced` 一律映射成 `.success`，UI 与锁屏同时收到「成功」）。
+            guard engineEpisodeItemID == item.id || inFlightLoad != nil else { return .stopped }
             return .advanced(to: index, item: item, wrapped: wrapped)
         }
     }
@@ -889,6 +895,8 @@ public actor PlaybackCoordinator {
         case .stopped: return .stopped
         case .idle: return .rejected(.emptyQueue)
         case .playing, .paused, .buffering, .loading:
+            // 同一把总闸（见 `advanceOutcome`）：声称「重播了这一项」也要引擎真装着它。
+            guard engineEpisodeItemID == item.id || inFlightLoad != nil else { return .stopped }
             return .repeated(at: index, item: item)
         }
     }

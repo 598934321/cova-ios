@@ -235,7 +235,7 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
   `NowPlayingController` 的穷尽 switch。M1 接 UI 时一并复核更细粒度的结果类型。
   **11B 再确认的一格（不偷偷改掉，已在测试里钉住读数）**：`AdvanceOutcome.stopped` 与
   「末项正常播完」在回显面共用 `NowPlayingStatus.success` ⇒ 锁屏分不出「取消收场的停止」
-  与「播完的停止」。协调器侧的债 11B 已还（不再向调用方回 `.advanced`），剩下的区分只能
+  与「播完的停止」。~~协调器侧的债 11B 已还~~ **（第 7 轮复审推翻：11B 的守卫按症状写，一次合法 `pause()` 就能让它整条消失，`.advanced` 原地复活；真正的修法与总闸见第 12 批 `de18a14`+ 与 `docs/review-g3e-round4.md` §G）** 剩下的区分只能
   靠快照 `state` + `lastFailure` 回显账；UI 若要在一次命令的返回码里就分得清，必须扩 case
   （届时连带 `NowPlayingStatusMapping` 的穷尽 switch），这就是本条一直挂到 M1 的原因。
 - TD-40：私有音频并发合流改用无结构 `Task`（为了在 actor 重入前先把登记表填上），

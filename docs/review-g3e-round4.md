@@ -178,3 +178,76 @@
 | **MAJ-R6-1** | **Major** | 一次被取消的装载（`PlayerError.cancelled` / `.staleSession`）在 `failureStreak == 0` 的情况下把 `lastFailure` 置起来，`hasFailureLedger` 随之为真 ⇒ 下一次良性 `.repeated` 走 `haltBecauseNothingIsLoaded()`，产出 `isFailureTerminal == true` 而 `failureStreak == 0` —— F-A 那类「没有失败却进失败终态」的谎报被**重新打开**（探针 200/200 确定性复现）。**同一份输入还有第二半**：装载结束后 `state` 永远停在 `.loading`（而 `inFlightLoad` 已被 `defer` 收掉，破 F-7），且 `start()` 向调用方回 `.advanced(…)`。**修法指认（原文）**：`hasFailureLedger` 应复用既有单一事实源 `failureStreak > 0 \|\| (lastFailure?.countsTowardFailureStreak ?? false)`；**并给「取消导致的装载结束」补一条真正的收敛腿**（把 `.loading` 交还给事实，且不得向调用方回 `.advanced`）。**放行条件（原文）**：「补修时必须同时补上『账上只有一条取消记录』这一列，否则第 7 轮仍会在同一格再判一次」 | **两半分别由第 11 批与第 11 批 B 收口**：<br>① 前半 = `bbb1a2e`：判据收窄为 `failureStreak > 0`。**协调者自纠一处措辞**：本栏初稿写作「评审给的式子会留下过期回显仍能开终态」，逐点核对 5 个读写位（`PlaybackCoordinator.swift:491/548/669/1294/1351` 全部**成对**清 `failureStreak` 与 `lastFailure`，`handleFailure` 只写 `lastFailure`、按形态增量 `failureStreak`）后**不成立** —— 两式当下**等价**（`failureStreak > 0 ⟺ lastFailure 为计数形态`）。取 `failureStreak > 0` 的真实理由是**单一事实源**：终态资格不应依赖「将来新增一个复位点的人记得同时清另一本账」，而评审式恰好把这条不成文不变量升格成了判据的一部分。等价关系也已在 §18 记明，`assertNoFakeTerminal` 因此无需放宽。矩阵基态 4 → **8 列**（新增「取消收场 / 取消后暂停 / 取消账 + 装载在途 / `.staleSession`」），即评审要求的「账上只有一条取消记录」那一列已补上。<br>② 后半 = **第 11 批 B**：新增 `convergeStalledLoad(generation:)` 作为取消收场的收敛腿（`.loading` → `.stopped`、位置归零、引擎账本归零、摁住可能仍在响的上一件、发布回显；**唯一**与 `haltBecauseNothingIsLoaded()` 的差是不写 `isFailureTerminal`）⇒ `start()` 自然回 `.stopped` 而非 `.advanced`。顺带**删掉一个不可能状态**：停止态上的 `pause()` 不再把谎报的 `.loading` 折成 `.paused`。证据与变异自证见 `docs/log/20260921.md` §19 |
 | MIN-R6-a | Minor | `MPNowPlayingController.handlerStatus(for:)` 生产调用点 0、只剩测试在断言这张表（「表还绿、线已断」） | 已修（`2f22a39`，取删不取接回；理由见 §E OBS-R5-5 处置栏）|
 | MIN-R6-b | Minor | 夹具 `TransferWaiter.settle()` 的三合一布尔语义含糊仍在（第 9 批无权改该原语，只在测试侧绕开）| 已修（第 11 批 B）：拆成 `Settlement` 三格（`decidedAndResumed` / `decidedBeforeRegistration` / `alreadyDecided`）+ `decidedByThisCall` 作为「终止信号该不该发」的唯一判据。**如实限定可达性**：`cancelInFlightTransfers()` 那条腿在 actor 同步区下**本就不可命中**该窗口（第 9 批的结论仍成立，本批行为无变化）；真正被修好的是 `waitCancelling` 入口 `Task.isCancelled == true` 那一支 —— 旧布尔在那一支返回 false ⇒ `onTerminate()` 不发、终止边沿少记一次。原语契约另加一条永久用例（`testTransferWaiterSettlementKeepsDecidedAndUnregisteredApartFromNoOp`）|
+
+---
+
+## §G 第 7 轮隔离复审（HEAD `022a33a`）
+
+> **来源标注**：评审实例只返回文本、不落盘；本节由协调者转录要点并保留其关键原话。
+> 评审取证全在 `/tmp/r7-clone`（检出 `022a33a`）+ 独立 derivedData `/tmp/dd-r7{b,c,d}` +
+> `iPhone 17 Pro Max`，主仓一字未写。**它自己声明**：主仓在其评审期间被另一实例改动并新增
+> commit（第 12 批在途），故其全部行号与结论**只钉在 `022a33a` 的字节**上；对已修的条目
+> 要求「按探针在最终字节上重跑判定，**不要采信本条已修**」—— 该重跑见本节末「放行条件」。
+
+**总裁决：不放行。0 Critical / 1 Major / 4 Minor**（另 1 条治理观察归并）。
+
+### 独立复跑：作者报的数字全部对上
+
+`check.sh` 十步 EXIT=0（CovaTests 2/0、CovaCore 372/0 95.28%、`CovaPlayerTests` 394/0/0 跳过、
+`CovaPlayer` 3203/3372 = 94.99%）；`PlaybackCoordinatorTests ×1000` = **107,000/0**（226.6s）；
+全量 `×200` = **78,800/0**；`PLAYER_MIN` 394 与终值**恰好相等**；
+**变异 MAJ11B-a 由它独立重跑：KILLED，10 条断言红，红的正是四个读数，还原后 `git status` 干净**。
+它自己的探针：9 用例 × 250 迭代 = 2,250 执行，签名零方差（3 红 / 8 绿）。
+
+### 发现
+
+| 编号 | 级别 | 现象（评审要点） | 处置 |
+|---|---|---|---|
+| **MAJ-R7-1** | **Major** | `convergeStalledLoad` 的守卫 `guard state == .loading, …` **按症状状态写、不按事实写**。装载挂在 `prepareSource` 上时用户按暂停 ⇒ 状态被折成 `.paused`，守卫落空，该代装载从未进引擎却什么都不收敛：`state == .paused` + `engine.loads.isEmpty` + `lastFailure == .cancelled`，且 `start()` 经 `advanceOutcome` 回 **`.advanced`** → 锁屏映射 `.success`。**「这就是 MAJ-R6-1 第二半的两个症状原样复活」**。连带：§19.3 据以改写两条矩阵列、改名一条用例、并在 `HANDOVER.md:228` 写下「协调器侧的债 11B 已还」的**「不可达」主张为假**。可达性不冷门 —— 它就是既有 F-1 用例测的那个窗口，只把收场从 `.success` 换成 `.cancelled` | **已由第 12 批 `de18a14` 修**（协调者在报告到达前自行复现同一机理）：守卫改为只问事实（`inFlightLoad?.generation == generation && engineEpisodeItemID == nil`），并**删掉状态白名单**（评审给的第二个选项 `.loading \|\| (.paused && …)` 被刻意不取 —— 那是把同一个错误换个更长的清单再犯一次）；「谁走这条腿」移到调用点用 `!countsTowardFailureStreak` 表达。**待办（本节末）**：探针重跑 + §19.3/`HANDOVER:228`/矩阵列文档的「不可达」文字必须撤回 |
+| MIN-R7-1 | Minor | `Configuration.consecutiveFailureLimit <= 0` 时 `handleFailure` 两句 `if/guard` 永不动裁决账却直接开终态 ⇒ 产出「`failureStreak == 0` 的终态」，违反本文件自述与 `hasCountedFailureLedger`；`init` 公开且不校验 | 已修（`de18a14`）：三个旋钮全部 clamp + `fallback*` 单一来源，另钉「合法值原样通过」 |
+| MIN-R7-2 | Minor | 11B 的可达性推理建立在「`pause()` 认 `.loading`」上，而唯一的 ⏯ 共用入口 `toggle()` 的态集合仍是 `.playing/.buffering` ⇒ 在途按 ⏯ 走 `resume()`：不起暂停作用、**对同一曲目再起一趟私有音频出站**、最终 `.playing` | 部分修（`de18a14` 只把 `.loading` 加进 `toggle()`）。**评审的修法指认更对**：「可暂停态」应收敛成一处定义（如 `PlaybackState.isPausable`），不得在 `pause()`/`toggle()`/`receive(.playing)`/`holdCurrentItemWithoutPlaying()` 四处各写字面量 —— 待第 12 批（下） |
+| MIN-R7-3 | Minor | 矩阵列 `cancelledWithLoadInFlight` 被 11B **掏空**：`echoBeforeNavigation` 返回 `nil` ⇒ 该格实际断言的是「从未发生失败」，**列名/列文档与其所测相反**，行为上退化为 `loadInFlight` 的重复列；真正的「回显 × 在途」只剩单条用例守着 | 待修：要么让该列真带账（改用 `previous()` 的 `.moved` 腿起第二趟，即 `testNavigatingDuringInFlightLoad…` 的构造），要么**删列并在文档写明它并入了哪条**。「留一个名实相反的空列，就是下一轮『矩阵形同漏空』的重演」 |
+| MIN-R7-4 | Minor | 同一个 commit 内对 MIN-R6-b 的可达性给了**两句相反的话**：`CovaPlayerTestSupport.swift:1145-1146` 与 `PrivateAudioFetcherTests.swift:1314-1315` 写「`cancelInFlightTransfers()` 落在这个窗口里时不发 `terminatedSignal`」，而 §19.4 / commit message 写「那一腿本就命中不了，行为不变」。**核对结果：书面限定是对的、代码注释是错的**（`pending.append` 到续体登记之间无 await/隔离 hop，actor 隔离方法插不进来）。另核：未发现「夹具自己造信号」，`decidedByThisCall` 两处新用法不双记 | 待修：改写那两处注释 |
+| 归并（治理观察） | 观察 | ① `2f22a39` 改了产物（删 `handlerStatus(for:)`）却未递增版本号 —— `a93d829`→47/58、`bbb1a2e`→48/59、`022a33a`→49/60，**中间那一格是空的**，与 AGENTS.md「每次 commit 递增」不符；② `Scripts/test-count-baseline.env` 的注释仍停在「passed=331 / PLAYER_MIN 保持 253 不动」的历史口径 | ①属 §8 已登记的待用户裁决项，**不擅改**，如实记账；②待第 12 批（下）重写 |
+
+### 本轮关闭的（评审原话：「真落地」vs「只满足当时的用例」）
+
+- **`bbb1a2e`（两本账分开）= 真落地。** 判据收在唯一事实源；`failureStreak` 的 5 个清零点
+  逐点核对**全部与 `isFailureTerminal` 成对** ⇒「终态 ⟹ streak>0」是**结构性**的而不是用例性的。
+  评审在**它本轮新证明可达**的那一格上直接验了：探针（暂停 × 引擎无装载 × 取消回显 + 单曲
+  `.all` 按 ⏭）250/250 **绿**。对矩阵改动也逐行核了删除侧：只有两条 `XCTAssertNil(lastFailure)`
+  换成「等于导航前读数」，旧列等价、新列更强 ⇒ **没有借改名丢判据**。唯一豁口是 MIN-R7-1。
+- **`022a33a`（收敛腿）= 只满足了当时的用例，判据没真落地。** 三条腿 + 自我守卫成立在一个
+  未写明的前提上（「用户没在这趟装载期间按暂停」）；守卫按症状写 ⇒ 一次合法 `pause()` 就让
+  整条腿消失。副产物：`022a33a` 对 `pause()` 的字节改动为 **0**，而 §19.3/F 栏的文字读起来
+  像改了 `pause()` —— **该表述需纠正**。
+
+### 评审如实报的「打不中」与「未证实」
+
+- 靶 1（计数腿/刚起播被误打 `.stopped`）：**没打中，且认为结构上不可达**（`.itemFailed` 只有
+  `.moved`/`.repeated` 两种结果，递归深度优先）。
+- 靶 2（F-7 其它破口）：**没打中**；`invalidateInFlightLoad()` 的 5 个调用点逐一核对都在同一
+  同步段内写完 `state`。**但** `teardown()` 与 `removeItem()` 在 invalidate 与写 `state` 之间
+  各夹一个 `await`，该窗口只有并发观察者能读到幽灵 `.loading` —— 按 D16⑤ **不判缺陷**，
+  列为未证实（`inFlightLoad` 是 private，测试侧无法直读，代理指标本身要求并发读快照）。
+- 「`.paused` + 引擎无装载」本身算不算谎报：评审指出 `replaceQueue` **刻意**用 `.paused` 表达
+  「已选曲、待播」，与 §19.2 否证 `.paused` 的理由自相矛盾；落点选 `.stopped` 还是允许
+  `.paused`（只修返回值）属裁决口径，**交协调者定**。
+- 门面层复现腿仍缺（TD-45，两批都自陈未做）。
+- 未重跑 bbb1a2e 的 4 处变异；未压测满载并行下 `Signals.wait` 的伪红风险。
+
+### 下一轮最该打的 2 个点（评审指认）
+
+1. **`advanceOutcome` / `repeatedOutcome` 的总闸**：把「`engineEpisodeItemID == queue.current?.id`」
+   升格为 `.advanced` 的**唯一**前置。本条 Major 只是这条总闸失守的一个实例；不补总闸，
+   未来任何新写的装载腿/事件腿只要先把状态改成「非 `.loading`」就能重演同一形态。
+2. **`PlaybackState` 的态集合按一处定义**：可暂停集合 / 可采信集合 / 改写集合现在四份字面量，
+   本轮已数出两处不一致；顺带钉死 `Configuration` 的取值域。
+
+### 放行条件（协调者自订，下一轮复审按此核）
+
+1. 评审探针在**最终字节**上重跑：R7B/R7C/R7D 必须绿；R7A 预期**翻红且只红在
+   `state == .paused` 那一条断言**（那是缺陷态本身，修好后不再成立）—— 红错地方即为未修。
+2. §19.3、`HANDOVER.md:228`、矩阵列文档里「不可达 / 债已还」的文字全部撤回并改成事实。
+3. MIN-R7-2/3/4 与两条治理项落地。
+4. 总闸（`advanceOutcome` 只认引擎归属）与态集合单一定义落地后，派**第 8 轮**全新隔离复审。
