@@ -57,3 +57,34 @@
   `MPNowPlayingController`、`AVPlayerEngine`、`CovaPlayer.swift`）。
   两批共用 `CovaPlayer.swift` ⇒ **严格串行**，第 6 批待第 5 批 commit 后再派。
 - 两批都跑完并整轮 `check.sh` EXIT=0 后，派**第 5 轮**隔离复审（新实例、只读克隆）。
+
+
+---
+
+## §D 第 5 轮隔离复审（收窄范围版）实测补充
+
+**私有音频/生命周期 + 门禁面**（0 Critical / 1 Major / 2 Minor）：
+- (A) 侧 13 条历史 finding 全部判**已闭合**，无一被重新打开；MAJ-2/MAJ-3 的「无默认实现」
+  经**编译期实证**（写一个只实现 `prepareSource` 的类型 → `does not conform to protocol`）。
+- 门禁面是硬的：合法面干净 clone 与**含空格路径** clone 两侧 EXIT=0 且数字逐项一致；
+  23 条必红面全红（含 `import`↵`WebKit` 换行拆名）；TD-9 六类合法形态零误红
+  （5 个无插桩文件在映射侧与运行侧**同时缺席**，真分母判定未被撑破）；
+  UIKit weak 豁免两侧 `otool -L` 实证，且在 `/tmp` 克隆里**关掉全部四条 import 判据**后
+  产物侧仍能独立拦下强依赖；`git diff 8b9d0c1..HEAD -- Scripts/check.sh` 无替换式放宽
+  （判据 fail 消息 79 → 137 条）。
+- **Major-1（新）**：非持有者门面 `deinit` 无条件对进程单例 `MPRemoteCommandCenter`
+  执行 `isEnabled = false` + `removeTarget(nil)`，不看同批刚建的所有权票据 →
+  A 注册 → B 接手 → **A 析构打死 B 的锁屏控制**。实测复现、零测试覆盖。修 MAJ-7 引入的 B。
+- Minor-1：CovaCore 的字面令牌判据在**文档注释**上误红（在文档里解释「为什么不引入 WebKit」
+  会变成门禁事故）⇒ 「误红与漏检同等严重」在核心层不成立。
+- Minor-2：播放器层 `import CoreMedia` 即红（清单只收实测在用的四项）。属摩擦非漏检，
+  但需在常量注释写明「非 UI 模块走同一道显式改清单 + 评审流程」，避免被当 UI 判据随手放宽。
+
+**协调者独立复核出的真 flake（复审报告未列，来自其原始日志）**：
+`PrivateAudioFetcherTests.testCancellationByBothMergedCallersDeliversNoPlayableURL`
+500 迭代**失败 6 次**、`testUpperLayerCancellationTerminatesInFlightTransfer` 失败 1 次，
+每次耗时 ≈10.0s ⇒ 有界等待超时到期形态。即第 6/7 批为 MAJ-1 写的取消测试本身不稳定，
+按本仓零 flake 判据属 Major —— (A) 侧「MAJ-1 已闭合」的结论要打上这个补丁。
+
+**处置**：第 9 批（`dev-g3e-fix9`）只派这两条，并明令禁止用「删测试/放宽断言/XCTSkip/
+调小迭代/调大超时」蒙混；若根因在生产代码，则视为 MAJ-1 原本未真正闭合，修生产。
