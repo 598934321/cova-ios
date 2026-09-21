@@ -85,6 +85,13 @@ enum AudioAuthorityMatch {
     }
 }
 
+/// 分块落盘原语：写入一块，返回**实际推进**的字节数。
+///
+/// 抽出成注入面的唯一理由（m14）：真实短写在模拟器上没有确定性造法（磁盘满 / 设备错误都是
+/// 环境事件），而「短写必须被拒绝」这条判据不许靠竞态断言。于是只把「推进量从哪来」交给桩件，
+/// 短写判定本身（`advanced == data.count` → 否则 `writeFailed(ENOSPC)`）始终留在生产管道里。
+public typealias PrivateAudioChunkWrite = @Sendable (_ data: Data, _ handle: FileHandle) throws -> Int
+
 /// 生产实现：`URLSession.bytes` 流式读取 + `FileHandle` 分块写入。
 ///
 /// 超时口径与 CovaCore 普通请求不同：音频是**大文件读**，
@@ -104,8 +111,15 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
     private var lockedCancellationCount = 0
     private var lockedSessionGeneration: UInt64 = 0
     private var lockedShutDown = false
+    /// m14 的短写注入面（仅测试用）；nil = 生产原语。
+    private let injectedChunkWrite: PrivateAudioChunkWrite?
 
-    public init(session: URLSession? = nil) {
+    /// - Parameters:
+    ///   - session: 注入会话（离线桩件用）；nil 时按生产配置惰性建会话。
+    ///   - chunkWrite: 分块落盘原语覆盖（见 `PrivateAudioChunkWrite`：只为让「短写」这一分支
+    ///     在零竞态下可被判据覆盖，短写判定本身不可注入、始终在生产管道里执行）。
+    public init(session: URLSession? = nil, chunkWrite: PrivateAudioChunkWrite? = nil) {
+        self.injectedChunkWrite = chunkWrite
         if let session {
             let injected = session
             self.configurationProvider = { injected.configuration }
@@ -193,10 +207,8 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
         shutDown()
     }
 
-    /// 落盘文件属性（m12）：owner 可读写，且要求设备解锁后才可读。
-    static func fileAttributes() -> [FileAttributeKey: Any] { [
-        FileAttributeKey.posixPermissions: 0o600,
-    ] }
+    /// 落盘文件属性（m12）：口径与准备器提交时完全一致（`PrivateAudioPath.fileAttributes`）。
+    static func fileAttributes() -> [FileAttributeKey: Any] { PrivateAudioPath.fileAttributes }
 
     public func writeAudio(
         from url: URL,
@@ -261,12 +273,12 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
             if Task.isCancelled { throw PlayerError.cancelled }
             buffer.append(byte)
             if buffer.count >= Self.writeChunkBytes {
-                written += try Self.writeChunk(buffer, to: handle)
+                written += try writeChunk(buffer, to: handle)
                 buffer.removeAll(keepingCapacity: true)
             }
         }
         if buffer.isEmpty == false {
-            written += try Self.writeChunk(buffer, to: handle)
+            written += try writeChunk(buffer, to: handle)
         }
         try handle.synchronize()
         return PrivateAudioReceipt(
@@ -276,20 +288,30 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
         )
     }
 
-    /// 写一块并返回**实际**写入字节数；短写与 I/O 错误都以 `PlayerError` 抛出（绝不静默截断）。
+    /// 写一块并做**短写判定**（m14）：推进量与请求量不等即以 `writeFailed(ENOSPC)` 抛出，
+    /// 绝不静默把「半截文件」当成一次完成的传输。
+    func writeChunk(_ data: Data, to handle: FileHandle) throws -> Int {
+        let advanced = try (injectedChunkWrite ?? Self.defaultChunkWrite)(data, handle)
+        guard advanced == data.count else { throw PlayerError.writeFailed(ENOSPC) }
+        return advanced
+    }
+
+    /// 生产落盘原语：`FileHandle.write(contentsOf:)` + `offsetInFile` 交叉核对实际推进量。
     ///
-    /// m14：`FileHandle.write(_:)` 不抛错、检测不了短写（出错走 ObjC 异常 → 进程崩）；
-    /// `write(contentsOf:)` 是 throwing 版本，再以 `offsetInFile` 交叉核对实际推进量。
-    static func writeChunk(_ data: Data, to handle: FileHandle) throws -> Int {
+    /// 为什么不用 `handle.write(_:)`：它不抛错、检测不了短写（出错走 ObjC 异常 → 进程崩）。
+    static func defaultChunkWrite(_ data: Data, _ handle: FileHandle) throws -> Int {
         let before = handle.offsetInFile
         do {
             try handle.write(contentsOf: data)
         } catch {
-            throw PlayerError.writeFailed(EIO)
+            throw mapWriteError(error)
         }
-        let after = handle.offsetInFile
-        let advanced = Int(after - before)
-        guard advanced == data.count else { throw PlayerError.writeFailed(ENOSPC) }
-        return advanced
+        return Int(handle.offsetInFile - before)
+    }
+
+    /// 底层写错误的分类（m14）：只出整数错误码，绝不带出路径/句柄/描述文本。
+    static func mapWriteError(_ error: Error) -> PlayerError {
+        if let classified = error as? PlayerError { return classified }
+        return PlayerError.writeFailed(EIO)
     }
 }

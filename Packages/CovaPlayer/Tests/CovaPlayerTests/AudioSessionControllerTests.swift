@@ -506,6 +506,107 @@ final class AudioSessionControllerTests: XCTestCase {
         let after = adapter.observedNotificationCount
         XCTAssertEqual(after, 0)
     }
+
+    // MARK: - 环 4 · M3：观测者的注册不得依赖调用方多传一个参数
+
+    /// 生产形态（只传 `system`，不传 `adapter:`）下门必须真的挂上系统通知，
+    /// 并且通知要**真的驱动到播放层** —— 旧实现在这里从不注册，design §7 整条链静默失效，
+    /// 而既有测试因为手工接线（走 `adapter:` 参数）所以全绿。
+    func testGateRegistersObserversFromSystemAloneAndNotificationDrivesPlayback() async throws {
+        let engine = ScriptedEngine()
+        let coordinator = PlaybackCoordinator(engine: engine, clock: FakeClock())
+        _ = await coordinator.start(items: TestItems.makeMany(["default-wiring"]))
+        let playing = await coordinator.currentSnapshot().state
+        XCTAssertEqual(playing, .playing, "前置条件：正在播放")
+
+        let system = ObservingStubAudioSessionSystem()
+        let handler = SignallingSessionHandler(coordinator: coordinator)
+        // 关键：**没有** `adapter:` 参数 —— 与 `CovaPlayer` 的生产默认同形态。
+        let gate = AudioSessionGate(system: system, handler: handler)
+        addTeardownBlock {
+            await gate.stop()
+            await coordinator.teardown()
+        }
+        let wired = await gate.observesSystemNotifications
+        XCTAssertTrue(wired, "M3：system 自己能观测通知时，门必须自己接上")
+
+        try await gate.start()
+        let registered = await gate.observedNotificationCount
+        XCTAssertEqual(registered, AVAudioSessionAdapter.observedNotificationNames.count, "观测者必须真的注册")
+        let stillPlaying = await coordinator.currentSnapshot().state
+        XCTAssertEqual(stillPlaying, .playing, "前置条件：注册本身不得改变播放状态")
+
+        // 真实的 AVFoundation 通知名 → 观测者 → 门 → 决策 → 协调器。
+        system.configureNextSignal(.interruption(AudioInterruptionSignal(kind: .began)))
+        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil)
+        let applied = await handler.appliedUpTo(1)
+        XCTAssertEqual(applied, [.pause], "默认接线的通知必须驱动到播放层")
+        let paused = await coordinator.currentSnapshot().state
+        XCTAssertEqual(paused, .paused)
+        let forwarded = system.forwardedSignal.value
+        XCTAssertEqual(forwarded, 1)
+
+        await gate.stop()
+        let remaining = await gate.observedNotificationCount
+        XCTAssertEqual(remaining, 0, "stop 之后不得残留观测者（本仓红线）")
+        let detached = system.observedNotificationCount
+        XCTAssertEqual(detached, 0)
+        XCTAssertFalse(system.holdsGate)
+    }
+
+    /// 重复 `start()` 不得重复注册（粘性接线 + 观测者按名去重）。
+    func testRepeatedStartRegistersEachNotificationOnce() async throws {
+        let system = ObservingStubAudioSessionSystem()
+        let gate = AudioSessionGate(system: system, handler: AudioSessionCommandHandler(coordinator: nil))
+        try await gate.start()
+        try await gate.start()
+        try await gate.start()
+        let registered = await gate.observedNotificationCount
+        XCTAssertEqual(registered, AVAudioSessionAdapter.observedNotificationNames.count)
+        let configured = system.configureCount
+        XCTAssertEqual(configured, 1, "重复激活不得重复设置系统会话")
+        await gate.stop()
+    }
+
+    /// 反面判据（避免「观测者数量 > 0」成为空断言）：不具备观测能力的 system 必须报「未接线」。
+    func testGateReportsUnwiredForSystemWithoutNotificationSource() async throws {
+        let gate = AudioSessionGate(
+            system: StubAudioSessionSystem(),
+            handler: AudioSessionCommandHandler(coordinator: nil)
+        )
+        let wired = await gate.observesSystemNotifications
+        XCTAssertFalse(wired, "只有桩系统时不该谎称已接线")
+        try await gate.start()
+        let registered = await gate.observedNotificationCount
+        XCTAssertEqual(registered, 0)
+        await gate.stop()
+    }
+
+    /// 生产默认注入的那个类型（`AVAudioSessionAdapter`）当 system 用时，门必须真的在它身上
+    /// 挂上观测者 —— 这条走的是**真实适配器**，不是桩的形状。
+    func testRealAdapterAsSystemGetsObserversRegisteredByGate() async throws {
+        let adapter = AVAudioSessionAdapter()
+        let gate = AudioSessionGate(
+            system: adapter,
+            handler: AudioSessionCommandHandler(coordinator: nil)
+        )
+        addTeardownBlock { await gate.stop() }
+        let wired = await gate.observesSystemNotifications
+        XCTAssertTrue(wired)
+        do {
+            try await gate.start()
+        } catch {
+            throw XCTSkip("模拟器不允许激活音频会话（\(error)）：注册判据由默认接线用例覆盖")
+        }
+        let registered = adapter.observedNotificationCount
+        XCTAssertEqual(registered, AVAudioSessionAdapter.observedNotificationNames.count, "生产默认真挂了观测者")
+        let holding = adapter.holdsGate
+        XCTAssertTrue(holding)
+        await gate.stop()
+        let remaining = adapter.observedNotificationCount
+        XCTAssertEqual(remaining, 0)
+    }
+
 }
 
 /// 桩音频会话系统：记录配置/反配置次数。

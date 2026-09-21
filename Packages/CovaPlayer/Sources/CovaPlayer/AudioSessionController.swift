@@ -230,6 +230,22 @@ public protocol AudioSessionCommandHandling: Sendable {
     func apply(_ command: AudioSessionCommand) async
 }
 
+/// 自身就是「系统音频会话通知源」的会话接口（缺陷 M3 的接线判据）。
+///
+/// 为什么要有这个协议：门只观测 `AVAudioSession` 的两条通知，而**注册动作发生在 `start()` 里**。
+/// 旧实现只在调用者显式传 `adapter:` 时才注册，而生产门面恰恰没传 —— 于是 design §7
+/// （来电续播、拔耳机暂停）整条链在真机上静默失效，单测却因为手工接线而全绿。
+/// 现在：只要注入的 `system` 自己能观测通知（`AVAudioSessionAdapter` 属之），门就必须接上它，
+/// 「谁来观测」不再依赖调用方记得多传一个参数。
+public protocol AudioSessionNotificationObserving: Sendable {
+    /// 注册系统通知观测者，并把归一化后的信号投进 `gate`；路由探针取 `routeProbe`。
+    func attachNotifications(to gate: AudioSessionGate, routeProbe: any AudioSessionSystemInterface) async
+    /// 摘掉**全部**观测者（通知残留是本仓红线）。
+    func detachNotifications() async
+    /// 观测中的通知数量（可观测面：证明接线真的发生了）。
+    var observedNotificationCount: Int { get }
+}
+
 /// 会话控制器（facade 持有的门面）。
 public protocol AudioSessionControlling: Sendable {
     func start() async throws
@@ -245,7 +261,8 @@ public protocol AudioSessionControlling: Sendable {
 public actor AudioSessionGate: AudioSessionControlling {
     private let system: any AudioSessionSystemInterface
     private let handler: AudioSessionCommandHandling
-    private let adapter: AVAudioSessionAdapter?
+    /// 通知观测者（M3）：显式 `adapter:` 优先，否则由「自身可观测的 system」接管。
+    private let notifier: (any AudioSessionNotificationObserving)?
     private var state = AudioSessionState()
     private var started = false
 
@@ -256,24 +273,31 @@ public actor AudioSessionGate: AudioSessionControlling {
     ) {
         self.system = system
         self.handler = handler
-        self.adapter = adapter
+        self.notifier = adapter ?? (system as? any AudioSessionNotificationObserving)
     }
 
     public func start() async throws {
         guard !started else { return }
         try system.configureForPlayback()
         started = true
-        adapter?.attach(gate: self, routeProbe: system)
-        await adapter?.startObserving()
+        // M3：观测者的注册**不依赖调用方是否额外传了 `adapter:`** —— 生产默认（`system` 即
+        // `AVAudioSessionAdapter`）也必须在这里真的挂上通知，否则整条中断/路由链静默失效。
+        await notifier?.attachNotifications(to: self, routeProbe: system)
     }
 
     public func stop() async {
         guard started else { return }
         started = false
-        await adapter?.stopObserving()
+        await notifier?.detachNotifications()
         try? system.deactivate()
         state = AudioSessionState()
     }
+
+    /// 正在观测系统通知的数量（M3 的可观测面：`start()` 之后必须 > 0，`stop()` 之后必须归零）。
+    public var observedNotificationCount: Int { notifier?.observedNotificationCount ?? 0 }
+
+    /// 是否已接上系统通知源（生产默认接线判据）。
+    public var observesSystemNotifications: Bool { notifier != nil }
 
     public func receive(_ signal: AudioSessionSignal) async {
         let decision = AudioSessionReducer.decide(signal, state: &state)
@@ -322,9 +346,9 @@ public actor AudioSessionCommandHandler: AudioSessionCommandHandling {
 ///
 /// 职责边界：**只取值与转发，不做决策**。因此每一行都可冒烟测试，且不需要真机音频输出。
 ///
-/// 循环引用：`gate` 以 **weak** 持有（gate 强持 adapter）；`stopObserving()` 必须清空全部
-/// 观测 token（通知残留是本仓红线）。
-public final class AVAudioSessionAdapter: AudioSessionSystemInterface, @unchecked Sendable {
+/// 循环引用：`gate` 以 **weak** 持有（门强持观测者本体，见 `AudioSessionGate.notifier`）；
+/// `stopObserving()` 必须清空全部观测 token（通知残留是本仓红线）。
+public final class AVAudioSessionAdapter: AudioSessionSystemInterface, AudioSessionNotificationObserving, @unchecked Sendable {
     private let lock = NSLock()
     private var observerTokens: [Notification.Name: NSObjectProtocol] = [:]
     private weak var gate: AudioSessionGate?
@@ -491,5 +515,21 @@ public final class AVAudioSessionAdapter: AudioSessionSystemInterface, @unchecke
     /// 转发用的归一化（暴露为静态以便单测直接断言映射结果）。
     static func normalizedSignal(name: String, payload: AudioSessionNotificationPayload) -> AudioSessionSignal {
         AudioSessionNormalizer.signal(name: name, payload: payload)
+    }
+}
+
+// MARK: - 通知观测接线（M3）
+
+/// `AVAudioSessionAdapter` 既是系统接口、又是通知源：它自己就能把系统会话通知归一化投进门。
+///
+/// 于是「生产默认」不再需要调用方额外传 `adapter:` —— 门在 `start()` 里必然接上它。
+public extension AVAudioSessionAdapter {
+    func attachNotifications(to gate: AudioSessionGate, routeProbe: any AudioSessionSystemInterface) async {
+        attach(gate: gate, routeProbe: routeProbe)
+        await startObserving()
+    }
+
+    func detachNotifications() async {
+        await stopObserving()
     }
 }

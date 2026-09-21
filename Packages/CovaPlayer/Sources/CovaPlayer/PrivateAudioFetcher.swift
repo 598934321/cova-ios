@@ -16,6 +16,27 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
     private let baseDirectory: URL
     private let fileManager: FileManager
 
+    /// 在途传输的身份（M7 去重键）：目标路径由这三元组唯一决定，因此它也是「同一份内容」的判据。
+    private struct TransferKey: Hashable {
+        let ownerNamespace: String
+        let itemID: String
+        let generation: UInt64
+    }
+
+    /// 一条在途传输。`token` 用于「只摘掉自己那一条」的收尾 —— 清理会作废整张表，
+    /// 此后新起的传输不能被上一位的收尾误删。
+    private struct InflightTransfer {
+        let token: UInt64
+        let task: Task<Result<AudioURL, PlayerError>, Never>
+    }
+
+    /// 在途去重表（M7）：同一 `(owner, itemID, generation)` 只允许**一次**真实传输。
+    private var inflightTransfers: [TransferKey: InflightTransfer] = [:]
+    private var nextTransferToken: UInt64 = 0
+
+    /// 当前在途传输数（可观测面：去重与清理真的生效）。
+    public var inflightTransferCount: Int { inflightTransfers.count }
+
     public init(
         transport: any PrivateAudioTransport,
         credentials: any APICredentialProviding,
@@ -75,7 +96,68 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             return .success(cached)
         }
 
+        // M7：并发同键请求必须**合流到一次传输**。旧行为是两个调用者各起一路下载、
+        // 各自往同一个目标路径做原子替换 —— 后提交方会把先交付方已经拿到的文件换掉
+        // （交付面因此不稳定），且出口被多打了一次（Bearer 地址重复外发）。
+        let key = TransferKey(
+            ownerNamespace: PrivateAudioPath.namespace(for: owner),
+            itemID: request.itemID,
+            generation: request.session.generation.value
+        )
+        if let entry = inflightTransfers[key] {
+            let shared = await entry.task.value
+            switch shared {
+            case .failure:
+                return shared
+            case .success:
+                // 加入者绝不因为「有人在下载」就放弃自己的完成性校验：
+                // 自己的期望长度复核不过 → 继续往下自己重取。
+                if let verified = existingValidFile(at: target, expectedBytes: request.expectedBytes) {
+                    return .success(verified)
+                }
+            }
+        }
+        return await startTransfer(for: request, owner: owner, target: target, key: key)
+    }
+
+    /// 登记并等待一次传输（同一时刻只有一个登记动作：本函数到 `inflightTransfers[key] = …`
+    /// 之间没有任何挂起点，因此两个并发调用不可能各自登记）。
+    private func startTransfer(
+        for request: PrivateAudioRequest,
+        owner: PrincipalID,
+        target: URL,
+        key: TransferKey
+    ) async -> Result<AudioURL, PlayerError> {
         let temporary = temporaryURL()
+        let token = nextTransferToken
+        nextTransferToken &+= 1
+        let task: Task<Result<AudioURL, PlayerError>, Never> = Task { [weak self] in
+            guard let self else { return .failure(.cancelled) }
+            return await self.performTransfer(
+                for: request,
+                owner: owner,
+                target: target,
+                temporary: temporary,
+                key: key,
+                token: token
+            )
+        }
+        inflightTransfers[key] = InflightTransfer(token: token, task: task)
+        return await task.value
+    }
+
+    /// 传输本体（在合流后的唯一一路里执行）。
+    private func performTransfer(
+        for request: PrivateAudioRequest,
+        owner: PrincipalID,
+        target: URL,
+        temporary: URL,
+        key: TransferKey,
+        token: UInt64
+    ) async -> Result<AudioURL, PlayerError> {
+        defer {
+            if inflightTransfers[key]?.token == token { inflightTransfers[key] = nil }
+        }
         do {
             try prepareDirectories(owner: owner)
             let receipt = try await transport.writeAudio(
@@ -156,14 +238,26 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
         guard (try? OwnerIdentifier.requireValid(owner)) != nil else { return 0 }
         // M8 / D16②：作废在途传输，否则「已授权的下载」会在清理之后继续投递结果。
         await transport.cancelInFlightTransfers()
+        discardInflightRegistry()
         return removeVerified(
             at: PrivateAudioPath.ownerDirectory(base: baseDirectory, owner: owner)
         )
     }
 
+    /// 会话失效（D8 / F-13）：本实现会在磁盘上留私有音频，因此**必须**覆盖协议的空操作默认值。
+    /// 「有没有真的覆盖」由 `PrivateAudioFetcherTests` 的协议面清理用例把守（而不是只测 `purge`）。
+    public func discardPrivateAudio(owner: PrincipalID?) async {
+        if let owner {
+            _ = await purge(owner: owner)
+        } else {
+            _ = await purgeAll()
+        }
+    }
+
     @discardableResult
     public func purgeStale(before generation: SessionGeneration) async -> Int {
         await transport.cancelInFlightTransfers()
+        discardInflightRegistry()
         let root = PrivateAudioPath.rootDirectory(base: baseDirectory)
         guard let owners = try? fileManager.contentsOfDirectory(
             at: root,
@@ -191,7 +285,15 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
     @discardableResult
     public func purgeAll() async -> Int {
         await transport.cancelInFlightTransfers()
+        discardInflightRegistry()
         return removeVerified(at: PrivateAudioPath.rootDirectory(base: baseDirectory))
+    }
+
+    /// 作废在途登记表（M7 的另一半）：清理之后到达的请求**绝不复用**清理前开始的传输，
+    /// 否则会拿到一条「落在刚刚被清空的目录里」的投递。已在途的那一路自己收尾时只会
+    /// 按 token 摘掉自己的条目（`performTransfer` 的 `defer`），不会误删新条目。
+    private func discardInflightRegistry() {
+        inflightTransfers = [:]
     }
 
     /// 丢弃在途分片（M6）：`.inflight` 是隐藏目录、且不在 owner 目录下，
@@ -260,6 +362,11 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             removeItem(at: url)
             return nil
         }
+        // m12：缓存复用面同样复核权限 —— 收紧之前留下的「组/其它可读」旧文件不能继续被当作可用缓存。
+        guard Self.hasPrivateAudioFileMode(attributes) else {
+            removeItem(at: url)
+            return nil
+        }
         return try? AudioURL(file: url)
     }
 
@@ -291,6 +398,32 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             throw PlayerError.writeFailed(Self.status(of: error))
         }
         guard fileExists(at: target) else { throw PlayerError.emptyDownload }
+        // m12：权限在**提交处**再判一次，不单独信传输层的建档属性 ——
+        // 缓存里是「仅本人可见」的音频字节，任何组/其它可读位都必须在这里被抹掉。
+        // 收紧失败按 fail-closed 处理：宁可删掉这份缓存，也不交付一个世界可读的文件。
+        do {
+            try fileManager.setAttributes(
+                PrivateAudioPath.fileAttributes,
+                ofItemAtPath: target.path
+            )
+        } catch {
+            removeItem(at: target)
+            throw PlayerError.writeFailed(Self.status(of: error))
+        }
+        guard Self.hasPrivateAudioFileMode(attributesOf(target)) else {
+            removeItem(at: target)
+            throw PlayerError.writeFailed(EACCES)
+        }
+    }
+
+    private func attributesOf(_ url: URL) -> [FileAttributeKey: Any] {
+        (try? fileManager.attributesOfItem(atPath: url.path)) ?? [:]
+    }
+
+    /// 权限位是否已收敛到 `PrivateAudioPath.fileMode`（m12 的复核面：提交处与缓存复用处共用）。
+    static func hasPrivateAudioFileMode(_ attributes: [FileAttributeKey: Any]) -> Bool {
+        let raw = (attributes[.posixPermissions] as? NSNumber)?.int32Value ?? -1
+        return Int(truncatingIfNeeded: raw) & 0o777 == PrivateAudioPath.fileMode
     }
 
     private func removeItem(at url: URL) {

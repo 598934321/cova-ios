@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 import CovaCore
 import Foundation
@@ -364,5 +365,221 @@ final class CovaPlayerFacadeTests: XCTestCase {
         let configured = system.configurationCount
         XCTAssertEqual(configured, 1)
         await player.teardown()
+    }
+
+    // MARK: - 环 4 · M4 / F-13：登出换号必须真的清私有音频
+
+    private func makeFetchers(_ directory: TemporaryDirectory) -> PrivateAudioFetcher {
+        try! PrivateAudioFetcher(
+            transport: StubPrivateAudioTransport(),
+            credentials: StubCredentialProvider(),
+            baseDirectory: directory.url
+        )
+    }
+
+    /// 失效之后磁盘上不得有残留（旧实现只丢上报 + 停引擎 + 清队列，盘上一个字节都没动）。
+    func testLogoutLeavesNoPrivateAudioOnDisk() async {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let fetcher = makeFetchers(directory)
+        let engine = ScriptedEngine()
+        let player = makePlayer(engine: engine, sourcePreparer: fetcher)
+        await player.bindSession(authenticated())
+        _ = await player.start(items: [TestItems.make("priv", source: .bearerRequired(privateURL()))])
+        let ownerDirectory = PrivateAudioPath.ownerDirectory(
+            base: directory.url,
+            owner: PrincipalID(rawValue: "principal-1")
+        )
+        let cachedBefore = await fetcher.cachedFileCount()
+        XCTAssertEqual(cachedBefore, 1, "前置条件：私有音频已落盘")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ownerDirectory.path))
+
+        await player.bindSession(.unauthenticated)
+
+        let cachedAfter = await fetcher.cachedFileCount()
+        XCTAssertEqual(cachedAfter, 0, "登出之后磁盘上不得有残留")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: ownerDirectory.path),
+            "owner 目录本身也必须消失（不是只剩空目录）"
+        )
+        let loads = engine.loads
+        XCTAssertEqual(loads.count, 1, "清理不得牵连已完成的装载")
+    }
+
+    /// 换号：上一个身份的私有音频必须整体消失，而新身份自己的缓存一个都不许被牵连。
+    func testAccountSwitchDiscardsPreviousOwnerOnly() async {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let alice = makeFetchers(directory)
+        let bob = try! PrivateAudioFetcher(
+            transport: StubPrivateAudioTransport(),
+            credentials: StubCredentialProvider(principal: "principal-2"),
+            baseDirectory: directory.url
+        )
+        let player = makePlayer(sourcePreparer: alice)
+        await player.bindSession(authenticated())
+        _ = await player.start(items: [TestItems.make("alice", source: .bearerRequired(privateURL()))])
+        // Bob 先有一份自己的缓存（换号后必须原封不动）
+        _ = await bob.localizedURL(for: PrivateAudioRequest(
+            itemID: "bob",
+            source: privateURL(),
+            session: PlaybackSessionContext(owner: PrincipalID(rawValue: "principal-2"), generation: .initial)
+        ))
+        let bobDirectory = PrivateAudioPath.ownerDirectory(
+            base: directory.url,
+            owner: PrincipalID(rawValue: "principal-2")
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: bobDirectory.path), "前置条件：Bob 的缓存已落盘")
+
+        await player.bindSession(
+            PlaybackSessionContext(owner: PrincipalID(rawValue: "principal-2"), generation: SessionGeneration(value: 1))
+        )
+
+        let aliceFiles = await alice.cachedFileCount()
+        XCTAssertEqual(aliceFiles, 1, "只剩 Bob 自己那一份")
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: PrivateAudioPath.ownerDirectory(base: directory.url, owner: PrincipalID(rawValue: "principal-1")).path
+            ),
+            "换号后 Alice 的目录必须不存在"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: bobDirectory.path), "换号不得波及新账号")
+    }
+
+    /// 同账号 generation 推进：回收**旧代次**孤儿，当前代次的缓存仍然属于本人 → 必须留下，
+    /// 且 owner 目录本身不能被抹掉（那不是登出）。
+    func testGenerationAdvancePurgesStaleAndKeepsCurrentGeneration() async {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let owner = PrincipalID(rawValue: "principal-1")
+        let generations: [SessionGeneration] = [.initial, SessionGeneration(value: 1), SessionGeneration(value: 2)]
+        var files: [URL] = []
+        var fetchers: [PrivateAudioFetcher] = []
+        for (index, generation) in generations.enumerated() {
+            let fetcher = try! PrivateAudioFetcher(
+                transport: StubPrivateAudioTransport(),
+                credentials: StubCredentialProvider(generation: generation),
+                baseDirectory: directory.url
+            )
+            _ = await fetcher.localizedURL(for: PrivateAudioRequest(
+                itemID: "take\(index)",
+                source: privateURL(),
+                session: PlaybackSessionContext(owner: owner, generation: generation)
+            ))
+            files.append(try! PrivateAudioPath.fileURL(
+                base: directory.url,
+                owner: owner,
+                itemID: "take\(index)",
+                generation: generation
+            ))
+            fetchers.append(fetcher)
+        }
+        let player = makePlayer(sourcePreparer: fetchers[1])
+        await player.bindSession(PlaybackSessionContext(owner: owner, generation: generations[1]))
+        let cachedBefore = await fetchers[1].cachedFileCount()
+        XCTAssertEqual(cachedBefore, 3, "前置条件：g0 / g1 / g2 各一份")
+
+        // g1 → g2：只有 g0 与 g1 是旧代次；g2 那一份必须活着。
+        await player.bindSession(PlaybackSessionContext(owner: owner, generation: generations[2]))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files[0].path), "g0 是旧代次孤儿")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files[1].path), "g1 已成旧代次")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: files[2].path), "当代（g2）缓存不得被牵连")
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: PrivateAudioPath.ownerDirectory(base: directory.url, owner: owner).path
+            ),
+            "同账号推进不是登出：目录本身保留"
+        )
+        let cachedAfter = await fetchers[2].cachedFileCount()
+        XCTAssertEqual(cachedAfter, 1)
+    }
+
+    /// TD-9 正向对照：同一身份重复绑定不得清掉可用缓存。
+    func testRepeatedIdenticalBindDoesNotDiscardPrivateAudio() async {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let fetcher = makeFetchers(directory)
+        let player = makePlayer(sourcePreparer: fetcher)
+        await player.bindSession(authenticated())
+        _ = await player.start(items: [TestItems.make("priv", source: .bearerRequired(privateURL()))])
+        await player.bindSession(authenticated())
+        await player.bindSession(authenticated())
+        let cached = await fetcher.cachedFileCount()
+        XCTAssertEqual(cached, 1, "身份与代次都没变 → 不得清盘")
+    }
+
+    /// 清理必须走**协议面**（而不是「门面记得去够实现方的 purge」）：
+    /// 这个准备器不是 `PrivateAudioFetching`，`player.fetcher == nil`，观测到的调用只能来自协议要求。
+    func testSessionInvalidationCallsProtocolDiscardSurface() async {
+        let preparer = RecordingPrivateAudioPreparer()
+        let player = makePlayer(sourcePreparer: preparer)
+        let noFetcher = player.fetcher == nil
+        XCTAssertTrue(noFetcher, "前置条件：门面手里没有可用的 purge 面")
+        let first = authenticated()
+        let second = PlaybackSessionContext(
+            owner: PrincipalID(rawValue: "principal-2"),
+            generation: SessionGeneration(value: 1)
+        )
+        await player.bindSession(first)
+        await player.bindSession(second)
+        let discarded = await Signals.wait(target: 1, counter: preparer.discardedSignal)
+        XCTAssertTrue(discarded, "会话失效必须调用 discardPrivateAudio(owner:)")
+        let owners = await preparer.discardedOwners
+        XCTAssertEqual(owners, [PrincipalID(rawValue: "principal-1")], "清理的对象必须是**上一个**身份")
+    }
+
+    /// teardown 走同一协议面，且以「身份不可知」= 全量清除的口径调用。
+    func testTeardownCallsProtocolDiscardSurfaceWithUnknownOwner() async {
+        let preparer = RecordingPrivateAudioPreparer()
+        let player = makePlayer(sourcePreparer: preparer)
+        await player.bindSession(authenticated())
+        await player.teardown()
+        let owners = await preparer.discardedOwners
+        // 首次登录（unauthenticated → 已认证）不属于失效面：不得清盘。
+        XCTAssertEqual(owners.count, 1, "只有 teardown 这一次清理")
+        XCTAssertNil(owners[0] as PrincipalID?, "teardown 必须以 owner == nil 的口径全清")
+    }
+
+    // MARK: - 环 4 · M3：生产默认必须真的注册音频会话通知
+
+    func testFacadeWiresAudioSessionNotificationsThroughProductionShape() async throws {
+        let system = ObservingStubAudioSessionSystem()
+        let player = CovaPlayer(engine: ScriptedEngine(), clock: FakeClock(), audioSystem: system)
+        // 生产形态：只传 system，不传 adapter —— 旧实现在这里根本不注册观测者。
+        let wiredBefore = await player.audioSession.observesSystemNotifications
+        XCTAssertTrue(wiredBefore, "M3：注入的 system 自己能观测通知时，门必须接上它")
+        let registeredBefore = system.observedNotificationCount
+        XCTAssertEqual(registeredBefore, 0, "未激活前不得注册（构造必须廉价）")
+
+        _ = await player.start(items: TestItems.makeMany(["a"]))
+        let registered = system.observedNotificationCount
+        XCTAssertEqual(registered, AVAudioSessionAdapter.observedNotificationNames.count, "生产默认接线必须真的挂上通知")
+        let observed = await player.audioSession.observedNotificationCount
+        XCTAssertEqual(observed, registered)
+
+        // 通知确实进到观测者（并会转发给门）。
+        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil)
+        let forwarded = await Signals.wait(target: 1, counter: system.forwardedSignal)
+        XCTAssertTrue(forwarded, "系统会话通知未到达门")
+
+        await player.teardown()
+        let remaining = system.observedNotificationCount
+        XCTAssertEqual(remaining, 0, "teardown 之后不得残留观测者（本仓红线）")
+        XCTAssertFalse(system.holdsGate)
+    }
+
+    /// 生产默认的 `audioSystem` 类型（`AVAudioSessionAdapter`）本身就是通知源 —— 上条用例的
+    /// 「生产形态」与真实类型必须是同一判据，否则「桩过了、真的没接」仍然可能。
+    func testProductionDefaultAudioSystemIsItsOwnNotificationCenterSource() {
+        let adapter = AVAudioSessionAdapter()
+        let asSystem: any AudioSessionSystemInterface = adapter
+        let observes = (asSystem as? any AudioSessionNotificationObserving) != nil
+        XCTAssertTrue(observes, "M3：生产默认注入的系统接口必须自带通知观测能力")
+        let unregistered = adapter.observedNotificationCount
+        XCTAssertEqual(unregistered, 0)
+        let stub: any AudioSessionSystemInterface = StubAudioSessionSystem()
+        let stubObserves = (stub as? any AudioSessionNotificationObserving) != nil
+        XCTAssertFalse(stubObserves, "不具备观测能力的桩不得被误判为已接线")
     }
 }

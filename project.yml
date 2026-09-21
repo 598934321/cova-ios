@@ -77,8 +77,10 @@ targets:
         # → 0.2.28/39 G3-e 环 2 提交 + 停放修正（HANDOVER §9）
         # → 0.2.29/40 G3-e 环 4 修复 ①：状态机与集次守卫（C1 释放后迟到装载、P1/P1b/P1c 失败态归约、
         #     P2 装载代际、P3 teardown 终态、P4 装载代际事件闸门、P5 单曲循环逐次上报、M10 就绪不翻回播放、M11 门面永久下线）
-        CFBundleShortVersionString: "0.2.31"
-        CFBundleVersion: "42"
+        # → 0.2.32/43 G3-e 环 4 私有音频收尾组：补 C2/M5/M6/M8/m12/m13/m14 的永久测试（38 条）+
+        #     修 M7（并发在途去重）/ M4·F-13（登出换号必须清私有音频）/ M3（生产默认真注册音频会话通知）
+        CFBundleShortVersionString: "0.2.32"
+        CFBundleVersion: "43"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

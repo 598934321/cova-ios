@@ -30,11 +30,13 @@ public struct PrivateAudioRequest: Equatable, Sendable {
 public protocol PrivateAudioFetching: Sendable {
     /// 先把 Bearer 音频**流式写入沙盒**并校验完成性，再返回 `file://` 地址。
     func localizedURL(for request: PrivateAudioRequest) async -> Result<AudioURL, PlayerError>
-    /// 清除某 owner 的全部私有音频（登出 / 换号）。返回删除的文件数。
+    /// 清除某 owner 的全部私有音频（登出 / 换号）。
+    /// 返回**已确认删除**的文件数：owner 非法 → 0；删除后路径仍在 → 0（宁可少报，不可虚报）。
     @discardableResult func purge(owner: PrincipalID) async -> Int
-    /// 清除不属于给定 generation 的私有音频（在途旧代次结果不得被复用）。返回删除的文件数。
+    /// 清除不属于给定 generation 的私有音频（在途旧代次结果不得被复用）。
+    /// 返回**已确认删除**的文件数（口径同 `purge(owner:)`）。
     @discardableResult func purgeStale(before generation: SessionGeneration) async -> Int
-    /// 全量清除（teardown）。
+    /// 全量清除（teardown）。返回**已确认删除**的文件数（口径同 `purge(owner:)`）。
     @discardableResult func purgeAll() async -> Int
 }
 
@@ -47,6 +49,22 @@ public protocol PlaybackSourcePreparing: Sendable {
         for item: PlaybackItem,
         session: PlaybackSessionContext
     ) async -> Result<PlaybackItem, PlayerError>
+
+    /// 会话失效（登出 / 换号 / generation 推进）时丢弃私有音频（D8 / 缺陷 F-13）。
+    ///
+    /// 写进协议而不是留给调用方「记得去够实现方的 purge」：门面与协调器只有本协议视图，
+    /// 清理因此是**装配面必然触达**的一步，而不是可选动作。
+    ///
+    /// - Parameter owner: 要清除的那个身份；`nil` 表示「身份已不可知」→ 全量清除。
+    ///
+    /// 默认实现为空操作 —— 只适用于「本准备器不在磁盘上留任何私有音频字节」的实现
+    /// （纯转换型准备器、测试桩）。凡是会把私有音频落盘的实现（`PrivateAudioFetcher`）
+    /// **必须覆盖**本方法，否则上一个账号的音频会在登出后留在沙盒里。
+    func discardPrivateAudio(owner: PrincipalID?) async
+}
+
+public extension PlaybackSourcePreparing {
+    func discardPrivateAudio(owner: PrincipalID?) async {}
 }
 
 /// owner 目录与文件命名（缓存键含 `PrincipalID`，跨账号互不可见）。
@@ -61,6 +79,13 @@ public enum PrivateAudioPath {
     public static let fileExtension = "covaud"
     /// 代次分隔符：`<itemID>@g<generation>`。
     static let generationSeparator = "@g"
+    /// 落盘文件权限位（m12）：只有 owner 可读写 —— 缓存里装的是「仅本人可见」的音频字节，
+    /// 组/其它可读位一个都不给。传输层建文件与准备器提交时共用这一个口径。
+    public static let fileMode = 0o600
+    /// `fileMode` 的 `FileAttributeKey` 形态。
+    public static var fileAttributes: [FileAttributeKey: Any] {
+        [FileAttributeKey.posixPermissions: fileMode]
+    }
 
     /// owner 命名空间（hex，避免任何原始字符进入文件系统）。
     public static func namespace(for owner: PrincipalID) -> String {

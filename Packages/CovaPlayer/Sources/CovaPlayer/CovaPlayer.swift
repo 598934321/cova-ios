@@ -28,6 +28,10 @@ public final class CovaPlayer {
     public let reporter: PlayReportCoordinator
     /// 私有音频本地化器；未注入时为 nil（此时需 Bearer 的条目一律拒绝播放，绝不绕过 D7）。
     public private(set) var fetcher: (any PrivateAudioFetching)?
+    /// 注入的源准备器本体（D8 的清理面 `discardPrivateAudio(owner:)` 挂在它上面，F-13）。
+    private var sourcePreparer: (any PlaybackSourcePreparing)?
+    /// 最近一次绑定的会话视图：只有知道「上一个身份是谁」，才可能把它留下的字节清干净。
+    private var boundSession = PlaybackSessionContext.unauthenticated
 
     private let clock: any CovaClock
     private var activated = false
@@ -72,6 +76,7 @@ public final class CovaPlayer {
             handler: AudioSessionCommandHandler(coordinator: playback)
         )
         self.coordinator = playback
+        self.sourcePreparer = sourcePreparer
         self.fetcher = sourcePreparer as? any PrivateAudioFetching
         // 接线在同步 init 内完成：router 以 weak 持有 coordinator，故不构成循环引用。
         router.bind(playback)
@@ -101,14 +106,41 @@ public final class CovaPlayer {
     public var isTornDown: Bool { tornDown }
 
     /// 绑定会话（D8：登出/换号 → 推进 generation → 丢未决上报 + 清私有音频 + 停播放）。
+    ///
+    /// 缺陷 F-13：这一支以前只丢上报、停引擎、清队列 —— **盘上的私有音频一个字节都没动过**，
+    /// 于是「仅本人可见」的音频在登出/换号后继续躺在缓存里等着被下一次装载复用。
+    /// 清理走 `PlaybackSourcePreparing.discardPrivateAudio(owner:)`（协议面），
+    /// 因此装配里不存在「忘了 purge」的形态。
     public func bindSession(_ session: PlaybackSessionContext) async {
+        let previous = boundSession
+        boundSession = session
         await coordinator.bindSession(session)
         await reporter.bindSession(session)
+        await discardPrivateAudio(of: previous, supersededBy: session)
+    }
+
+    /// 失效判定与 `PlaybackCoordinator.bindSession` 同一口径：登出 / 换号 / generation 推进
+    /// （不含「首次登录」）。`PlaybackSessionContext` 只有 owner 与 generation 两个字段，
+    /// 因此「两者都没变」= 同一个会话视图 = 未失效。
+    private func discardPrivateAudio(
+        of previous: PlaybackSessionContext,
+        supersededBy next: PlaybackSessionContext
+    ) async {
+        guard previous != next, let outgoing = previous.owner else { return }
+        if next.owner == outgoing, let fetcher {
+            // 同一账号只是代次推进：旧代次文件（文件名带 `@g<generation>`）已成孤儿、
+            // 永远取不到，但当前代次的缓存仍然属于本人且可用 → 精确回收，不牵连有效缓存。
+            _ = await fetcher.purgeStale(before: next.generation)
+            return
+        }
+        // 换号 / 登出：上一个身份的私有音频一个字节都不能留在沙盒里。
+        await sourcePreparer?.discardPrivateAudio(owner: outgoing)
     }
 
     /// 注入私有音频本地化器（M1 拿到真实凭证提供器后调用）。teardown 后拒绝（M11）。
     public func setSourcePreparer(_ preparer: any PlaybackSourcePreparing) async {
         guard !tornDown else { return }
+        sourcePreparer = preparer
         fetcher = preparer as? any PrivateAudioFetching
         await coordinator.injectCollaborators(reporter: nil, nowPlaying: nil, sourcePreparer: preparer)
     }
@@ -218,6 +250,9 @@ public final class CovaPlayer {
         await coordinator.teardown()
         await reporter.teardown()
         await audioSession.stop()
+        // D8：私有音频一个字节都不留。两道面都走：协议清理面（覆盖「不是 fetcher 但会落盘」的
+        // 准备器）与取回清理面（覆盖「忘了覆盖默认空实现」的 fetcher）—— 二者都是幂等全清。
+        await sourcePreparer?.discardPrivateAudio(owner: nil)
         if let fetcher {
             _ = await fetcher.purgeAll()
         }

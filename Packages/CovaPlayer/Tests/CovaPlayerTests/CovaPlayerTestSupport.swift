@@ -536,3 +536,235 @@ final class TemporaryDirectory: @unchecked Sendable {
         try? fileManager.removeItem(at: url)
     }
 }
+
+// MARK: - 环 4 私有音频收尾：在途可控传输桩 / 删除失败夹具 / 可观测的会话系统
+
+/// **在途可控**的落盘传输桩（M7 / M8）。
+///
+/// 每次 `writeAudio` 都在写完字节之前挂起，直到测试点名放行 —— 于是「两路是否真的重叠在途」
+/// 成为可确定性观测的事实（`maxConcurrentInFlight`），不需要任何让步或睡眠（D16⑤）。
+/// `release()` 是**粘性**的：已放行之后的新调用直接通过，保证「实现走偏」时测试变红而不是挂死。
+actor GatedPrivateAudioTransport: PrivateAudioTransport {
+    /// 已进入传输的次数（每次调用一次）。
+    let enteredSignal = SignalCounter()
+    /// 已作废在途的次数（M8：`purge*` 真的掐了出口）。
+    let cancelledSignal = SignalCounter()
+
+    private(set) var destinations: [URL] = []
+    private(set) var hosts: [String?] = []
+    private(set) var sentAuthorizations: [Bool] = []
+    private(set) var cancellationCount = 0
+    private(set) var maxConcurrentInFlight = 0
+
+    private var inFlight = 0
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    var bytesToWrite = 24
+    /// 落盘用的字节内容（M7 用它证明「两个调用者拿到的是同一份内容」）。
+    var marker: UInt8 = 0x69
+
+    var callCount: Int { destinations.count }
+    var lastDestination: URL? { destinations.last }
+
+    func writeAudio(
+        from url: URL,
+        authorization: SecretString?,
+        to fileURL: URL,
+        expectedBytes: Int?
+    ) async throws -> PrivateAudioReceipt {
+        destinations.append(fileURL)
+        hosts.append(url.host)
+        sentAuthorizations.append(authorization != nil)
+        inFlight += 1
+        maxConcurrentInFlight = max(maxConcurrentInFlight, inFlight)
+        enteredSignal.bump()
+        await waitUntilReleased()
+        inFlight -= 1
+        // 刻意不带 `attributes:`（与 `StubPrivateAudioTransport` 同形）：
+        // 权限收紧必须由准备器的提交面负责，m12 的断言才杀得掉「提交处漏了收紧」。
+        FileManager.default.createFile(atPath: fileURL.path, contents: payload())
+        return PrivateAudioReceipt(
+            bytesWritten: bytesToWrite,
+            expectedBytes: bytesToWrite,
+            statusCode: 200
+        )
+    }
+
+    func payload() -> Data { Data(repeating: marker, count: max(0, bytesToWrite)) }
+
+    private func waitUntilReleased() async {
+        if released { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            if released {
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
+        }
+    }
+
+    /// 放行全部在途（粘性：之后的调用直接通过）。
+    func release() {
+        released = true
+        let pending = waiters
+        waiters = []
+        for continuation in pending { continuation.resume() }
+    }
+
+    func cancelInFlightTransfers() async {
+        cancellationCount += 1
+        cancelledSignal.bump()
+    }
+}
+
+/// 删除即抛错的文件管理器（m13：删除失败不得被算成「已删除」）。
+///
+/// 尝试次数记在共享的 `SignalCounter` 上而不是自身：`PrivateAudioFetcher.init` 的
+/// `fileManager` 参数是 `sending`（Swift 6：actor 非隔离 init 的所有权转移），
+/// 夹具必须一次性构造、不能被测试再持引用。
+final class ThrowingRemoveFileManager: FileManager, @unchecked Sendable {
+    private let attempts: SignalCounter
+
+    init(attempts: SignalCounter = SignalCounter()) {
+        self.attempts = attempts
+        super.init()
+    }
+
+    override func removeItem(at url: URL) throws {
+        attempts.bump()
+        throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError)
+    }
+}
+
+/// 删除「静默不生效」的文件管理器（m13 的第二支：删除后复核，路径仍在就一个都不算删）。
+final class SilentNoOpRemoveFileManager: FileManager, @unchecked Sendable {
+    private let attempts: SignalCounter
+
+    init(attempts: SignalCounter = SignalCounter()) {
+        self.attempts = attempts
+        super.init()
+    }
+
+    override func removeItem(at url: URL) throws {
+        attempts.bump()
+        // 「成功」但不做任何事：路径仍在磁盘上（旧实现会照报「已删 N 个」）。
+    }
+}
+
+/// 「自身可观测」的桩音频会话系统（M3）：与生产 `AVAudioSessionAdapter` 同形状 ——
+/// 既实现系统接口，又自己注册系统通知。用来断言「门不再依赖调用方额外传 `adapter:` 才接线」。
+final class ObservingStubAudioSessionSystem: AudioSessionSystemInterface, AudioSessionNotificationObserving, @unchecked Sendable {
+    private let lock = NSLock()
+    private var tokens: [Notification.Name: NSObjectProtocol] = [:]
+    private weak var gate: AudioSessionGate?
+    private var pending: AudioSessionSignal?
+
+    /// 收到系统通知的次数（证明通知确实进了观测者，而不是只登记了个空壳）。
+    let forwardedSignal = SignalCounter()
+
+    var configureCount = 0
+    var deactivateCount = 0
+
+    // MARK: AudioSessionSystemInterface
+
+    func configureForPlayback() throws {
+        configureCount += 1
+    }
+
+    func deactivate() throws {
+        deactivateCount += 1
+    }
+
+    func hasActiveOutputPorts() -> Bool { true }
+
+    // MARK: AudioSessionNotificationObserving
+
+    var observedNotificationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return tokens.count
+    }
+
+    func attachNotifications(to gate: AudioSessionGate, routeProbe: any AudioSessionSystemInterface) async {
+        attachSynchronously(to: gate)
+    }
+
+    func detachNotifications() async {
+        detachSynchronously()
+    }
+
+    /// `NSLock` 不得进 async 上下文（与生产适配器同一做法）：注册/注销收敛到同步方法。
+    private func attachSynchronously(to gate: AudioSessionGate) {
+        lock.lock()
+        self.gate = gate
+        for name in AVAudioSessionAdapter.observedNotificationNames where tokens[name] == nil {
+            let token = NotificationCenter.default.addObserver(
+                forName: name,
+                object: nil,
+                queue: nil
+            ) { [weak self] notification in
+                self?.handle(notification)
+            }
+            tokens[name] = token
+        }
+        lock.unlock()
+    }
+
+    private func detachSynchronously() {
+        lock.lock()
+        let registered = Array(tokens.values)
+        tokens = [:]
+        gate = nil
+        lock.unlock()
+        for token in registered {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
+    /// 设定下一次通知要投进门里的信号（默认投「来电开始」）。
+    func configureNextSignal(_ signal: AudioSessionSignal) {
+        lock.lock()
+        pending = signal
+        lock.unlock()
+    }
+
+    var holdsGate: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return gate != nil
+    }
+
+    private func handle(_ notification: Notification) {
+        forwardedSignal.bump()
+        lock.lock()
+        let target = gate
+        let signal = pending ?? .interruption(AudioInterruptionSignal(kind: .began))
+        pending = nil
+        lock.unlock()
+        guard let target else { return }
+        Task { await target.receive(signal) }
+    }
+}
+
+/// **只实现协议清理面**的准备器（F-13 判据）：它不是 `PrivateAudioFetching`，
+/// 所以门面无从「顺手去够实现方的 purge」—— 观测到的调用只可能来自协议要求的那一步。
+actor RecordingPrivateAudioPreparer: PlaybackSourcePreparing {
+    let discardedSignal = SignalCounter()
+    private(set) var discardedOwners: [PrincipalID?] = []
+    private(set) var prepared: [String] = []
+
+    func prepareSource(
+        for item: PlaybackItem,
+        session: PlaybackSessionContext
+    ) async -> Result<PlaybackItem, PlayerError> {
+        prepared.append(item.id)
+        return .success(item)
+    }
+
+    func discardPrivateAudio(owner: PrincipalID?) async {
+        discardedOwners.append(owner)
+        discardedSignal.bump()
+    }
+
+    var discardCount: Int { discardedOwners.count }
+}
