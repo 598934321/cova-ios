@@ -708,6 +708,18 @@ M7 并发去重 + M4 登出清盘接线 + M3 生产音频会话注册）。
 | 隔离评审留痕 | ✅ 第 4/5/6 轮全部存档 | `docs/review-g3e-round4.md` §A–§F（含协调者两次自纠：撤回「5 种绕过全部命中」、撤回「评审式会留过期回显」）|
 | 技术债 | ✅ TD-1…TD-47 在册 | §7；本轮关闭 TD-1/TD-38，新增 TD-45（门面层复现腿缺，M1 补）/ TD-46（矩阵成本）|
 
+### C′. 模拟器验收位（2026-09-22 01:55，`iPhone 17` iOS 26.5 模拟器实机安装并启动）
+
+- 产物：`docs/acceptance/20260922-g3e-app-shell.png`（**tracked**，不放 `.build/` —— 那里被
+  gitignore，`git clean` 一次就没了）。
+- 装进去的就是被测字节：bundle 内 `CFBundleShortVersionString 0.2.49` / `CFBundleVersion 60`
+  / `UIBackgroundModes[0] = audio` / `CFBundleIdentifier cn.covalink.ios`，与 `project.yml`
+  一致（`plutil` 从**产物**里读出来核对，不是从源码里读）。
+- **画面只有一个居中的「Cova」** —— 这是硬边界 8 仍在生效的**直接证据**，不是截图失败：
+  播放器层（队列 / 循环三态 / ±15s / 锁屏 / 上报去重 / 私有音频落盘）没有 UI 可演示，
+  它的正确性只在核心层测试面（394 条）与真机锁屏冒烟（TD-42）上成立。
+  **所以：不要把这屏当成「App 做完了」**，M1 之前它本来就该长这样。
+
 ### D. 明确**未**交付（不要以为已经做完）
 
 1. **G3-e 验收**：要第 7 轮零 Critical 且零 Major。当前是「两半都修完、证据齐、待复审」。
