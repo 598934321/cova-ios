@@ -473,22 +473,30 @@ cd Packages/CovaCore && xcodebuild -scheme CovaCore -configuration Debug \
 
 ---
 
-## 10. 下一步路线
+## 10. 下一步路线（2026-09-22 校正）
 
-1. ~~G3-d 收尾~~（2026-09-20 已验收，见 §9）。
-2. **G3-e：CovaPlayer**（D4/D7）—— 当前唯一未阻塞任务——队列、循环三态、±15s、MPRemoteCommandCenter 锁屏控制、
-   播放上报去重、私有音频先下载到沙盒校验非空再 `file://`。注意 TD-1（覆盖率门槛需 iOS destination
-   方案）与平台中立性（`AVAudioSession` 是 iOS-only，需与 CovaCore 的 macOS 覆盖率口径分开处理）。
-3. **G3 完成判据**：`check.sh` 全绿 + 核心层 ≥80% 覆盖率。
-4. **G1/G2：Figma 方向稿/完整设计**。G1 方向稿已产出待用户验收（§9）；验收后 G2 按
-   `design/screens/inventory.md` 补全约 18 屏（含空/加载/错误/Reduce Motion 变体）。
-   产出规格：`design/tokens.json`、`design/screens/01-home|02-player|03-library.md`、
-   `design/components.md`。**验收前不得写 UI**。
-5. **M1**：发现与播放闭环（先等 NEEDS-1/2/3 解锁登录与播放上报）。
-6. **M2/M3/G4**：见 `docs/PLAN.md` 与 `docs/release-runbook.md`。
+1. ~~G3-a/b/c/d~~ 已验收。~~G3-e 的实现与环 4 修复~~ 已入库（代码锚点 `022a33a`）。
+2. **G3-e 只剩环 3 的最后一道门**：第 7 轮全新隔离复审给出 **0 Critical 且 0 Major** →
+   进环 5 落证（勾 `docs/PLAN.md`、更新 §0/§3/§7、刷模拟器产物到 **tracked** 路径再截图、
+   交付清单 §14 收口）。仍有 Critical/Major → 按「≤8 条 finding + 分组 commit」派第 12 批，
+   且**报告先落盘再派单**（§13 的教训，已写进 `docs/EXECUTION-PROMPT.md` 环 4）。
+   ~~TD-1~~ 已清偿：播放器层覆盖率走 `Coverage.profdata` + `llvm-cov`，干净 clone 可复现。
+3. **G3 完成判据**：`check.sh` 十步全绿 + 核心层 ≥80% —— 现已满足（95.28% / 94.99%），
+   **但 G3 整体不算完成**：`CovaUI`（tokens→Swift、玻璃材质、动效）与 `CovaFeature` 属
+   核心层第 3/4 层，被硬边界 8 挡住，必须等 G2 用户验收。
+4. **轨道 B（外部依赖，卡住后面所有里程碑）**：G1 方向稿用户已裁**未验收**；
+   G2 全量规格 21 份已代产出（**偏离已登记 D17，限期 M1 前补验**）。
+   下一步动作在用户侧：逐屏验收 → 未过格回炉 → 才允许写 UI。
+5. **M1（发现与播放闭环）**：被 ①G2 验收 ②NEEDS **#1**（登录 `user` DTO 缺字段）
+   **#2**（`app-ios` 不在播放上报 allowlist）**#3**（`/api/auth/me` 的 entitlements 形态）
+   **#15**（私有音频签名地址主机形态）四把锁挡住。
+6. **M2/M3/G4**：见 `docs/PLAN.md` 与 `docs/release-runbook.md`；G4 侧另计 NEEDS
+   **#4**（账号删除，提审硬要求）、**#5**（Sign in with Apple，仅当引入第三方登录）、
+   D12 的合规评审，以及真机冒烟 TD-42/TD-44/TD-45/TD-47。
 
-**可并行的未阻塞工作**：G3 核心层（不涉 UI）。**被阻塞的**：任何 UI（等 G1/G2）、
-真实登录联调（等 NEEDS-1）、播放上报（等 NEEDS-2）、账号删除（等 NEEDS-4，G4 前必需）。
+**可并行的未阻塞工作**：G3-e 收尾（评审 + 落证）、TD-47 的机制化、门面层复现腿（TD-45）。
+**被阻塞的**：任何 UI 代码（G2 未验收）、真实登录/上报联调（NEEDS #1/#2/#3）、
+账号删除与下载续传（#4/#6）。
 
 ---
 
@@ -669,7 +677,7 @@ M7 并发去重 + M4 登出清盘接线 + M3 生产音频会话注册）。
 
 | 项 | 状态 | 证据 |
 |---|---|---|
-| 后端缺口登记 | ✅ 22 条在册（本轮新增 #14–#22） | `docs/NEEDS.md`；M1/G4 的硬阻塞项：#1 登录 DTO、#2 上报 allowlist、#15 私有音频主机形态、#4 账号删除 |
+| 后端缺口登记 | ✅ 22 条在册（本轮新增 #14–#22） | `docs/NEEDS.md`；M1 的硬阻塞项：#1 登录 DTO、#2 上报 allowlist、#3 entitlements 形态、#15 私有音频主机形态；G4 侧：#4 账号删除、#5 Apple 登录（仅当引入第三方登录） |
 | 锁定决策 | ✅ D1–D18 | `docs/decisions.md`；本轮新增 **D17**（闸门偏离与限期补验）、**D18**（终态唯一来源 = 计数账）|
 | 隔离评审留痕 | ✅ 第 4/5/6 轮全部存档 | `docs/review-g3e-round4.md` §A–§F（含协调者两次自纠：撤回「5 种绕过全部命中」、撤回「评审式会留过期回显」）|
 | 技术债 | ✅ TD-1…TD-46 在册 | §7；本轮关闭 TD-1/TD-38，新增 TD-45（门面层复现腿缺，M1 补）/ TD-46（矩阵成本）|
