@@ -91,18 +91,25 @@ Apple 许可已接受；若新机器报 `You have not agreed to the Xcode licens
 
 - 只允许追加断言，不允许为了让门禁变绿而放宽；测试数量下限在 `Scripts/test-count-baseline.env`，
   新增测试要同步抬高基线（随 commit 进入版本递增与人工审查）。
-- **硬边界 8 的机械化仍在收敛中（第 3 次复现，已换判据形态）**：3/10 目前用「单一词源
-  `PLAYER_UI_MODULES` 派生三层判据」（字面 import / 符号 / 依赖与产物）。
+- **硬边界 8 的机械化：已落地为白名单形态**（`944ba98`，TD-38 关闭）：3/10 用「单一词源
+  `PLAYER_UI_MODULES` 派生三层判据」（字面 import / 符号 / 依赖与产物），非测试 target 只允许
+  `Foundation / AVFoundation / CovaCore / MediaPlayer`，测试 target 再加 `XCTest` —— **清单是从
+  实际 import 全集扫出来的**，刻意不预先塞未使用模块，因此删任一项必红、加任一 UI 模块也必红。
   ⚠️ **撤回本手册此前的不实表述**：「正反对照均已实测（5 种绕过形态全部命中）」只在
   当时那 5 个夹具上成立。隔离复审随后连续打穿：第 2 轮 `import AVKit` +
   `AVPlayerViewController` 全绿；第 3 轮 `import WebKit` + `WKWebView` 全绿，
   `import SafariServices` / `import MessageUI` 也各自全绿；把 `import UIKit` + `UIView`
   只放进播放器**测试** target 同样三层皆不可见（L1 只扫非测试 target、符号层只扫产品
   objdir、dylib 层对 UIKit 整名豁免）。
-  **根因是判据形态：黑名单靠人列举必然漏** → 正在改为**白名单**（播放器层含测试 target
-  只允许固定 import 集合，其余一律红），并把 UIKit 豁免收窄为「UIKit 且 weak」
-  （实测：合法态测试二进制是 weak UIKit，任何直接引用后变强依赖 —— weak 承载信号）。
-  反向守卫（清空 `Sources` 即失败）保留。
+  **根因是判据形态：黑名单靠人列举必然漏** —— 这条是本节最重要的一句：连续三轮「补一个
+  模块进黑名单」都在追漏，换成白名单之后才变成结构性防线。当前三层判据都纳入**测试
+  target** 的扫描域与 objdir，dylib 层的 UIKit 豁免收窄为「UIKit 且 weak」（合法态测试
+  二进制带的是 weak UIKit，一旦被直接引用就变强依赖 → 红）。反向守卫（源集合被清空即
+  失败）保留。
+  **仍然没被 mechanize 的两件事（别再当成已闭合）**：① 反射 / `dlopen` 取 UI 类不在拦
+  截范围（TD-41，本仓威胁模型是防无意回归、不防蓄意绕过）；② 模拟器无法验证控制中心 /
+  耳机按键对「已受理但未完成」的真实呈现（TD-42，G4 前真机冒烟）。步骤号说明：脚本用
+  **0/10…9/10** 共十步（零基），不存在 `10/10` 那一步，别按表外又找一步。
 - 判据来自**权威机器可读产物**（`dump-package` / `.SwiftFileList` / `xcactivitylog` / `xcresult` /
   `plansrc lcov`），不依赖对源码文本的正则——这是 G0 期间 8 轮对抗审查换来的结论，别再退回文本正则。
 - **误红与漏检同等严重**：任何新断言都要有「合法工程对照不得误红」用例（TD-9）。
