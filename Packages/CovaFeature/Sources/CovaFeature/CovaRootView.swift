@@ -24,6 +24,13 @@ public struct CovaRootView: View {
         }
     }
 
+    /// 预览/走查钩子 2（同一性质）：`COVA_PREVIEW_SHEET=login|player` 在 bootstrap 之后直接展开
+    /// 对应 sheet —— 登录页与全屏播放器没有 Tab 入口，不这样就没法逐屏截图。
+    private static func previewSheet() -> String? {
+        ProcessInfo.processInfo.environment["COVA_PREVIEW_SHEET"]
+            ?? UserDefaults.standard.string(forKey: "COVA_PREVIEW_SHEET")
+    }
+
     public var body: some View {
         Group {
             switch session.authPhase {
@@ -35,7 +42,14 @@ public struct CovaRootView: View {
         }
         .environment(session)
         .preferredColorScheme(themeMode.colorScheme)
-        .task { await session.bootstrap() }
+        .task {
+            await session.bootstrap()
+            switch Self.previewSheet() {
+            case "login": session.loginPresented = true
+            case "player": session.playerSheetOpen = true
+            default: break
+            }
+        }
         .overlay(alignment: .top) { toastOverlay }
     }
 

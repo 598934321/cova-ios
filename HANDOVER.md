@@ -10,16 +10,16 @@
 
 | 项 | 值 |
 |---|---|
-| 当前锚点 | HEAD = 本 commit（M1 竖切 + 第 14 批 R9-1 修复合入，代码锚点 `01f35c4`），工作树干净（另有 1 个 stash，**用户裁决保留不动**，见 §9） |
-| 版本 | `CFBundleShortVersionString 0.2.51` / `CFBundleVersion 62`（`project.yml`） |
-| 阶段 | G0 已落证；G3（核心层）**G3-a/b/c/d 已验收**，**G3-e 处于环 3↔环 4 收敛末段**：已跑 7 轮全新隔离评审。第 7 轮**不放行**（0 Critical / 1 Major / 4 Minor，那条 Major 是 11B 自己留下的「修一半」），已由第 12 批收口并按评审要求在其探针上重验，**待第 8 轮复审确认「零 Critical 且零 Major」才算验收**。G1 方向稿**用户明确裁决未验收**；G2 全量规格由本仓代产出（`design/screens/` 18 屏 + 12 号屏拆 a–d，索引见 `design/screens/inventory.md`）**待用户验收** |
-| 门禁 | `Scripts/check.sh` **十步** EXIT=0（协调者在第 11 批 B 最终字节上亲跑）：`CovaTests` 2/0、`CovaCoreTests` 372 / 95.28%、`CovaPlayerTests` **397/0/0 跳过** / **CovaPlayer 3250 行 = 95.00%**（15/15 源文件无条件归因）、基线 `PLAYER_MIN=397`、零 flake 189,400 执行/0 失败；禁 UI 判据已改**白名单形态**并含测试 target 三层扫描（TD-38/TD-41）|
-| 设计闸门 | G1 **未验收**（用户裁决）/ G2 代产出**待验收** → **禁止写任何 UI 代码**（硬边界 8；门禁第 6 步机制化把关，不是口头承诺）|
-| 唯一未阻塞工作 | G3-e 收尾（第 7 轮隔离复审 + 环 5 落证）。**M1–M3 / G4 全部阻塞**在外部依赖上：① G2 用户验收（硬边界 8 的 UI 禁令）；② 后端 NEEDS —— #1 `AUTH-LOGIN-TOKENS`（`user` DTO 缺 `covaId`/`phone`/`isArtist`/`isPartner`，M1 登录闭环）、#2 `PLAY-SOURCE-MOBILE`（`app-ios` 不在播放上报 allowlist，M1 上报）、#15 `PRIVATE-AUDIO-HOST-SHAPE`（私有音频主机形态，G3-e 只按守卫开发、不冒充线上）、#4 `ACCOUNT-DELETE`（G4 提审硬要求）|
-| 下一步 | 见 §9/§13：G3-e 第 7 轮复审放行 → 环 5 落证 + 交付清单 + 模拟器验收位；轨道 B 等用户对 G2 全量规格的验收 |
+| 当前锚点 | HEAD = `f6990fb`（第 15 批 R10-1 根因修法 `abc9c8a` + D20 登录容忍 `f6990fb`；工作树另有走查钩子待提交），另有 1 个 stash **用户裁决保留不动**（见 §9） |
+| 版本 | `CFBundleShortVersionString 0.2.53` / `CFBundleVersion 64`（`project.yml`） |
+| 阶段 | G0 已落证；G3-a/b/c/d 已验收；**G3-e 处于环 3↔环 4 收敛末段**：已跑 **10 轮**全新隔离评审。第 8 轮 b 不放行（R8B-1，已修）；第 9 轮骨架不放行（R9-1，已修）；第 10 轮骨架 provisional 不放行（R10-1 已修 / R10-2 登记）。**第 9、10 轮实例都死于平台额度耗尽（credit usage limit），终值未回填 ⇒ G3-e 仍未验收，且当前阻塞项是评审能力本身**。G1 方向稿用户裁决未验收；G2 全量规格由本仓代产出待验收；**D19 授权后 M1 竖切已实现并可在模拟器跑真实数据** |
+| 门禁 | `Scripts/check.sh` 十步 **GATE_EXIT=0**（协调者在 `f6990fb` 字节上亲跑）：`CovaTests` 2/0、`CovaCoreTests` 372/0 / **95.31%**、`CovaPlayerTests` **400/0/0**（= `PLAYER_MIN` 400，恰好相等）/ **CovaPlayer 3276/3450 = 94.96%**（15/15 源文件无条件归因）、产物保真 0.2.53(64) minOS 26.0 bg=audio、禁 UI 白名单三层全过 |
+| 设计闸门 | G1 **未验收**（用户裁决）/ G2 代产出**待验收**；**D19（2026-09-22 用户授权）扩档**：允许按代理产出的 G2 规格写 UI，验收次序改为「先看可运行效果、再逐屏提修改意见」，补验期限 = 首次反馈后一周 |
+| 唯一未阻塞工作 | G3-e 收尾：**等额度恢复后派第 11 轮全新隔离复审**（0 Critical 且 0 Major 才算验收）→ 环 5 落证。M1 已交付可跑形态（`docs/acceptance/m1-20260922/`）；M2/M3/G4 仍阻塞在 NEEDS #1/#2/#3/#15 与用户逐屏反馈 |
+| 下一步 | ① 用户在模拟器里看 M1 效果并给修改意见（D19）；② 额度恢复后派第 11 轮复审（任务书 = §J/§K + 第 16 批清单）；③ 第 16 批：R10-2 / R9-3 的「集次最小寿命」产品口径、R9-2 处置、TD-45/TD-47 |
 
-**最重要的一句**：本仓一切改动走「五环流程 + 隔离评审」（§4）。不要跳过门禁、不要自评自过、
-不要在 G1/G2 未验收时写 UI。
+**最重要的一句**：本仓一切改动走「五环流程 + 隔离评审」（§4）。不要跳过门禁、不要自评自过；
+D19 放宽的只是 UI 的**验收次序**，不是评审纪律 —— G3-e 的验收判词仍只能由全新隔离实例给出。
 
 ---
 
@@ -642,7 +642,41 @@ M7 并发去重 + M4 登出清盘接线 + M3 生产音频会话注册）。
   不在批次进行中抬基线（避免量一棵移动中的树），**收尾时必须**：整轮 `check.sh` EXIT=0
   复核 → 把 `PLAYER_MIN` 抬到当时终值 → 再派第 5 轮隔离复审。
 
-### 环 4 → 环 3 现场快照（2026-09-22 03:29 更新，协调者，供 `/goal resume` 接手）
+### 环 4 → 环 3 现场快照（2026-09-22 10:45 更新，协调者，供 `/goal resume` 接手）
+
+**当前没有在跑的东西。下一件事 = 等额度恢复后派第 11 轮全新隔离复审**（任务 #15）。
+
+**第 15 批已入库 `abc9c8a`（R10-1 根因修法）**：`loadCurrent` 入口在换掉「另一首已落地曲目」时
+先摁旧声（新物理台账 `lastLandedItemID`：只在装载成功时写，teardown/清队停止/移除当前项时清，
+**不被 `invalidateInFlightLoad` 抹掉**）；被取代的重播腿一律不碰引擎。400/0，`PLAYER_MIN` 400。
+**纪律自陈**：`15781e1` 曾短暂带一条红用例（会合信号 `target:1` 写错，`requestSignal` 是累计计数）；
+红因是用例不是实现，已改 `target:2` + 断言在途那趟确实是 b。
+
+**第 9 / 10 轮评审实例都死于平台额度耗尽**（`credit usage limit`），但骨架判词已落盘并存档
+（`docs/review-g3e-round4.md` §J / §K）：第 9 轮 0C/1M(R9-1)/2m，第 10 轮 provisional 0C/1M(R10-1)/1m(R10-2)。
+R9-1 由第 14 批修、R10-1 由第 15 批修；**R10-2 与 R9-3 同族**（窗口内 ⏭ 二次 `closeEpisode`+`report`，
+≈0 秒集次），要「集次最小寿命 / 同集次内重播不新起幂等键」这条**产品口径**，登记第 16 批，不擅改上报账。
+**⇒ G3-e 仍未验收**；按纪律协调者不得自拼判词，第 11 轮必须等额度。
+
+**D20 已入库 `f6990fb`（登录解码容忍）**：`AuthUser` 手写 `init(from:)` —— `isArtist/isPartner` 缺席读
+`false`（保守），`email/covaId/phone` 缺席读 `nil`；`id/name/role` 仍严格必需（缺席照旧
+`.decoding(field:)`）。用例是改写不是删除（372 不变）。NEEDS-1 仍开放。
+**动机**：旧口径让真机永远登不进来 ⇒ 登录后的 D7 下载与 P5 上报链路用户看不见，抵触 D19。
+
+**M1 可跑形态已交付**：`docs/acceptance/m1-20260922/`（iPhone 17 Pro，iOS 26.5，真实 covalink.cn 数据）
+= 01-home（游客门控卡 + 推荐歌单/场景精选）、02-library（筛选 chips + 列表 + 收藏心）、02-mine、
+03-login（sheet）、03-player（全屏播放器，游客态空态）。走查钩子 `COVA_PREVIEW_TAB` /
+`COVA_PREVIEW_SHEET`（env 或 UserDefaults，仅模拟器走查用，§14 已登记）。
+
+**第 16 批清单（等第 11 轮后并批）**：R10-2 / R9-3 集次口径、R9-2（hold 意图判据的死判据定性）、
+TD-45（门面层复现腿）、TD-47（SAFETY 标记机制化）、`.env` 历史口径注释。
+
+**用户侧待拍板（§14 D′）**：G2 逐屏验收 / NEEDS #1#2#3#15 推动 / ⏭-while-playing 口径确认 /
+版本递增口径裁决 / 真机冒烟（TD-42/44）/ 登录账号（有了才能看到登录后播放与上报）。
+
+---
+
+### 环 4 → 环 3 现场快照（2026-09-22 03:29 更新，协调者，历史）
 
 **当前没有在跑的东西；下一件事是第 13 批的收口尾**（任务 #14，核心已入库 `7bd24e6`）。
 R8B-1 已修并绿（398/0）：(a) 腿只在「台账开着**且**引擎没装着被宣称项」时否决。
@@ -731,7 +765,7 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 
 ---
 
-## 14. 交付清单（截至 2026-09-22，代码锚点 `022a33a`）
+## 14. 交付清单（截至 2026-09-22 10:50，代码锚点 `f6990fb` + 待提交的走查钩子）
 
 > 每行都给了**取证位置**，不接受「据说已完成」。级别：✅ 已交付并有机检证据 / ⏳ 已产出待外部
 > 动作 / ⛔ 未开始且被外部依赖阻塞。
@@ -740,8 +774,8 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 
 | 项 | 状态 | 证据 |
 |---|---|---|
-| `CovaCore`：DTO / API client（15s 超时 + single-flight refresh）/ SSE / 幂等键 / Keychain / owner 绑定持久化 | ✅ G3-b/c/d 已验收 | 门禁 6/10：`CovaCoreTests` 372 passed / 0 failed；7/10 行覆盖 **95.28%**；平台中立性静态不变量在 3/10 |
-| `CovaPlayer`：队列 / 循环三态 / ±15s / 锁屏（`MPRemoteCommandCenter`）/ 上报去重 / 私有音频 D7 硬顺序 | ⏳ **实现完成，验收待第 7 轮隔离复审**（0 Critical 且 0 Major 才算过） | 8/10：`CovaPlayerTests` **394/0/0 跳过**（基线 `PLAYER_MIN=394` 与实测相等）；9/10：`CovaPlayer` **3203/3372 = 94.99%**（15/15 源文件无条件归因）；D4 ±15s = `MPNowPlayingController.skipInterval`；D7 顺序 = `PrivateAudioFetcher.localizedURL` 的出口守卫→落盘→完成性校验→原子 move→`file://` |
+| `CovaCore`：DTO / API client（15s 超时 + single-flight refresh）/ SSE / 幂等键 / Keychain / owner 绑定持久化 | ✅ G3-b/c/d 已验收 | 门禁 6/10：`CovaCoreTests` 372 passed / 0 failed；7/10 行覆盖 **95.31%**；平台中立性静态不变量在 3/10 |
+| `CovaPlayer`：队列 / 循环三态 / ±15s / 锁屏（`MPRemoteCommandCenter`）/ 上报去重 / 私有音频 D7 硬顺序 | ⏳ **实现完成（含第 14/15 批根因修法），验收待第 11 轮隔离复审**（第 9/10 轮实例死于平台额度，骨架判词见 §J/§K；0 Critical 且 0 Major 才算过） | 8/10：`CovaPlayerTests` **400/0/0**（基线 `PLAYER_MIN=400` 与实测恰好相等）；9/10：`CovaPlayer` **3276/3450 = 94.96%**（15/15 源文件无条件归因）；D4 ±15s = `MPNowPlayingController.skipInterval`；D7 顺序 = `PrivateAudioFetcher.localizedURL` 的出口守卫→落盘→完成性校验→原子 move→`file://` |
 | 门禁 `Scripts/check.sh`（**十步，零基 0/10…9/10**） | ✅ 成型且 fail-closed | 最终字节 EXIT=0；判据只消费权威机器可读产物；硬边界 8 已机制化为**白名单**（`944ba98`，TD-38 关闭） |
 | 零第三方依赖 | ✅ | 2/10 + 3/10 断言无远程包 / 无框架 / 无二进制制品 |
 
@@ -752,14 +786,14 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 | G1 Figma 方向稿 | ⛔ **用户裁决：未验收**（2026-09-21） | 见 §9 现状块与用户对话记录 |
 | G2 全量逐屏规格 | ⏳ 本仓代产出 **21 份**，**待用户逐屏验收** | `design/screens/` 01–18（12 号屏拆 a–d）↔ `inventory.md` 引用**双向零差集**；偏离已登记 **D17**（限期补验 = M1 开工前）|
 | 组件库 / tokens | ✅ 文档与变量就绪 | `design/components.md`、`design/tokens.json`（Figma Variables 可导入）|
-| UI 代码 | ⛔ **一行都不许写**（硬边界 8 生效中，门禁机制化把关） | 播放器层 import 全集只有 4 个非 UI 模块 |
+| UI 代码 | ✅ **M1 竖切已实现**（D19 授权：按代理产出的 G2 规格写，验收次序改为「先看效果再逐屏提意见」） | `Packages/CovaUI`（tokens/组件/状态件）+ `Packages/CovaFeature`（会话/目录/首页/曲库/播放器/登录与我的）；可跑证据 = `docs/acceptance/m1-20260922/` 五张真机数据截图；**播放器层仍零 UI import**（白名单四层判据在 3/10 与 9/10） |
 
 ### C. 契约与流程记录
 
 | 项 | 状态 | 证据 |
 |---|---|---|
 | 后端缺口登记 | ✅ 22 条在册（本轮新增 #14–#22） | `docs/NEEDS.md`；M1 的硬阻塞项：#1 登录 DTO、#2 上报 allowlist、#3 entitlements 形态、#15 私有音频主机形态；G4 侧：#4 账号删除、#5 Apple 登录（仅当引入第三方登录） |
-| 锁定决策 | ✅ D1–D18 | `docs/decisions.md`；本轮新增 **D17**（闸门偏离与限期补验）、**D18**（终态唯一来源 = 计数账）|
+| 锁定决策 | ✅ D1–D20 | `docs/decisions.md`；本轮新增 **D19**（用户授权「先看效果再提意见」，UI 验收次序扩档）、**D20**（登录解码容忍后端缺字段：布尔缺席读 false 的保守方向，`id/name/role` 仍严格必需）|
 | 隔离评审留痕 | ✅ 第 4/5/6 轮全部存档 | `docs/review-g3e-round4.md` §A–§F（含协调者两次自纠：撤回「5 种绕过全部命中」、撤回「评审式会留过期回显」）|
 | 技术债 | ✅ TD-1…TD-47 在册 | §7；本轮关闭 TD-1/TD-38，新增 TD-45（门面层复现腿缺，M1 补）/ TD-46（矩阵成本）|
 
@@ -787,6 +821,18 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
   （不静默丢包，未决可补发）；D12 只展示余额、无购买入口；错误态点名 NEEDS 编号不伪装网络错误。
 - **待用户看效果后反馈**（D19 的补验路径）：以上截图与真机/模拟器走查即「效果」，
   修改意见回炉期限 = 首次反馈后一周内。
+
+### C‴. M1 可跑形态截图（2026-09-22 10:44，`iPhone 17 Pro` iOS 26.5，**真实 covalink.cn 数据**）
+
+- `docs/acceptance/m1-20260922/`（**tracked**）：`01-home.png`（游客门控卡 + 推荐歌单 + 场景精选，
+  封面与曲目全部来自线上接口）、`02-library.png`（搜索 + 7 枚筛选 chips + 列表含时长/BPM/收藏心）、
+  `02-mine.png`（游客态：未登录卡 + 四个入口）、`03-login.png`（登录 sheet）、
+  `03-player.png`（全屏播放器，游客态空态：传输键 + ±15s + 循环三态全在）。
+- 逐屏走查钩子（**仅模拟器走查用**，生产不设置即默认）：`COVA_PREVIEW_TAB=home|library|mine`
+  决定首屏 Tab；`COVA_PREVIEW_SHEET=login|player` 在 bootstrap 后展开对应 sheet。
+  两者都读 env 或 UserDefaults（`xcrun simctl spawn <dev> defaults write cn.covalink.ios …`）。
+- **这些截图不是「开发完成」的证据**，是「M1 竖切可跑」的证据：登录后播放/上报仍阻塞在
+  NEEDS-1（登录账号 + 后端补字段）/ NEEDS-2（`app-ios` 上报 allowlist）/ NEEDS-15（私有音频主机形态）。
 
 ### D′. 需要用户拍板的清单（这些是「完成开发」的真实卡点，代理不能自裁）
 
