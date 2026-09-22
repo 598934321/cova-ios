@@ -340,3 +340,91 @@ MIN-R7-4 两处错误注释；`test-count-baseline.env` 注释历史口径。
 **仍未验收。** 第 13 批须修 R8B-1（并顺手清四条 Minor），然后派**第 9 轮**。
 评审给的下一轮靶子：`.held` / `.mayReplay` 两腿的**意图读法**要收敛成一处
 （与 MIN-R7-2 的态集合同源问题），以及「`holdCurrentItemWithoutPlaying` 何时允许碰引擎」。
+
+---
+
+## §J 第 9 轮复审（HEAD `70cf5c1`）：**终值未回填** —— 评审实例死于额度耗尽，骨架判词「不放行（暂定）0C/1M/2m」
+
+> 本节是**评审实例自己落盘的骨架**（`/tmp/r9-skeleton.md`，06:27 落盘）+ 协调者据外部状态的
+> 事实链补记。骨架先落盘的纪律（§H 接手指令③）本轮**救了判词**：实例死后判词仍在磁盘上。
+
+**事实链（协调者据外部状态记录，非评审自述）**
+- 取证环境：独立克隆 `/tmp/r9-clone` @ `70cf5c1`，独立 `-derivedDataPath /tmp/dd-r9`，
+  模拟器 `iPhone 17 Pro Max`；探针只写在克隆里，主仓一字未改。
+- 它自跑了 `Scripts/check.sh`、`PlaybackCoordinatorTests ×1000`、全量 ×200、两条变异
+  （MAJ13-a (a) 腿回退 / MAJ13-b hold 意图回退），并写了自建探针 `R9ProbeTests`
+  （含自写 `R9SeekGatedEngine`：在 `seek` 上确定性挂起，零睡眠）。日志在 `/tmp/r9fix*.log`、
+  `/tmp/r9-probe.log`、`/tmp/r9-chain.out`。
+- 死亡原因：**平台额度耗尽**（`You've reached your credit usage limit`），不是轮次上限；
+  骨架里 ④ 独立复跑的数字与 ⑤ 的两条「未证实」因此**永远没有回填**。
+
+**评审的判词（骨架原文口径）**：**不放行（暂定）**，0 Critical / **1 Major** / 2 Minor。
+唯一 Major **R9-1** 不在第 13 批改过的两行里，而是第 13 批那把 doctrine 的**漏点**：
+`apply(.repeated)` 的回复核在「被取代」时**无条件** `await engine.pause()` ⇒ 一次已被用户取代的
+⏭ 把用户**刚刚起播的另一首**摁停（用户从未暂停），而读数仍 `.playing`、那次 ⏭ 还回
+`.advanced(to: 新曲)`（→ 锁屏 `.success`）。第 13 批把「摁引擎前先问意图」落在
+`holdCurrentItemWithoutPlaying`（该处经论证 + 变异实测**无可达行为差**），却没落在真正可达的这一处。
+
+**评审同时确认关闭的（骨架 ③）**
+- **R8B-1 = 真落地**（不只是满足当时用例）：(a) 腿经 P-A / P-C / P-B / P-E 四向夹住；
+  「放行过宽」方向**打不中** —— `engineEpisodeItemID` 唯一写点在 `engine.load` 返回之后，
+  且每个改当前项的入口都先 `invalidateInFlightLoad()` ⇒「在途的是别的条目而引擎账本写着被宣称项」
+  结构性不可达。
+- **第 13 批态集合收敛 = 真落地且行为中性**：5 处替换前后集合字面相同；唯一行为改动是 hold 的
+  意图判据（R9-2）。
+- R9-2（Minor）：hold 的意图判据在当前字节上**无可达行为差**，属防御性加固；并指出第 13 批
+  commit message 把它与 R8B-1 的闭合并列 = **归因过重**（真闭合点是 (a) 腿）。
+- R9-3（Minor/观察）：窗口内 ⏭ 产生「起播上报 + 集次结束 + 再起播上报」两次写（≈0 秒集次）；
+  需「集次最小寿命」口径才能收敛，属产品裁决，**本轮不判缺陷**。
+
+**协调者处置（第 14 批，commit `5237b2c`）**：R9-1 已修在根上 —— 被取代的重播腿改为
+**一律不碰引擎**（`return advanceOutcome(wrapped: false)`），并新增永久用例
+`testSupersededReplayLegMustNotPauseTheUsersNewPlayback`（构造：单元素 `.one` 正在响时发 ⏭，
+重播腿挂在 `engine.seek` 的 actor hop 上，挂起窗口里用户另起一播 ⇒ 恢复时必须**看见**新一代在途）。
+R9-2 / R9-3 登记入第 16 批清单，未擅改口径。
+
+**因此**：第 9 轮**没有产生终值判词**；按本仓纪律，协调者不得用 `/tmp` 日志自行拼判词
+（自评不算验收）。R9-1 的闭合只能由**下一轮**独立确认。
+
+---
+
+## §K 第 10 轮（验收轮）复审（HEAD `01f35c4`）：**终值未回填** —— 同一死法，骨架判词「不放行（provisional）」
+
+> 同样是评审实例自己落盘的骨架（`/tmp/r10-skeleton.md`，06:50 落盘）+ 协调者事实链补记。
+
+**取证环境**：独立克隆 `/tmp/r10-clone` @ `01f35c4`；门禁 derivedData = 克隆内 `.build/check`；
+自跑 xcodebuild 用 `-derivedDataPath /tmp/dd-r10`（与第 9 轮 dd-r9 / iPhone 17 Pro Max 不共用）；
+模拟器 `iPhone 17`。主仓未改一字。
+
+**评审自跑的门禁（骨架 ③，已回填的数字）**：`Scripts/check.sh`（`COVA_SIM_NAME="iPhone 17"`）
+= **EXIT=0**；5/10 CovaTests 2/0/0（基线 2）；6/10 CovaCoreTests **372/0/0**（基线 372）；
+8/10 CovaPlayerTests **399/0/0**（基线 399，**恰好相等**）；7/10 CovaCore 1839/1930 = **95.28%**；
+9/10 CovaPlayer 3266/3445 = **94.80%**（≥94.80% 达标）；产物保真 0.2.51(62) / minOS 26.0 /
+bg=audio；无 UI 不变量三层全过。日志 `/tmp/r10-ev/check.log`。
+**未跑完的**：`×1000` 协调者用例、全量 `×200`、变异 MAJ-R10-a（把回复核条件改回无条件 pause）。
+
+**判词（provisional，原文口径）**：**不放行（0 Critical 且 0 Major 不成立）**。
+
+| 编号 | 级别 | 现象（评审指认的行号） | 修法指认（评审原文） |
+|---|---|---|---|
+| R10-1 | **Major（候选）** | `PlaybackCoordinator.swift:852-872`：重播腿**先动引擎后复核**（`engine.seek(0)`+`engine.play()` 在守卫之前），而补救 pause 的条件是 `inFlightLoad == nil && engineEpisodeItemID == claimed`。窗口内用户「暂停 → 换曲/移除」时账本已换（`loadCurrent` 立刻 `engineEpisodeItemID = nil`；`invalidateInFlightLoad`），补救 pause 被跳过，而那句陈旧 `engine.play()` 已把旧项重新按响；`loadCurrent` 入口**不摁引擎** ⇒ 「读数说在装新曲、耳朵里还是旧曲」，私有音频长下载时窗口以分钟计 | 补救判据不应问「账本是否仍等于 claimed」，应问「引擎此刻是否仍物理持有 claimed 且无人负责摁它」；或把重播腿改成**先复核再动引擎** |
+| R10-2 | Minor（候选） | 同一段：陈旧重播腿在「新一代已把**同一件**重新装回引擎」时守卫**通过**（`generation: nil` ⇒ 无代际归因），于是执行 `closeEpisodeIfNeeded()`+`reportEpisodeIfNeeded()` ⇒ 一次连续播放被拆成两集次（第二个 ≈0 秒）并二次 `playbackStarted`，与 R9-3 同族（P5「一次实际播放一个幂等键」） | 重播腿复核点带上「本次重播所属代际/装载序号」，或复核通过后不再 `closeEpisode` |
+
+**协调者处置（第 15 批，commit `15781e1` + 本批未提交部分）**：按评审给的**第一条**修法指认落在根上 ——
+① `loadCurrent` **入口**在换掉「另一首已落地曲目」时先摁旧声（新增物理台账 `lastLandedItemID`：
+它只在装载成功时写、在 teardown / 清队停止 / 移除当前项时清，**不被** `invalidateInFlightLoad`
+抹掉，因此能回答「引擎上一次真正拿到的是哪一件」这个物理事实）；② 被取代的重播腿因此**一律不碰引擎**
+（与第 14 批同一把口径）。永久用例：`testSwitchingTrackPausesTheOldAudioAtLoadEntry`
+（换件装载入口必须摁住旧声）、`testSupersededReplayLegMustNotPauseTheUsersNewPlayback`、
+`testReportInFlightWindowKeepsReplaySeekAndEventsHonest`。
+**R10-2 不在本批修**：它要的是「集次最小寿命 / 同一集次内重播不新起幂等键」这条**产品口径**，
+与 R9-3 同源；擅改上报账会动 P5 的既有裁决，登记入第 16 批 + 待用户裁决。
+
+**纪律自陈（协调者）**：`15781e1` 曾短暂携带一条**红**用例（`testSwitchingTrackPausesTheOldAudioAtLoadEntry`
+的会合信号写成 `target: 1`，而 `GatedSourcePreparer.requestSignal` 是**累计**计数 —— a 那趟装载早已
+bump 过 ⇒ 前置假成立、读到 a 的 `.playing`）。这违反本仓「提交必须全绿」的规矩；红的原因是**用例写错**
+而非实现写错，已在本批修正（`target: 2` + 断言在途那一趟确实是 b）。
+
+**因此**：第 10 轮同样**没有产生终值判词**。G3-e **仍未验收**：两轮验收轮的 Major 都已修在根上并各带
+永久用例，但「一轮 0 Critical 且 0 Major」这个判词必须由**下一轮全新隔离实例**给出，而当前平台额度
+已耗尽（两个实例都死在同一句 `credit usage limit`），**评审能力本身是阻塞项**。

@@ -310,6 +310,10 @@ public actor PlaybackCoordinator {
         var failure: PlayerFailure?
     }
     private var inFlightLoad: InFlightLoad?
+    /// 引擎**物理上**最后一次被交给的曲目（R10-1）：`engineEpisodeItemID` 会被
+    /// `invalidateInFlightLoad()` 在换代时清掉（那是「账本」语义），而「换件装载入口该不该
+    /// 摁旧声」需要的是物理语义 —— 引擎此刻还持有谁。只在引擎真被停/释放时清。
+    private var lastLandedItemID: String?
 
     public init(
         engine: any PlayerEngine,
@@ -782,6 +786,7 @@ public actor PlaybackCoordinator {
         guard !tornDown else { return }
         tornDown = true
         invalidateInFlightLoad()
+        lastLandedItemID = nil
         detachFromEngine()
         await closeEpisodeIfNeeded()
         await discardPendingReports()
@@ -1062,7 +1067,7 @@ public actor PlaybackCoordinator {
         // 还是旧曲」（私有音频长下载时这段窗口以分钟计）。在**入口**摁住旧声，而不是指望
         // 各条取代腿事后收拾 —— 事后收拾永远漏「账本已换、引擎未换」这一段。
         // 同一曲目重装不摁（重播/恢复语义：声音本就该继续或由 F-1 的暂停负责）。
-        if let previousLanded = engineEpisodeItemID, previousLanded != item.id {
+        if let previousLanded = lastLandedItemID, previousLanded != item.id {
             await engine.pause()
         }
         // 台账的生命周期用 defer 钉死：本函数有 7 个提前返回，漏掉任何一个都会让
@@ -1140,6 +1145,7 @@ public actor PlaybackCoordinator {
         }
         // 引擎账本先落，再谈播放状态（R1）。
         engineEpisodeItemID = prepared.id
+        lastLandedItemID = prepared.id
         // 引擎确实装着当前项 = 「自动推进的失败连击」已被用户的处置打断（F-6）。
         isFailureTerminal = false
         if autoplay && userWantsPlayback {
@@ -1435,6 +1441,7 @@ public actor PlaybackCoordinator {
         _ = queue.removeAll()
         // 队列清空 = 在途装载全部作废，引擎账本同步归零（R1 / R2 / F-7）。
         invalidateInFlightLoad()
+        lastLandedItemID = nil
         lastTimeSyncStamp = nil
         position = 0
         duration = nil

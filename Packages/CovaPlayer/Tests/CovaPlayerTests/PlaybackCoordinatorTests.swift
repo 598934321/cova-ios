@@ -1918,9 +1918,14 @@ final class PlaybackCoordinatorTests: XCTestCase {
         let pausesBefore = engine.count(of: "pause")
 
         let switched = Task { await subject.start(at: 1) }
-        await assertSignalReached(target: 1, counter: preparer.requestSignal, what: "b 的装载进入在途")
+        // 信号是**累计**计数：a 那趟装载早已请求过并返回，所以「b 进入在途」是第 2 次。
+        // 只写 1 会在 b 的装载还没起步时就直通 ⇒ 读到的是 a 的 `.playing`（假前置）。
+        await assertSignalReached(target: 2, counter: preparer.requestSignal, what: "b 的装载进入在途")
+        let requested = await preparer.requests
+        XCTAssertEqual(requested.last, "b", "前置：在途的这一趟确实是 b")
         snap = await subject.currentSnapshot()
         XCTAssertEqual(snap.state, .loading, "前置：b 在装")
+        XCTAssertEqual(snap.item?.id, "b", "前置：读数已经换到 b")
         XCTAssertEqual(
             engine.count(of: "pause"), pausesBefore + 1,
             "R10-1：换件装载入口必须摁住旧声（否则读数说在装 b、耳朵里还是 a）"
