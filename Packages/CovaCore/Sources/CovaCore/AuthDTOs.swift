@@ -9,6 +9,12 @@ public enum CovaPlan: String, Codable, Equatable, Sendable {
 }
 
 /// 认证用户（api-contracts 1）。
+///
+/// **解码容忍（NEEDS-1 未闭合期间）**：真实 `POST /api/auth/login` 的 `user` 只回
+/// `{id, email, name, role}`。身份标记 `isArtist` / `isPartner` 缺席时按 `false` 读 ——
+/// 这是**保守**方向（缺席 ⇒ 不授予艺术家/合作方身份，绝不放大权限），也不是把非契约响应
+/// 当成契约：`docs/NEEDS.md` #1 仍是开放项，补齐后这两个键会真实出现。
+/// `id / name / role` 保持严格必需（缺任一个 = 无法标识用户，必须报错而不是猜）。
 public struct AuthUser: Codable, Equatable, Sendable {
     public let id: String
     public let name: String
@@ -28,6 +34,18 @@ public struct AuthUser: Codable, Equatable, Sendable {
         case phone
         case isArtist
         case isPartner
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        role = try container.decode(String.self, forKey: .role)
+        email = try container.decodeIfPresent(String.self, forKey: .email)
+        covaId = try container.decodeIfPresent(String.self, forKey: .covaId)
+        phone = try container.decodeIfPresent(String.self, forKey: .phone)
+        isArtist = try container.decodeIfPresent(Bool.self, forKey: .isArtist) ?? false
+        isPartner = try container.decodeIfPresent(Bool.self, forKey: .isPartner) ?? false
     }
 }
 
@@ -96,9 +114,11 @@ public struct CovaLoginRequestDto: Codable, Equatable, Sendable {
 
 /// `POST /api/auth/login` 响应（契约目标形态：`{user, token, refreshToken, expiresIn}`）。
 ///
-/// **契约目标形态**：真实实现当前返回的 `user` 只有 `{id, email, name, role}`
-/// （缺 `covaId/phone/isArtist/isPartner`），无法解码为完整 `AuthUser` ——
-/// 已登记 `docs/NEEDS.md`（`AUTH-LOGIN-TOKENS` 补充项）。此处按契约建模，**不以非契约响应为基准**。
+/// **真实形态与契约的差异（NEEDS-1，D20 处置）**：真实实现返回的 `user` 只有
+/// `{id, email, name, role}`。契约形态仍是建模基准（`covaId/phone/isArtist/isPartner` 一个不删），
+/// 但解码对**缺席的可选身份字段**容忍（布尔缺席 ⇒ `false`，保守方向），否则用户在本机上
+/// 永远登不进来、登录后的播放与上报链路无从验收。`id/name/role` 保持严格必需。
+/// 后端补齐后这两个键会真实出现，容忍逻辑自动退化为无操作；`docs/NEEDS.md` #1 仍为开放项。
 ///
 /// token 字段为 `SecretString`（§5）：只读解码、描述/反射全脱敏、**不可编码**（编译期禁止误持久化）。
 public struct CovaLoginResponseDto: Decodable, Equatable, Sendable {

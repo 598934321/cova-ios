@@ -125,15 +125,42 @@ final class AuthDTOTests: XCTestCase {
         XCTAssertNil(empty.message)
     }
 
-    func testLoginResponseRequiresFullAuthUserContract() {
-        // 记录：真实 login 响应当前只给 {id,email,name,role}，无法满足契约的完整 AuthUser
-        // （见 docs/NEEDS.md AUTH-LOGIN-TOKENS）。此处固化「契约要求」这一侧。
+    /// NEEDS-1 的处置改写（2026-09-22，D20）：真实 `POST /api/auth/login` 的 `user` 当前只给
+    /// `{id,email,name,role}`。旧口径把这一形态钉成「必须解码失败」⇒ 真机上**永远登不进来**，
+    /// 登录后的播放/上报链路无从验收。新口径分两侧同时钉住：
+    ///   · 容忍侧：身份标记（`isArtist`/`isPartner`）与可选标识（`covaId`/`phone`）缺席可读，
+    ///     且布尔缺席一律读成 `false` —— **保守方向**，绝不因后端缺字段而放大权限；
+    ///   · 严格侧：`id / name / role` 缺任一个照旧抛 `.decoding(field:)`，不许猜出用户身份。
+    func testLoginToleratesRealBackendUserShapeButKeepsIdentityStrict() throws {
         let partial = Data(
             #"{"user":{"id":"u1","email":"a@b.c","name":"n","role":"user"},"token":"t","refreshToken":"r","expiresIn":1}"#.utf8
         )
-        XCTAssertThrowsError(try JSONDecoder().decode(CovaLoginResponseDto.self, from: partial)) { error in
-            guard let decoding = error as? DecodingError else { return XCTFail("应为 DecodingError") }
-            XCTAssertEqual(CovaAPIError.classify(decoding: decoding), .decoding(field: "isArtist"))
+        let response = try JSONDecoder().decode(CovaLoginResponseDto.self, from: partial)
+        XCTAssertEqual(response.user.id, "u1")
+        XCTAssertEqual(response.user.email, "a@b.c")
+        XCTAssertEqual(response.token.rawValue, "t")
+        XCTAssertFalse(response.user.isArtist, "缺席的身份标记必须读成 false（保守），不得读成 true")
+        XCTAssertFalse(response.user.isPartner, "缺席的身份标记必须读成 false（保守），不得读成 true")
+        XCTAssertNil(response.user.covaId)
+        XCTAssertNil(response.user.phone)
+
+        let noID = Data(
+            #"{"user":{"email":"a@b.c","name":"n","role":"user"},"token":"t","refreshToken":"r","expiresIn":1}"#.utf8
+        )
+        let noName = Data(
+            #"{"user":{"id":"u1","email":"a@b.c","role":"user"},"token":"t","refreshToken":"r","expiresIn":1}"#.utf8
+        )
+        let noRole = Data(
+            #"{"user":{"id":"u1","email":"a@b.c","name":"n"},"token":"t","refreshToken":"r","expiresIn":1}"#.utf8
+        )
+        for (json, field) in [(noID, "id"), (noName, "name"), (noRole, "role")] {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(CovaLoginResponseDto.self, from: json),
+                "\(field) 缺席必须报错：身份不允许猜"
+            ) { error in
+                guard let decoding = error as? DecodingError else { return XCTFail("应为 DecodingError") }
+                XCTAssertEqual(CovaAPIError.classify(decoding: decoding), .decoding(field: field))
+            }
         }
     }
 }

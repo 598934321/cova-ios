@@ -5,7 +5,7 @@
 
 | # | 编号 | 需求 | 阻塞 | 验收标准 |
 |---|---|---|---|---|
-| 1 | AUTH-LOGIN-TOKENS | `POST /api/auth/login` 返回 Bearer 契约 `{user, token, refreshToken, expiresIn}`；`POST /api/auth/refresh` refresh 旋转；`POST /api/auth/logout` | M1 | 真机完成登录→带 token 请求→401 自动 refresh 重放→登出。**补充（2026-09-17 只读核对）**：`{token, refreshToken, expiresIn}` 已符合契约，但 `user` 只含 `{id, email, name, role}`，缺 `covaId / phone / isArtist / isPartner`，无法解码为契约的完整 `AuthUser` → 需补齐 |
+| 1 | AUTH-LOGIN-TOKENS | `POST /api/auth/login` 返回 Bearer 契约 `{user, token, refreshToken, expiresIn}`；`POST /api/auth/refresh` refresh 旋转；`POST /api/auth/logout` | M1 | 真机完成登录→带 token 请求→401 自动 refresh 重放→登出。**补充（2026-09-17 只读核对）**：`{token, refreshToken, expiresIn}` 已符合契约，但 `user` 只含 `{id, email, name, role}`，缺 `covaId / phone / isArtist / isPartner`，无法解码为契约的完整 `AuthUser` → 需补齐。**客户端处置（2026-09-22，D20）**：登录解码已容忍 `isArtist/isPartner/covaId/phone` 缺席（布尔缺席一律读 `false` = 保守不放大权限；`id/name/role` 仍严格必需，缺席照旧报错）⇒ 登录不再被本缺口整体阻塞。**缺口本身仍开放**：补齐后客户端才能真实展示 `covaId` / 艺术家·合作方身份 |
 | 2 | PLAY-SOURCE-MOBILE | 播放上报 allowlist 增加 `app-ios` | M1 | `POST /api/tracks/play` 带 `source:"app-ios"` 返回 2xx |
 | 3 | ENTITLEMENTS | `GET /api/auth/me` 稳定返回 `{user, entitlements:{plan, creditsBalance, monthlyCredits, canDownload, canUseCovaAI, canRequestProjects}}` | M1 | 字段齐全且与网页端一致 |
 | 4 | ACCOUNT-DELETE | 账号删除端点（App Store 强制） | G4 | 提审前可用；删除后登录态失效 |
