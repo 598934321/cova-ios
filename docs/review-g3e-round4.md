@@ -428,3 +428,74 @@ bump 过 ⇒ 前置假成立、读到 a 的 `.playing`）。这违反本仓「�
 **因此**：第 10 轮同样**没有产生终值判词**。G3-e **仍未验收**：两轮验收轮的 Major 都已修在根上并各带
 永久用例，但「一轮 0 Critical 且 0 Major」这个判词必须由**下一轮全新隔离实例**给出，而当前平台额度
 已耗尽（两个实例都死在同一句 `credit usage limit`），**评审能力本身是阻塞项**。
+
+---
+
+## §L 第 11 轮隔离验收复审（HEAD `e49b2ab`）：不放行 —— 0 Critical / **3 Major** / 4 Minor
+
+评审实例：全新隔离，未参与任何批次编码。克隆 `/tmp/r11-clone` @ `e49b2ab`、独立
+`-derivedDataPath /tmp/dd-r11`、模拟器 `iPhone 17`（主实例占用的 iPhone 17 Pro 未碰）。
+探针只写在克隆里，交付前已从树中移除，克隆 `git status` 空、被变异文件与 `HEAD` 字节一致。
+**全文 20.8 KB 在 `/tmp/r11-report.md`（含 §④′ 变异电池与 §②′ 的自我否证表）；本节是判词与账。**
+
+### 三条 Major
+
+| 编号 | 一句话 | 评审的实测背书 |
+|---|---|---|
+| **R11-1** | 第 15 批的 R10-1 **没有闭合**：`.repeated` 重播腿仍是「先命令引擎、后复核」，被取代那条腿的 `engine.play()` 落在入口摁声**之后** ⇒ 引擎最后收到的是 `play`、物理装载仍是旧项、读数已是 `.loading(新项)` | 探针 `testR11P1_supersededReplayPlayArrivesAfterTheEntryPause`：**1 条害处红 + 4 条前置绿**；实测调用序 `["load","play","setRate","seek","pause","play"]` |
+| **R11-2** | 第 15 批**新加的那个 await 自己开了第二个洞**：入口摁声这段挂起里用户的显式暂停被装载续体覆写回 autoplay | 探针 `testR11P2_userPauseInsideTheEntryPauseWindowIsHonoured`：**4 条红**（`state` 实为 `playing`；`play` 2≠1；上报 2≠1；锁屏 `isPlaying==true`）；实测序 `[…,"pause","pause","load","play","setRate"]` |
+| **R11-3** | **第 14 批为 R9-1 加的那条永久用例前置为假**：`setLoopMode(.one)` + 单元素下 `next()` 走 `PlayQueue` 的 `.held`（`wrapsToFirst` 只有 `.all` 为真），从未进 `.repeated` 腿 ⇒ 把 R9-1 的修法整段还原，**全量 400 条 0 失败** | 变异 `a-r9fix-reverted` → **400 tests / 0 failures**；变异 `c-sameitem-guard` → 唯一报警的恰是这条用例（它对无关改动叫、对主题不叫） |
+
+### 评审自己否证掉的两个修法（这一节是它写给我们的最重要的账）
+
+它先给出两个候选修法，然后**自己跑废了它们**：
+· 「重播腿先复核再动引擎」（把引擎操作挪到守卫之后）= 变异 `d-fix-p1-reorder` ⇒ P1 **仍然红**，
+因为竞态是 check-then-act，腿被取代发生在它 park 在 `engine.seek` 期间，挪顺序治不了；
+· 「入口摁声后重读 `userWantsPlayback`」= 变异 `e-fix-p2-recheck-intent` ⇒ 打红 **3 条永久用例**
+（`.moved` 腿的意图在 `invalidateInFlightLoad()` 里被归零，重读会把正常自动推进打成暂停）；
+· 两个一起 = **403 tests / 6 failures** ⇒ 不可采纳。
+
+它由此给出的**约束集①—⑤**（本轮实测出来的）：① 被取代的腿不得让旧项出声；② 被取代的腿不得
+摁停新一代；③ ① 与 ② 互相矛盾，除非「谁此刻拥有引擎」由**引擎侧按装载 epoch 拒收**
+（证据：在 `a-r9fix-reverted` 字节上 P1 转绿而 P2 仍 4 条红 ⇒ ② 是拿 ① 的复发换来的）；
+④ 自动推进（`.moved`）腿在 `invalidateInFlightLoad()` 归零意图之后仍须能起播；
+⑤ 装载在途期间用户显式暂停必须最终落地。
+
+### 协调者处置与账目（第 16 批 `542cca9`，落笔于本报告到达之前）
+
+第 16 批是协调者读到评审**已落盘的骨架 + 探针日志**（`/tmp/r11-p1.log`、`/tmp/r11-p2.log`、
+`/tmp/r11-probe-kept.swift`）后写的，判词到达时它已入库。两处的修法形状与评审否证掉的两个候选
+**不是同一个**，据实分开记：
+· **R11-1**：不是「把守卫挪到引擎操作之前」，而是新增**引擎命令权** `engineCommandGeneration`
+  （`loadCurrent` 在任何 await 之前同步认领、`invalidateInFlightLoad` 作废），
+  重播腿在 `engine.seek` **返回之后、出声之前**查这道闸 —— 正是腿被取代的那个时点之后才查，
+  所以不在 `d-fix-p1-reorder` 的否证范围内。实测：新用例
+  `testSupersededReplayLegMustNotPlayAfterTheEntryPause` 在修法上绿、还原后红。
+· **R11-2**：不是「摁声后重读意图」，而是把台账与意图的写入**整体前移到摁声之前**，
+  于是那次挂起里用户的暂停只会被下调、不会被续体改写 —— 不在 `e-fix-p2-recheck-intent` 的
+  否证范围内。实测：新用例 `testUserPauseInsideTheEntryPauseWindowIsNotOverturned` 同向成立，
+  且评审点名的那 3 条 `.moved` 自动推进用例一字未动仍绿（402/0）。
+· **仍欠评审的**：① 约束 ② 的**同件重装**分支没堵 —— 本批改的补偿 `pause()` 条件是
+  `lastLandedItemID == claimed`，若新一代重装的恰好是**同一件**，这一摁会停掉用户的新播放。
+  第 17 批要把它换成**装载 epoch** 比对（`lastLandedEpoch == ownedGeneration` 才摁）。
+  ② R11-3 完全没被本批触及 —— 那是**证据完整性**的 Major：第 14 批的闭合声明是空炮，
+  必须重写那条用例（`.all` + 可断言的「确实 park 在引擎里」前置 + 正向对照）。
+
+### 四条 Minor（登记，不阻塞）
+
+R11-4 `lastLandedItemID` 的自述与代码不符（`removeItem` 停了引擎却不清台账；当前无可达行为差）；
+R11-5 `convergeStalledLoad` 的注释在第 15 批之后是**假陈述**；
+R11-6 = R10-2/R9-3 的独立定级：判 **Minor**，但理由与协调者不同 —— 两个幂等键各自对应一次
+真实的「从头起播」命令，P5 字面与去重语义**都没失守**，失守的是上报账混进 ≈0 秒集次；
+评审明确否证了协调者「改这里会动 P5 既有裁决」这句（实测未动）；
+R11-7 门禁面：`HANDOVER.md` §13 / 本文 §K 把**实测覆盖率写成了阈值**（脚本里
+`PLAYER_COVERAGE_MIN = COVERAGE_FLOOR = 80`，行覆盖掉到 80.01% 照样 EXIT=0）⇒ 要么把 94 一档
+钉进脚本常量，要么把措辞改成「实测 94.96%，门禁阈值 80%」。
+
+### 对 G3-e 状态的影响
+
+**仍不验收。** 第 17 批必须做：R11-3 的用例重写（含正向对照）、约束 ② 的同件分支换成 epoch、
+R11-4/R11-5 两处账实一致、R11-6 按评审给的修法（重播腿带装载序号，新一代已交付同一件则不再
+`closeEpisode`）、R11-7 阈值口径。然后派**第 12 轮**。
+评审还留了两条它自己没打的靶子（`PlayerEngine` 契约补「换件时机」+ 永久用例；
+`PrivateAudioFetcher` 的 D7 硬顺序与并发合流），下一轮任务书要带上。
