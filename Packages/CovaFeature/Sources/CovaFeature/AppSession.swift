@@ -1,5 +1,6 @@
 import CovaCore
 import CovaPlayer
+import CovaUI
 import SwiftUI
 
 /// 根状态（@MainActor + @Observable）：会话 / 播放器 / 导航 / Toast。
@@ -41,6 +42,9 @@ public final class AppSession {
 
     public init(previewTab: Tab = .home) {
         tab = previewTab
+        themeMode = CovaThemeMode(
+            rawValue: UserDefaults.standard.string(forKey: Self.themeDefaultsKey) ?? ""
+        ) ?? .system
         let auth = CovaDependencies.makeAuthSession()
         self.auth = auth
         self.client = CovaAPIClient(transport: CovaDependencies.makeTransport(), credentials: auth)
@@ -114,8 +118,20 @@ public final class AppSession {
         case playlist(String)
         case favorites
         case myPlaylists
+        case plaza
+        case settings
     }
     public var path: [Route] = []
+
+    /// 主题（design 15 的「外观」段）。**只有用户真的选过才落盘** ——
+    /// 没选过时 UserDefaults 里没有键，下次启动仍是「跟随系统」。
+    public private(set) var themeMode: CovaThemeMode
+    private static let themeDefaultsKey = "cova.themeMode"
+
+    public func setTheme(_ mode: CovaThemeMode) {
+        themeMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.themeDefaultsKey)
+    }
     /// 07 曲目详情（半屏 sheet）。nil = 未打开。
     public var detailTrackID: String?
     /// 收藏态缓存（design 06 §NEEDS-9：详情端点不给 `isSaved`，收藏态只能由列表端点供给）。

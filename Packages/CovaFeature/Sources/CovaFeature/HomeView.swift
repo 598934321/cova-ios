@@ -55,7 +55,9 @@ public struct HomeView: View {
                 )
             } else {
                 if !playlists.isEmpty {
-                    CovaSectionHeader("推荐歌单")
+                    CovaSectionHeader("推荐歌单", trailing: "全部 ›") {
+                        session.path.append(.plaza)
+                    }
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: CovaSpace.md) {
                             ForEach(playlists, id: \.id) { playlist in

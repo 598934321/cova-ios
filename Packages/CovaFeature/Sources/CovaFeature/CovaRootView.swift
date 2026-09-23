@@ -40,6 +40,8 @@ public struct CovaRootView: View {
         switch raw {
         case "favorites": return .favorites
         case "myPlaylists": return .myPlaylists
+        case "plaza": return .plaza
+        case "settings": return .settings
         default:
             guard raw.hasPrefix("playlist:") else { return nil }
             return .playlist(String(raw.dropFirst("playlist:".count)))
@@ -67,7 +69,7 @@ public struct CovaRootView: View {
             }
         }
         .environment(session)
-        .preferredColorScheme(themeMode.colorScheme)
+        .preferredColorScheme(session.themeMode.colorScheme)
         .task {
             await session.bootstrap()
             switch Self.previewSheet() {
@@ -128,6 +130,8 @@ public struct CovaRootView: View {
                 case .playlist(let id): PlaylistDetailView(playlistID: id)
                 case .favorites: FavoritesView()
                 case .myPlaylists: MyPlaylistsView()
+                case .plaza: PlaylistsPlazaView()
+                case .settings: SettingsView()
                 }
             }
         }
@@ -167,6 +171,12 @@ public struct CovaRootView: View {
                             if session.requireLoginForCollections() { session.path.append(.favorites) }
                         case "我的歌单":
                             if session.requireLoginForCollections() { session.path.append(.myPlaylists) }
+                        case "会员":
+                            // 13 会员页要展示权益（NEEDS-3 未稳定）⇒ 先落到设置页的账号段，
+                            // 不假装有一个能显示套餐的页面。
+                            session.path.append(.settings)
+                        case "设置":
+                            session.path.append(.settings)
                         default:
                             session.showToast("\(item)：入口已登记，该页在 M2/M3 接入")
                         }

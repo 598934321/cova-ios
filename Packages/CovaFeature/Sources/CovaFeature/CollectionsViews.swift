@@ -41,7 +41,7 @@ public struct FavoritesView: View {
                         action: { session.tab = .library }
                     )
                     .overlay(alignment: .bottom) {
-                        Button("先看看歌单") { session.showToast("歌单广场在下一版接入（当前仅登记入口）") }
+                        Button("先看看歌单") { session.path.append(.plaza) }
                             .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                             .padding(.bottom, CovaSpace.xxl)
                     }
@@ -262,7 +262,7 @@ public struct MyPlaylistsView: View {
                         title: "还没收藏歌单",
                         hint: "在歌单广场点书签，就会出现在这里",
                         actionTitle: "去歌单广场",
-                        action: { session.showToast("歌单广场在下一版接入（当前仅登记入口）") }
+                        action: { session.path.append(.plaza) }
                     )
                 } else {
                     list
