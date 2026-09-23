@@ -62,19 +62,37 @@ public struct CatalogService: Sendable {
             : try await client.delete("/api/favorites", body: body)
     }
 
+    /// 我收藏的歌单（12b）。契约响应 `{playlists[]}` + `savedAt`。
+    public func savedPlaylists() async throws -> SavedPlaylistsListDto {
+        try await client.get("/api/saved-playlists")
+    }
+
+    /// 歌单书签（06/12b）：`POST /api/saved-playlists` 加、`DELETE` 删，body 只有 playlistId。
+    public func setSavedPlaylist(playlistID: String, _ on: Bool) async throws
+        -> SavedPlaylistMutationResponseDto {
+        let body = SavedPlaylistMutationRequestDto(playlistId: playlistID)
+        return on
+            ? try await client.post("/api/saved-playlists", body: body)
+            : try await client.delete("/api/saved-playlists", body: body)
+    }
+
     public func me() async throws -> CovaMeResponse {
         try await client.get("/api/auth/me")
     }
 
     /// 把 `CovaAPIError` 归类成 UI 可说的三句话。
-    public static func classify(_ error: Error) -> CatalogFailure {
+    ///
+    /// `decodingNeeds` 是**调用点**的事实，不是错误自己的事实：解码失败只说明「响应和 DTO
+    /// 不一致」，说是哪一条缺口必须由调用的是哪个端点决定。旧实现把一切 `.decoding` 都写成
+    /// NEEDS-1，于是收藏页（NEEDS-11 混条目）会指着登录缺口撒谎。
+    public static func classify(_ error: Error, decodingNeeds: String = "NEEDS-1") -> CatalogFailure {
         if let api = error as? CovaAPIError {
             switch api {
             case .offline, .timeout, .transport, .cancelled: return .network
             case .httpStatus(let code, _):
                 if code == 404 || code == 501 { return .backendGap("NEEDS-14…22") }
                 return .server("HTTP \(code)")
-            case .decoding: return .backendGap("NEEDS-1")
+            case .decoding: return .backendGap(decodingNeeds)
             default: return .server(api.redactedDescription)
             }
         }

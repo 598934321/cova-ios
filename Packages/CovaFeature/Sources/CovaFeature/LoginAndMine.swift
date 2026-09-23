@@ -122,7 +122,15 @@ public struct MineView: View {
                 CovaListRow(title: title, subtitle: nil, artwork: nil) {
                     Image(systemName: "chevron.right").foregroundStyle(CovaColor.muted)
                 } action: {
-                    session.showToast("\(title)：列表页在下一版接入（当前仅登记入口）")
+                    switch title {
+                    case "收藏":
+                        if session.requireLoginForCollections() { session.path.append(.favorites) }
+                    case "我的歌单":
+                        if session.requireLoginForCollections() { session.path.append(.myPlaylists) }
+                    default:
+                        // 我的创作 = M2（AI 会话），下载管理 = M3 且受 D12 合规门控。
+                        session.showToast("\(title)：该页在 M2/M3 接入（当前仅登记入口）")
+                    }
                 }
             }
         }

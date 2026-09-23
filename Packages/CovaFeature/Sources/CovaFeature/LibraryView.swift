@@ -122,9 +122,23 @@ public struct LibraryView: View {
                             subtitle: "\(track.artistNameCn ?? track.artist.name) · \(Int(track.duration))s · BPM \(track.bpm)",
                             artwork: CovaArtwork(url: URL(string: track.cover), title: track.title)
                         ) {
-                            Image(systemName: "heart").foregroundStyle(CovaColor.muted)
+                            let on = session.favoriteIDs.contains(track.id)
+                            Button {
+                                Task {
+                                    if session.requireLoginForCollections() {
+                                        await session.toggleFavorite(track.id)
+                                    }
+                                }
+                            } label: {
+                                Image(systemName: on ? "heart.fill" : "heart")
+                                    .foregroundStyle(on ? CovaColor.accent : CovaColor.muted)
+                            }
+                            .buttonStyle(.plain)
                         } action: {
                             Task { await session.play(tracks: tracks, at: index) }
+                        }
+                        .contextMenu {
+                            Button("曲目详情") { session.detailTrackID = track.id }
                         }
                     }
                     if page < totalPages {

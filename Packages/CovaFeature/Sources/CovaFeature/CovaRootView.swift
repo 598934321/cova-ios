@@ -31,6 +31,32 @@ public struct CovaRootView: View {
             ?? UserDefaults.standard.string(forKey: "COVA_PREVIEW_SHEET")
     }
 
+    /// 走查钩子 3：`COVA_PREVIEW_ROUTE=favorites|myPlaylists|playlist:<id>|track:<id>`。
+    /// 详情/列表页都在 Tab 之下且需要点击才能到达，逐屏走查需要一个「直接落到这一屏」的入口。
+    private static func previewRoute() -> AppSession.Route? {
+        let raw = ProcessInfo.processInfo.environment["COVA_PREVIEW_ROUTE"]
+            ?? UserDefaults.standard.string(forKey: "COVA_PREVIEW_ROUTE")
+        guard let raw else { return nil }
+        switch raw {
+        case "favorites": return .favorites
+        case "myPlaylists": return .myPlaylists
+        default:
+            guard raw.hasPrefix("playlist:") else { return nil }
+            return .playlist(String(raw.dropFirst("playlist:".count)))
+        }
+    }
+
+    /// 与钩子 3 同批：`COVA_PREVIEW_ROUTE=track:<id>` 走的是 sheet 而不是路由栈。
+    private static func previewTrackID() -> String? {
+        guard let raw = previewSheetValue() else { return nil }
+        return raw.hasPrefix("track:") ? String(raw.dropFirst("track:".count)) : nil
+    }
+
+    private static func previewSheetValue() -> String? {
+        ProcessInfo.processInfo.environment["COVA_PREVIEW_ROUTE"]
+            ?? UserDefaults.standard.string(forKey: "COVA_PREVIEW_ROUTE")
+    }
+
     public var body: some View {
         Group {
             switch session.authPhase {
@@ -49,6 +75,8 @@ public struct CovaRootView: View {
             case "player": session.playerSheetOpen = true
             default: break
             }
+            if let route = Self.previewRoute() { session.path.append(route) }
+            if let trackID = Self.previewTrackID() { session.detailTrackID = trackID }
         }
         .overlay(alignment: .top) { toastOverlay }
     }
@@ -72,18 +100,36 @@ public struct CovaRootView: View {
         )) {
             LoginView().environment(session)
         }
+        // 07 曲目详情：sheet 只带 trackID，页面自己取数（与路由同一把口径）。
+        .sheet(item: Binding(
+            get: { session.detailTrackID.map(TrackSheetID.init) },
+            set: { session.detailTrackID = $0?.id }
+        )) { wrapped in
+            TrackDetailSheet(trackID: wrapped.id).environment(session)
+        }
         .overlay(alignment: .leading) { drawer }
     }
 
     @ViewBuilder
     private var tabContent: some View {
         let catalog = CatalogService(client: session.client)
-        switch session.tab {
-        case .home:
-            if case .guest = session.authPhase { LoginGate(catalog: catalog) }
-            else { HomeView(catalog: catalog) }
-        case .library: LibraryView(catalog: catalog)
-        case .mine: MineView()
+        NavigationStack(path: $session.path) {
+            Group {
+                switch session.tab {
+                case .home:
+                    if case .guest = session.authPhase { LoginGate(catalog: catalog) }
+                    else { HomeView(catalog: catalog) }
+                case .library: LibraryView(catalog: catalog)
+                case .mine: MineView()
+                }
+            }
+            .navigationDestination(for: AppSession.Route.self) { route in
+                switch route {
+                case .playlist(let id): PlaylistDetailView(playlistID: id)
+                case .favorites: FavoritesView()
+                case .myPlaylists: MyPlaylistsView()
+                }
+            }
         }
     }
 
@@ -116,7 +162,14 @@ public struct CovaRootView: View {
                 ForEach(["收藏", "我的歌单", "我的创作", "下载管理", "会员", "设置"], id: \.self) { item in
                     Button {
                         session.drawerOpen = false
-                        session.showToast("\(item)：入口已登记，列表页下一版接入")
+                        switch item {
+                        case "收藏":
+                            if session.requireLoginForCollections() { session.path.append(.favorites) }
+                        case "我的歌单":
+                            if session.requireLoginForCollections() { session.path.append(.myPlaylists) }
+                        default:
+                            session.showToast("\(item)：入口已登记，该页在 M2/M3 接入")
+                        }
                     } label: {
                         Text(item).font(CovaType.headline).foregroundStyle(CovaColor.fg)
                     }

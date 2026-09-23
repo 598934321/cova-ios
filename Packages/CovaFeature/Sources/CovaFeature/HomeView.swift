@@ -59,7 +59,9 @@ public struct HomeView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: CovaSpace.md) {
                             ForEach(playlists, id: \.id) { playlist in
-                                PlaylistCard(playlist: playlist) { }
+                                PlaylistCard(playlist: playlist) {
+                                    session.path.append(.playlist(playlist.id))
+                                }
                             }
                         }
                         .padding(.horizontal, CovaSpace.pageGutter)
@@ -77,6 +79,9 @@ public struct HomeView: View {
                                 Text(track.vocalType).font(CovaType.caption).foregroundStyle(CovaColor.muted)
                             } action: {
                                 Task { await session.play(tracks: tracks, at: index) }
+                            }
+                            .contextMenu {
+                                Button("曲目详情") { session.detailTrackID = track.id }
                             }
                         }
                     }

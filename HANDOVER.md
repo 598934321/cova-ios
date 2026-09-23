@@ -642,6 +642,26 @@ M7 并发去重 + M4 登出清盘接线 + M3 生产音频会话注册）。
   不在批次进行中抬基线（避免量一棵移动中的树），**收尾时必须**：整轮 `check.sh` EXIT=0
   复核 → 把 `PLAYER_MIN` 抬到当时终值 → 再派第 5 轮隔离复审。
 
+### 现场快照（2026-09-23 13:30 更新，协调者）—— M1 剩余四屏落地 + 第 11 轮复审在跑
+
+**这一轮做了什么**：M1 的验收口径是「匿名浏览 → 登录 → 筛选 → 播放 → 锁屏控制 → 收藏」，
+而上一批只到「三张 Tab + 登录 + 播放器」，歌单详情/曲目详情/收藏读写/我的歌单四条还停在
+「入口已登记」的假状态。现在这四屏已实现（06/07/12a/12b，见 `docs/log/20260923.md` §1 的逐条口径），
+并用真实数据取到 `04-playlist-detail.png` / `05-track-detail.png`。
+顺带修了三处诚实性问题：`classify` 不再把一切解码失败都写成 NEEDS-1（收藏页会指着登录缺口撒谎）、
+`swipeActions` 在非 `List` 容器里静默失效 ⇒ 改 `contextMenu`、收藏开关不做乐观更新。
+
+**两条并行线**：第 11 轮全新隔离复审**正在跑**（克隆 `/tmp/r11-clone` @ `e49b2ab`、
+独立 `/tmp/dd-r11`、模拟器 `iPhone 17`；判词落 `/tmp/r11-skeleton.md` → `/tmp/r11-report.md`）。
+协调者这一轮**没有碰 `Packages/CovaPlayer` 一字**（只改 CovaFeature/CovaUI/CatalogService），
+所以评审的字节基线不被污染。等它的判词回来才能谈 G3-e 验收。
+
+**M1 还差什么（据实）**：首页 `继续聆听` 段（要一份 owner 作用域的最近播放本地账 + 登出清空）；
+05 歌单广场、16 AI 艺人首页；登录后全链路（需用户账号 + NEEDS-1/2/15）。M2（AI 创作闭环）与
+M3（下载/会员/可访问性/性能）未开工。
+
+---
+
 ### 环 4 → 环 3 现场快照（2026-09-22 10:45 更新，协调者，供 `/goal resume` 接手）
 
 **当前没有在跑的东西。下一件事 = 等额度恢复后派第 11 轮全新隔离复审**（任务 #15）。
@@ -822,17 +842,25 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 - **待用户看效果后反馈**（D19 的补验路径）：以上截图与真机/模拟器走查即「效果」，
   修改意见回炉期限 = 首次反馈后一周内。
 
-### C‴. M1 可跑形态截图（2026-09-22 10:44，`iPhone 17 Pro` iOS 26.5，**真实 covalink.cn 数据**）
+### C‴. M1 可跑形态截图（`iPhone 17 Pro` iOS 26.5，**真实 covalink.cn 数据**）
 
-- `docs/acceptance/m1-20260922/`（**tracked**）：`01-home.png`（游客门控卡 + 推荐歌单 + 场景精选，
-  封面与曲目全部来自线上接口）、`02-library.png`（搜索 + 7 枚筛选 chips + 列表含时长/BPM/收藏心）、
-  `02-mine.png`（游客态：未登录卡 + 四个入口）、`03-login.png`（登录 sheet）、
-  `03-player.png`（全屏播放器，游客态空态：传输键 + ±15s + 循环三态全在）。
+- `docs/acceptance/m1-20260922/`（**tracked**；目录名记的是这批走查的起始日，`04/05` 拍于 09-23 13:27/13:28）：
+  `01-home.png`（游客门控卡 + 推荐歌单 + 场景精选，封面与曲目全部来自线上接口）、
+  `02-library.png`（搜索 + 7 枚筛选 chips + 列表含时长/BPM/收藏心）、`02-mine.png`（游客态）、
+  `03-login.png`（登录 sheet）、`03-player.png`（全屏播放器，游客态空态）、
+  `04-playlist-detail.png`（**06**：真实歌单头图 + `12 首 · 约 32 分 · Cova 编辑部` + 简介展开 +
+  `播放全部` + 曲目行 ♡ + 导航条**中性轮廓书签**＝NEEDS-9 的"收藏态未知"形态）、
+  `05-track-detail.png`（**07**：真实曲目「蝉鸣闲庭 / 林薇」+ 标题行 ♡ + `播放`/`加入队列` +
+  标签胶囊 + `纯音乐 · 无歌词` + `相似曲目`/`播放全部 ›`）。
+- 已实现屏（M1 剩余四屏于 2026-09-23 落地）：06 歌单详情、07 曲目详情半屏、12a 我的收藏
+  （编辑多选 + 逐条 DELETE ≤4 并发 + 失败行保持勾选）、12b 我的歌单（`savedAt` 倒序 + 88 卡）。
 - 逐屏走查钩子（**仅模拟器走查用**，生产不设置即默认）：`COVA_PREVIEW_TAB=home|library|mine`
-  决定首屏 Tab；`COVA_PREVIEW_SHEET=login|player` 在 bootstrap 后展开对应 sheet。
-  两者都读 env 或 UserDefaults（`xcrun simctl spawn <dev> defaults write cn.covalink.ios …`）。
-- **这些截图不是「开发完成」的证据**，是「M1 竖切可跑」的证据：登录后播放/上报仍阻塞在
-  NEEDS-1（登录账号 + 后端补字段）/ NEEDS-2（`app-ios` 上报 allowlist）/ NEEDS-15（私有音频主机形态）。
+  决定首屏 Tab；`COVA_PREVIEW_SHEET=login|player` 展开对应 sheet；
+  `COVA_PREVIEW_ROUTE=favorites|myPlaylists|playlist:<id>|track:<id>` 直接落到详情/列表屏。
+  三者都读 env 或 UserDefaults（`xcrun simctl spawn <dev> defaults write cn.covalink.ios …`）。
+- **这些截图不是「开发完成」的证据**，是「M1 竖切可跑」的证据：M1 验收口径里的
+  `继续聆听` 段与「登录后播放/上报」仍未成立 —— 后者阻塞在 NEEDS-1（需用户账号）/
+  NEEDS-2（`app-ios` 上报 allowlist）/ NEEDS-15（私有音频主机形态）。
 
 ### D′. 需要用户拍板的清单（这些是「完成开发」的真实卡点，代理不能自裁）
 
