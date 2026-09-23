@@ -3016,6 +3016,126 @@ final class PlaybackCoordinatorTests: XCTestCase {
         let teardowns = await echo.teardownCount
         XCTAssertEqual(teardowns, 0, "MIN-R5-4 对照：普通操作更不是 teardown")
     }
+    // MARK: - 环 4 · 第 16 批：R11-1 / R11-2（第 11 轮验收轮的两个 Major）
+
+    /// 缺陷 R11-1（**Major**，第 11 轮；本批修）：入口摁声只此一次，而重播腿仍是
+    /// 「先 `seek`+`play` 后复核」⇒ 被取代的重播腿那句 `play()` 落在摁声**之后**，
+    /// 旧项重新出声，而读数已是 `.loading(b)` —— 与 R10-1 同一害处形状，
+    /// 窗口 = b 的私有音频下载时长（分钟计）。
+    /// 修法：重播腿在自己的 `seek` 挂起返回后**先看引擎命令权**再出声。
+    func testSupersededReplayLegMustNotPlayAfterTheEntryPause() async {
+        let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 1)
+        let preparer = GatedSourcePreparer(gating: ["b"])
+        let clock = FakeClock()
+        let nowPlaying = RecordingNowPlaying()
+        let submitter = StubPlayReportSubmitter()
+        let reporter = PlayReportCoordinator(submitter: submitter)
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, reporter: reporter, nowPlaying: nowPlaying,
+            sourcePreparer: preparer
+        )
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r11-1")))
+        await subject.setLoopMode(.all)
+        _ = await subject.start(items: TestItems.makeMany(["a"]))
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "前置：a 正在响")
+        XCTAssertEqual(engine.count(of: "play"), 1, "前置：a 是被命令出声的")
+        let pausesBefore = engine.count(of: "pause")
+
+        // ① 单元素 `.all` 的 ⏭ = 重播当前项，挂在第一次 `engine.seek` 上。
+        let replay = Task { await subject.next() }
+        await assertSignalReached(
+            target: 1, counter: engine.enteredSeek, what: "重播腿挂在 engine.seek"
+        )
+        XCTAssertEqual(snap.state, .playing, "前置：重播腿尚未复核")
+
+        // ② 挂起窗口里用户换曲（b 的私有音频下载挂在 prepareSource 上）。
+        let switched = Task { await subject.start(items: TestItems.makeMany(["a", "b"]), at: 1) }
+        await assertSignalReached(target: 2, counter: preparer.requestSignal, what: "b 的装载进入在途")
+        let requested = await preparer.requests
+        XCTAssertEqual(requested.last, "b", "前置：在途这一趟确实是 b")
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .loading, "前置：读数已经换到 b")
+        XCTAssertEqual(snap.item?.id, "b")
+        XCTAssertEqual(
+            engine.count(of: "pause"), pausesBefore + 1, "前置：R10-1 的入口摁声确实发生了一次"
+        )
+        XCTAssertEqual(engine.calls.last, "pause", "前置：引擎最后收到的命令是摁声")
+
+        // ③ 现在才放行那条 seek ⇒ 重播腿恢复。它**必须**看见命令权已换，不出声。
+        engine.releaseSeek()
+        _ = await replay.value
+
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .loading, "前置：b 仍未交付引擎（下载在途）")
+        XCTAssertEqual(engine.loads.map(\.id), ["a"], "前置：引擎物理上仍只装着 a")
+        XCTAssertNotEqual(
+            engine.calls.last, "play",
+            "R11-1：被取代的重播腿不得在入口摁声**之后**把旧项按响（calls=\(engine.calls)）"
+        )
+        XCTAssertEqual(engine.count(of: "play"), 1, "R11-1：出声次数仍是 a 那一次")
+
+        await preparer.release("b")
+        _ = await switched.value
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "收尾：b 落地后照常起播，未被本批修法卡住")
+        XCTAssertEqual(snap.item?.id, "b")
+    }
+
+    /// 缺陷 R11-2（**Major**，第 11 轮；本批修）：第 15 批新加的入口摁声本身是一次挂起，
+    /// 而 `userWantsPlayback = autoplay` / `state = .loading` 落在挂起**之后** ⇒
+    /// 用户在这段窗口里按下的暂停被装载续体改写回播放：多一次播放上报、锁屏收到
+    /// `isPlaying=true`、状态声称 `.playing` —— 正是 F-1 已经承诺过的形状，
+    /// 被第 15 批自己的新挂起点重新打开。
+    func testUserPauseInsideTheEntryPauseWindowIsNotOverturned() async {
+        let engine = OrderingGatedEngine(gatedPauses: 1, gatedSeeks: 0)
+        let preparer = GatedSourcePreparer(gating: ["b"])
+        let clock = FakeClock()
+        let nowPlaying = RecordingNowPlaying()
+        let submitter = StubPlayReportSubmitter()
+        let reporter = PlayReportCoordinator(submitter: submitter)
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, reporter: reporter, nowPlaying: nowPlaying,
+            sourcePreparer: preparer
+        )
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r11-2")))
+        _ = await subject.start(items: TestItems.makeMany(["a", "b"]), at: 0)
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "前置：a 正在响")
+        let submittedBefore = await submitter.callCount
+
+        // ① 换件：入口摁声挂在第一次 `engine.pause` 上。
+        let switched = Task { await subject.start(at: 1) }
+        await assertSignalReached(
+            target: 1, counter: engine.enteredPause, what: "入口摁声挂在 engine.pause"
+        )
+
+        // ② 窗口里用户按 ⏯ 暂停（此刻协调器 actor 是空的，暂停真的能被处理）。
+        await subject.pause()
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .paused, "前置：用户的暂停当下是成立的")
+
+        // ③ 放行摁声 ⇒ 装载续体继续；它不得把意图与状态翻回播放。
+        engine.releasePause()
+        await assertSignalReached(target: 2, counter: preparer.requestSignal, what: "b 的装载进入在途")
+        await preparer.release("b")
+        _ = await switched.value
+
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(
+            snap.state, .paused,
+            "R11-2/F-1：入口摁声那段挂起里用户的暂停，不得被装载续体翻回播放（calls=\(engine.calls)）"
+        )
+        XCTAssertEqual(
+            engine.count(of: "play"), 1, "F-1：暂停中的装载绝不命令引擎出声（play 只许是 a 那一次）"
+        )
+        let submitted = await submitter.callCount
+        XCTAssertEqual(submitted, submittedBefore, "F-1：没有播放就不许上报这一集次")
+        let published = await nowPlaying.lastPublished
+        XCTAssertEqual(published?.isPlaying, false, "F-1：锁屏不得收到 isPlaying=true")
+        XCTAssertEqual(snap.item?.id, "b", "R11-2：条目照常进引擎（暂停 ≠ 不装载）")
+    }
+
 }
 
 // MARK: - 环 4 · 第 10 批 MIN-R5-4：系统回显面的**当前内容**夹具

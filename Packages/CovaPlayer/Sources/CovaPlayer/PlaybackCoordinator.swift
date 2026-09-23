@@ -315,6 +315,14 @@ public actor PlaybackCoordinator {
     /// 摁旧声」需要的是物理语义 —— 引擎此刻还持有谁。只在引擎真被停/释放时清。
     private var lastLandedItemID: String?
 
+    /// **引擎命令权**的归属代际：谁最后一次以「装载」认领了引擎，就只有它那条腿可以命令出声。
+    ///
+    /// 为什么需要它（R11-1）：入口摁声只此一次，而重播腿是「先 `seek`+`play`、后复核」——
+    /// 被取代的重播腿那句 `play()` 若落在摁声**之后**，旧项会重新出声且没人再摁。
+    /// 归属在 `loadCurrent` 入口**同步**认领（不在任何 await 之后），所以「换件已起步」这件事
+    /// 对重播腿是一次可查的、单调的事实，不依赖台账是否还认得被宣称项。
+    private var engineCommandGeneration: UInt64?
+
     public init(
         engine: any PlayerEngine,
         clock: any CovaClock = SystemClock(),
@@ -854,8 +862,15 @@ public actor PlaybackCoordinator {
             case .mayReplay:
                 break
             }
+            let ownedGeneration = engineCommandGeneration
             position = 0
             await engine.seek(to: 0)
+            // R11-1：`seek` 的挂起里换件装载可以起步并认领引擎。出声之前必须再看一次归属
+            // ——「先动引擎后复核」留下的正是这一寸：入口摁声只此一次，越权的那句 `play()`
+            // 落在摁声之后，就是「读数说在装 b、耳朵里是 a 从头播」，窗口 = b 的下载时长。
+            guard engineCommandGeneration == ownedGeneration else {
+                return advanceOutcome(wrapped: false)
+            }
             await engine.play()
             // 两个 await 之后再复核一次（F-1 的同一把守卫）：期间用户完全可能已经暂停或
             // 换曲，此时状态必须交还给事实，而不是把 `.playing` 补写在用户的暂停之后。
@@ -868,6 +883,13 @@ public actor PlaybackCoordinator {
                 // 摁引擎的责任在三处各自闭环 —— 用户暂停由 `pause()` 摁；换件/另起一播由
                 // `loadCurrent` 入口摁旧声（R10-1 根因修法）；移除当前曲由 `removeItem` 停。
                 // 这里再摁一次只会重演 R9-1（把用户刚起播的摁停）或 R10-1（摁错对象）。
+                //
+                // 只留一条例外（R11-1 的最后一寸）：归属确实已换，**且引擎至今仍装着
+                // 我那一件** ⇒ 刚才那一声是我造成的，只有我能摁掉。而「引擎还装着我的项」
+                // 恰好保证这一摁不可能伤到用户的新曲（那才是 R9-1 的伤害面）。
+                if engineCommandGeneration != ownedGeneration, lastLandedItemID == claimed {
+                    await engine.pause()
+                }
                 return advanceOutcome(wrapped: false)
             }
             state = .playing
@@ -1063,6 +1085,23 @@ public actor PlaybackCoordinator {
         loadGeneration &+= 1
         let generation = loadGeneration
         inFlightLoad = InFlightLoad(generation: generation)
+        // 引擎命令权在**任何 await 之前**同步认领：重播腿据此判断自己是否还越得出去声。
+        engineCommandGeneration = generation
+        // 台账的生命周期用 defer 钉死：本函数有 7 个提前返回，漏掉任何一个都会让
+        // 「装载在途」永久成立，从而把所有后续 seek / 事件归约误杀（守卫 (a) 的另一半）。
+        defer { finishLoad(generation) }
+        // 换件的瞬间，引擎里就没有可播的东西了 —— 直到当代装载真正返回。
+        //
+        // 台账与**用户意图**必须一起落在入口摁声之前（R11-2）：下面那句 `engine.pause()`
+        // 是一次挂起，期间用户完全可能按下 ⏯。若把 `userWantsPlayback = autoplay` 留在
+        // 挂起之后，装载续体会把用户刚按下的暂停**改写回播放** —— 正是 F-1 承诺过的
+        // 「装载照常落地，但绝不越过用户的暂停」被自己的新挂起点打开的洞（连带多一次
+        // 播放上报与锁屏 `isPlaying=true`）。
+        engineEpisodeItemID = nil
+        userWantsPlayback = autoplay
+        state = .loading
+        position = 0
+        duration = item.duration
         // R10-1 根因：换件装载期间引擎物理上仍持有旧项，不摁就会「读数说在装新曲、耳朵里
         // 还是旧曲」（私有音频长下载时这段窗口以分钟计）。在**入口**摁住旧声，而不是指望
         // 各条取代腿事后收拾 —— 事后收拾永远漏「账本已换、引擎未换」这一段。
@@ -1070,15 +1109,6 @@ public actor PlaybackCoordinator {
         if let previousLanded = lastLandedItemID, previousLanded != item.id {
             await engine.pause()
         }
-        // 台账的生命周期用 defer 钉死：本函数有 7 个提前返回，漏掉任何一个都会让
-        // 「装载在途」永久成立，从而把所有后续 seek / 事件归约误杀（守卫 (a) 的另一半）。
-        defer { finishLoad(generation) }
-        // 换件的瞬间，引擎里就没有可播的东西了 —— 直到当代装载真正返回。
-        engineEpisodeItemID = nil
-        userWantsPlayback = autoplay
-        state = .loading
-        position = 0
-        duration = item.duration
         await publishNowPlaying(force: true)
         guard continuationIsCurrent(
             generation: generation, claimingEngineItem: nil, requiresPlaybackIntent: false
@@ -1336,6 +1366,9 @@ public actor PlaybackCoordinator {
         inFlightLoad = nil
         engineEpisodeItemID = nil
         userWantsPlayback = false
+        // 作废在途装载 = 没有人再持有引擎命令权（R11-1 的另一半）：否则一条陈旧重播腿
+        // 可以拿着旧代际比对成功，在「当前项已被换掉」的窗口里把旧项按响。
+        engineCommandGeneration = nil
     }
 
     /// 结束本代际的在途台账（被取代的装载不得清掉新一轮的台账）。

@@ -1342,3 +1342,104 @@ actor CancellablePrivateAudioTransport: PrivateAudioTransport {
         for waiter in waiting { _ = waiter.settle(.success(())) }
     }
 }
+
+/// 顺序可观测 + 可挂起的引擎桩（第 11 轮评审自写，本批收为仓内永久件）：
+/// `pause` / `seek` 的前 N 次**真挂起**，其余调用即时返回并按调用顺序留痕
+/// —— 于是「谁最后动了引擎」是可断言的事实，而不是靠时序猜测。
+final class OrderingGatedEngine: PlayerEngine, @unchecked Sendable {
+    let enteredPause = SignalCounter()
+    let enteredSeek = SignalCounter()
+    private let pauseReleases = SignalCounter()
+    private let seekReleases = SignalCounter()
+    private let gatedPauses: Int
+    private let gatedSeeks: Int
+
+    private let lock = NSLock()
+    private let pairing = AsyncStream.makeStream(of: PlayerEvent.self)
+    private var _calls: [String] = []
+    private var _loads: [PlaybackItem] = []
+    private var _seeks: [Double] = []
+    private var _rates: [Double] = []
+    private var _time: Double = 0
+    private var _duration: Double?
+    private var _releaseCount = 0
+
+    init(gatedPauses: Int, gatedSeeks: Int) {
+        self.gatedPauses = gatedPauses
+        self.gatedSeeks = gatedSeeks
+    }
+
+    var events: AsyncStream<PlayerEvent> { pairing.stream }
+
+    func load(_ item: PlaybackItem) async {
+        record("load")
+        mutate { _loads.append(item) }
+    }
+
+    func play() async { record("play") }
+
+    func pause() async {
+        record("pause")
+        let turn = enteredPause.value + 1
+        enteredPause.bump()
+        if turn <= gatedPauses {
+            _ = await Signals.wait(target: turn, counter: pauseReleases, timeout: 10)
+        }
+    }
+
+    func seek(to seconds: Double) async {
+        record("seek")
+        let turn = enteredSeek.value + 1
+        mutate {
+            _seeks.append(seconds)
+            _time = seconds
+        }
+        enteredSeek.bump()
+        if turn <= gatedSeeks {
+            _ = await Signals.wait(target: turn, counter: seekReleases, timeout: 10)
+        }
+    }
+
+    func setRate(_ rate: Double) async {
+        record("setRate")
+        mutate { _rates.append(rate) }
+    }
+
+    func currentRate() async -> Double { snapshot { _rates.last ?? 1 } }
+    func currentTime() async -> Double { snapshot { _time } }
+    func currentDuration() async -> Double? { snapshot { _duration } }
+
+    func stopAndRelease() {
+        record("release")
+        mutate { _releaseCount += 1 }
+    }
+
+    func releasePause() { pauseReleases.bump() }
+    func releaseSeek() { seekReleases.bump() }
+
+    var calls: [String] { snapshot { _calls } }
+    var loads: [PlaybackItem] { snapshot { _loads } }
+    var seeks: [Double] { snapshot { _seeks } }
+    var releaseCount: Int { snapshot { _releaseCount } }
+
+    func count(of call: String) -> Int {
+        snapshot { _calls.filter { $0 == call }.count }
+    }
+
+    private func record(_ call: String) {
+        mutate { _calls.append(call) }
+    }
+
+    @discardableResult
+    private func mutate<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    private func snapshot<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}
