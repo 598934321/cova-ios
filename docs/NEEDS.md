@@ -29,6 +29,7 @@
 | 21 | FAVORITES-BATCH | **无批量收藏态查询**：`GET /api/favorites` 返回整表，列表/详情页要判断「本屏哪些曲目已收藏」只能全量拉取或逐条查询。 | M1（非阻塞：降级为不显示收藏态或整表拉取） | 支持 `GET /api/favorites?trackIds=`（或返回可建的 id 集合），并明确分页/上限语义 |
 | 22 | ARTIST-PROFILE | **无 AI 音乐人档案端点**：`GET /api/tracks?artistId=` 只能筛曲目，人设页所需的头像/简介/标签无处可取。 | M3 | 提供艺人档案端点（或明确由曲目投影聚合的字段清单） |
 | 23 | STUDIO-SESSION-SCHEMA | **创作会话的条目 schema 未文档化**：`docs/api-contracts.md` §4 只给了 `GET /api/find-my-song/sessions` / `…/:id` 两个路径与「详情含 `messages[] / generationJobs[]`」这一句，**没有任何字段清单**；`POST …/sessions` 的响应信封也没写（客户端目前容忍 `{session:{id}}` 与 `{id}` 两种，列表容忍 `{sessions[]}` / `{items[]}` / `{data[]}` / 裸数组四种，全接不上即报错而不是当空列表）。另需明确：消息条目里哪个键是正文（`text` 还是 `content`）、`role` 的取值集合、以及是否存在分页参数（客户端**不发明** `?limit=`/`?before=`）。 | M2（非阻塞：08/09/12c 已按「只渲染取得到的字段」实现） | 给出会话/消息条目的字段清单与响应信封（含建会话响应），并说明有无分页 |
+| 24 | CANDIDATE-SHARE-TARGET | **生成候选没有可公开访问的分享目标**。09 §3-H 的候选操作条列了「♡ 收藏 / ↓ 下载 / ⤴ 分享」三件，但 api-contracts §4 全表（sessions / plans / generation-jobs / agent / retention）里**既没有**「候选公开页」也**没有**任何 share/短链端点。可分享的两处常量链接（16 的 `covalink.cn/artists/:id`、02 与 07 的 `covalink.cn/tracks/:id`）承载的都是**公开曲库资源**；生成候选不是曲库曲目（09 §1 自己写着「若候选已被后端收录为库曲，v1.0 一般不可」）。剩下唯一可用的地址是 `audioUrl` / `audioDownloadUrl` —— 那是 Bearer 授权地址，交出去等于把凭证送出设备（硬边界 3 / D7 / TD-23 三面禁止）。 | M2（**客户端已按「不渲染分享钮」实现**，不放坏路径） | 二选一：① 提供候选的公开只读页（或其曲目化后的 `tracks/:id`）并写明 URL 形状与是否需要登录；② 提供 `POST /api/media/references/:id/share` 之类的服务端签发的短链/公开令牌端点。若产品口径是「生成物永不公开分享」，请明确写成一句话，客户端据此把 09 §3-H 的分享项从规格里划掉 |
 
 ## 已确认可用（无需等待，可并行开发）
 

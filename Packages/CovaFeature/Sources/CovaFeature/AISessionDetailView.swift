@@ -178,6 +178,14 @@ public struct AISessionDetailView: View {
     ///
     /// · **↓ 下载** —— **不渲染**：D12 明令 v1.0 不开任何扣费入口，09 §5 的终态行原文即
     ///   「下载入口仍按 D12 隐藏」，合规评审放行后再接。
+    /// · **⤴ 分享** —— **不渲染，因为契约里没有任何可公开访问的候选页面**（NEEDS-24）。
+    ///   `api-contracts.md` §4 全表只有 sessions / plans / generation-jobs / agent / retention，
+    ///   既无「候选公开页」也无 share/短链端点。仓内另外两处能分享的东西用的都是**公开曲库资源**
+    ///   的常量链接（16 的 `covalink.cn/artists/:id`、02 与 07 的 `covalink.cn/tracks/:id`），
+    ///   而生成候选**不是**曲库曲目 —— 09 §1 自己就写着「若候选已被后端收录为库曲，v1.0 一般不可」。
+    ///   剩下唯一能拿到的地址是 `audioUrl` / `audioDownloadUrl`，那是 Bearer 授权地址：
+    ///   把它交给系统分享面板等于把凭证送出设备（硬边界 3 / D7 / TD-23 三面禁止）。
+    ///   ⇒ 少一个钮，不编一个分享目标。后端补上公开页或分享端点后，在这里接 `ShareLink`。
     @ViewBuilder
     private func candidateActionBar(_ candidate: GenerationCandidateDto) -> some View {
         HStack(spacing: CovaSpace.sm) {
