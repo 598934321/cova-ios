@@ -25,7 +25,10 @@ private actor GatedTransport: HTTPTransport {
         recorded.append(request)
         switch request.url.path {
         case CovaAuthSession.loginPath:
-            return HTTPResponse(statusCode: 200, body: TestTransportData.login)
+            return TestAccount.a.loginResponse
+        case CovaAuthSession.mePath:
+            // 登录第二步：回**同 id** 的权威身份（缺这一步会让 signIn 直接失败）。
+            return TestAccount.a.meResponse
         case CovaAuthSession.refreshPath:
             return HTTPResponse(statusCode: 200, body: TestTransportData.refresh)
         case Self.protectedPath:
@@ -86,15 +89,17 @@ final class CovaAPIClientTests: XCTestCase {
         let protectedCount = await transport.requestCount(path: GatedTransport.protectedPath)
         XCTAssertEqual(protectedCount, concurrency * 2, "每个请求恰重放一次")
 
-        let expectedUser = try Fixture.decode(CovaLoginResponseDto.self, "auth-login").user
+        // 登录后 `state` 的身份取自 `GET /api/auth/me`（两步流的第二步），不再是 `/login` 的 user。
+        let expectedUser = try Fixture.decode(CovaMeResponse.self, "auth-me").user
         let state = await session.currentState()
         XCTAssertEqual(state, .authenticated(expectedUser))
+        let meCount = await transport.requestCount(path: CovaAuthSession.mePath)
+        XCTAssertEqual(meCount, 1, "登录只取一次权威身份")
     }
 
     func testRefreshFailureClearsCredentialsAndSignsOut() async throws {
-        let transport = FakeHTTPTransport { request in
+        let transport = makeAuthTransport { request in
             switch request.url.path {
-            case CovaAuthSession.loginPath: return HTTPResponse(statusCode: 200, body: TestTransportData.login)
             case CovaAuthSession.refreshPath: return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
             default: return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
             }
@@ -126,9 +131,8 @@ final class CovaAPIClientTests: XCTestCase {
     }
 
     func testReplayHappensOnlyOnceEvenWhenStillUnauthorized() async throws {
-        let transport = FakeHTTPTransport { request in
+        let transport = makeAuthTransport { request in
             switch request.url.path {
-            case CovaAuthSession.loginPath: return HTTPResponse(statusCode: 200, body: TestTransportData.login)
             case CovaAuthSession.refreshPath: return HTTPResponse(statusCode: 200, body: TestTransportData.refresh)
             default: return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
             }
@@ -291,10 +295,7 @@ final class CovaAPIClientTests: XCTestCase {
     }
 
     func testAfterSignOutRequestsCarryNoOldToken() async throws {
-        let transport = FakeHTTPTransport { request in
-            if request.url.path == CovaAuthSession.loginPath {
-                return HTTPResponse(statusCode: 200, body: TestTransportData.login)
-            }
+        let transport = makeAuthTransport { request in
             if request.url.path == CovaAuthSession.logoutPath {
                 return HTTPResponse(statusCode: 200, body: Data(#"{"message":"ok"}"#.utf8))
             }
@@ -355,12 +356,7 @@ final class CovaAPIClientTests: XCTestCase {
     }
 
     func testRecordedRequestNeverRendersBearerToken() async throws {
-        let transport = FakeHTTPTransport { request in
-            if request.url.path == CovaAuthSession.loginPath {
-                return HTTPResponse(statusCode: 200, body: TestTransportData.login)
-            }
-            return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
-        }
+        let transport = makeAuthTransport()
         let stack = makeTestStack()
         let session = makeAuthSession(transport: transport, stack: stack)
         try await session.signIn(email: "tester@example.invalid", password: SecretString("placeholder"))
@@ -377,21 +373,18 @@ final class CovaAPIClientTests: XCTestCase {
     // MARK: - M-1：在途请求绑定 owner/generation（切号竞态）
 
     private func testSwitchingSetup(triggerPath: String) -> (FakeHTTPTransport, SwitchSessionBox) {
-        let script = SwitchLoginScript()
+        // 两次登录分别是账号 A、B：每次的 `/me` 都按出示的 access token 回同 id 的身份。
+        let script = AuthFlowScript(accounts: [.a, .b])
         let box = SwitchSessionBox()
-        let transport = FakeHTTPTransport { request in
-            switch request.url.path {
-            case CovaAuthSession.loginPath:
-                return HTTPResponse(statusCode: 200, body: script.next())
-            case triggerPath:
+        let transport = makeAuthTransport(script: script) { request in
+            if request.url.path == triggerPath {
                 // 在途请求返回 401 之前切换到账号 B（复现评审注入的竞态）。
                 if let session = box.session {
                     _ = try? await session.signIn(email: "switch@example.invalid", password: SecretString("pw"))
                 }
                 return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
-            default:
-                return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
             }
+            return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
         }
         return (transport, box)
     }

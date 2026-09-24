@@ -78,11 +78,10 @@ final class CrossAccountRefreshTests: XCTestCase {
         gate: RefreshGate,
         aRefreshResult: @escaping @Sendable () -> HTTPResponse
     ) -> FakeHTTPTransport {
-        let script = SwitchLoginScript()
-        return FakeHTTPTransport { request in
+        // 两次登录分别是 A、B（`/me` 按出示的 token 回同 id 身份）。
+        let script = AuthFlowScript(accounts: [.a, .b])
+        return makeAuthTransport(script: script) { request in
             switch request.url.path {
-            case CovaAuthSession.loginPath:
-                return HTTPResponse(statusCode: 200, body: script.next())
             case CovaAuthSession.refreshPath:
                 switch request.bearerToken {
                 case Self.aRefresh:
@@ -186,11 +185,9 @@ final class CrossAccountRefreshTests: XCTestCase {
         let concurrency = 8
         let gate = RefreshGate()
         let barrier = ArrivalBarrier(expected: concurrency)
-        let script = SwitchLoginScript()
-        let transport = FakeHTTPTransport { request in
+        let script = AuthFlowScript(accounts: [.a, .b])
+        let transport = makeAuthTransport(script: script) { request in
             switch request.url.path {
-            case CovaAuthSession.loginPath:
-                return HTTPResponse(statusCode: 200, body: script.next())
             case Self.protectedPath:
                 if request.bearerToken == "ACCESS_TOKEN_PLACEHOLDER" {
                     await barrier.arriveAndWait()

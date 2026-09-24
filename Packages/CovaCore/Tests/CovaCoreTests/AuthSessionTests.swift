@@ -26,18 +26,17 @@ final class AuthSessionTests: XCTestCase {
         )
     }
 
+    /// 登录两步流（`/login` + 同 id 的 `/me`）+ 刷新 200 + 登出 200。
     private func loginTransport() -> FakeHTTPTransport {
-        FakeHTTPTransport { request in
-            if request.url.path == CovaAuthSession.loginPath {
-                return HTTPResponse(statusCode: 200, body: TestTransportData.login)
-            }
-            if request.url.path == CovaAuthSession.refreshPath {
+        makeAuthTransport { request in
+            switch request.url.path {
+            case CovaAuthSession.refreshPath:
                 return HTTPResponse(statusCode: 200, body: TestTransportData.refresh)
-            }
-            if request.url.path == CovaAuthSession.logoutPath {
+            case CovaAuthSession.logoutPath:
                 return HTTPResponse(statusCode: 200, body: Data(#"{"message":"ok"}"#.utf8))
+            default:
+                return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
             }
-            return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
         }
     }
 
@@ -69,7 +68,8 @@ final class AuthSessionTests: XCTestCase {
 
     func testSignInStoresTokensBindsOwnerAndAdvancesGeneration() async throws {
         let stack = makeTestStack()
-        let session = makeSession(transport: loginTransport(), stack: stack)
+        let transport = loginTransport()
+        let session = makeSession(transport: transport, stack: stack)
         let before = await stack.lifecycle.currentGeneration()
 
         let user = try await session.signIn(email: "tester@example.invalid", password: SecretString("placeholder"))
@@ -90,6 +90,11 @@ final class AuthSessionTests: XCTestCase {
             try stack.secureStore.secret(for: SecureStoreItem(principalId: loginUser, kind: .refreshToken))?.rawValue,
             "REFRESH_TOKEN_PLACEHOLDER"
         )
+        // 登录是两步：`/login` 建立凭证后必须由 `/me` 取回权威身份，且恰一次。
+        let loginCount = await transport.requestCount(path: CovaAuthSession.loginPath)
+        let meCount = await transport.requestCount(path: CovaAuthSession.mePath)
+        XCTAssertEqual(loginCount, 1)
+        XCTAssertEqual(meCount, 1, "登录后必须由 GET /api/auth/me 取回身份")
     }
 
     func testSignInFailureKeepsSignedOutAndStoresNothing() async {
@@ -161,23 +166,8 @@ final class AuthSessionTests: XCTestCase {
     }
 
     func testSwitchAccountClearsPreviousOwnerCredentials() async throws {
-        let secondLogin = Data(
-            #"{"user":{"id":"user-0002","name":"乙","role":"user","email":"b@example.invalid","covaId":null,"phone":null,"isArtist":false,"isPartner":false},"token":"SECOND_ACCESS","refreshToken":"SECOND_REFRESH","expiresIn":7200}"#.utf8
-        )
-        final class Script: @unchecked Sendable {
-            private let lock = NSLock()
-            private var count = 0
-            func next() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
-        }
-        let script = Script()
-        let transport = FakeHTTPTransport { request in
-            switch request.url.path {
-            case CovaAuthSession.loginPath:
-                return HTTPResponse(statusCode: 200, body: script.next() == 1 ? TestTransportData.login : secondLogin)
-            default:
-                return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
-            }
-        }
+        // 两次登录分别是账号 A、B；每次登录的 `/me` 都回**同 id** 的身份（两步流硬要求）。
+        let transport = makeAuthTransport(script: AuthFlowScript(accounts: [.a, .b]))
         let stack = makeTestStack()
         let session = makeSession(transport: transport, stack: stack)
 
@@ -194,6 +184,11 @@ final class AuthSessionTests: XCTestCase {
             try stack.secureStore.secret(for: SecureStoreItem(principalId: newOwner, kind: .accessToken))?.rawValue,
             "SECOND_ACCESS"
         )
+        // A、B 各自完成两步：两次登录 + 两次取身份。
+        let loginCount = await transport.requestCount(path: CovaAuthSession.loginPath)
+        let meCount = await transport.requestCount(path: CovaAuthSession.mePath)
+        XCTAssertEqual(loginCount, 2)
+        XCTAssertEqual(meCount, 2, "每次登录都必须各取一次 `/me`")
     }
 
     func testRefreshRotatesTokensAndIsSingleFlight() async throws {
@@ -204,13 +199,10 @@ final class AuthSessionTests: XCTestCase {
             var value: Int { lock.lock(); defer { lock.unlock() }; return calls }
         }
         let counter = Counter()
-        let transport = FakeHTTPTransport { request in
+        let transport = makeAuthTransport { request in
             if request.url.path == CovaAuthSession.refreshPath {
                 counter.increment()
                 return HTTPResponse(statusCode: 200, body: TestTransportData.refresh)
-            }
-            if request.url.path == CovaAuthSession.loginPath {
-                return HTTPResponse(statusCode: 200, body: TestTransportData.login)
             }
             return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
         }
@@ -250,13 +242,10 @@ final class AuthSessionTests: XCTestCase {
             var value: Int { lock.lock(); defer { lock.unlock() }; return calls }
         }
         let counter = Counter()
-        let transport = FakeHTTPTransport { request in
+        let transport = makeAuthTransport { request in
             if request.url.path == CovaAuthSession.refreshPath {
                 counter.increment()
                 return HTTPResponse(statusCode: 200, body: TestTransportData.refresh)
-            }
-            if request.url.path == CovaAuthSession.loginPath {
-                return HTTPResponse(statusCode: 200, body: TestTransportData.login)
             }
             return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
         }
@@ -275,9 +264,8 @@ final class AuthSessionTests: XCTestCase {
     }
 
     func testRefreshFailureSignsOutAndClearsCredentials() async throws {
-        let transport = FakeHTTPTransport { request in
+        let transport = makeAuthTransport { request in
             switch request.url.path {
-            case CovaAuthSession.loginPath: return HTTPResponse(statusCode: 200, body: TestTransportData.login)
             case CovaAuthSession.refreshPath: return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
             default: return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
             }
@@ -369,13 +357,8 @@ final class AuthSessionTests: XCTestCase {
             func clearPrivateMediaCache(owner: PrincipalID) async throws {}
             func tearDownPlayback(owner: PrincipalID) async throws {}
         }
-        let script = SwitchLoginScript()
-        let transport = FakeHTTPTransport { request in
-            switch request.url.path {
-            case CovaAuthSession.loginPath: return HTTPResponse(statusCode: 200, body: script.next())
-            default: return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
-            }
-        }
+        let script = AuthFlowScript(accounts: [.a, .b])
+        let transport = makeAuthTransport(script: script)
         let stack = makeTestStack(cleaners: [FailingCleaner()])
         let session = makeSession(transport: transport, stack: stack)
         try await session.signIn(email: "a@example.invalid", password: SecretString("pw"))
@@ -407,14 +390,17 @@ final class AuthSessionTests: XCTestCase {
     func testCredentialReadFailureIsObservableAndDistinctFromAbsence() async throws {
         let transport = loginTransport()
         let stack = makeTestStack()
-        let failing = ReadFailingSecureStore(inner: stack.secureStore)
+        let failing = ReadFailingSecureStore(inner: stack.secureStore, failingReads: false)
         let session = CovaAuthSession(
             transport: transport,
             secureStore: failing,
             lifecycle: stack.lifecycle,
             activeOwnerStore: stack.activeOwnerStore
         )
+        // 登录两步流的 `/me` 也要读 access token，故先让读可用、建立一次**真实登录**，
+        // 再翻转成「keychain 读不出」——m-2 要区分的正是登录之后的读失败与本无凭证。
         try await session.signIn(email: "tester@example.invalid", password: SecretString("placeholder"))
+        failing.setFailingReads(true)
 
         do {
             _ = try await session.accessToken()
@@ -465,9 +451,8 @@ final class AuthSessionTests: XCTestCase {
     // MARK: - m-4：确定性认证失败 vs 传输类失败
 
     func testRefresh403ClearsCredentialsAndSignsOut() async throws {
-        let transport = FakeHTTPTransport { request in
+        let transport = makeAuthTransport { request in
             switch request.url.path {
-            case CovaAuthSession.loginPath: return HTTPResponse(statusCode: 200, body: TestTransportData.login)
             case CovaAuthSession.refreshPath: return HTTPResponse(statusCode: 403, body: Data(#"{"error":"forbidden"}"#.utf8))
             default: return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
             }
@@ -495,9 +480,8 @@ final class AuthSessionTests: XCTestCase {
     }
 
     func testRefreshTransportFailureKeepsSessionAndCredentials() async throws {
-        let transport = FakeHTTPTransport { request in
+        let transport = makeAuthTransport { request in
             switch request.url.path {
-            case CovaAuthSession.loginPath: return HTTPResponse(statusCode: 200, body: TestTransportData.login)
             case CovaAuthSession.refreshPath: throw URLError(.timedOut)
             default: return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
             }

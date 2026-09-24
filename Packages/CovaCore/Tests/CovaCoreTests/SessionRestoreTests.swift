@@ -26,9 +26,14 @@ final class SessionRestoreTests: XCTestCase {
         get throws { try Fixture.decode(CovaMeResponse.self, "auth-me").user }
     }
 
-    /// 先建立一次真实登录（写入 Keychain 凭证 + owner 指针），模拟「上次会话已持久化」。
-    private func seedSignedInSession(transport: FakeHTTPTransport, stack: TestStack) async throws {
-        let session = makeAuthSession(transport: transport, stack: stack)
+    /// 先建立一次真实登录（两步：`/login` 建凭证 + `/me` 取身份，都成功）写入凭证 + owner 指针，
+    /// 模拟「上次会话已持久化」。
+    ///
+    /// 刻意用一个**独立的**登录传输层：登录后半程那次 `/me` 属于「上一次运行」的历史，
+    /// 不该占用本测试为**恢复路径**脚本化的 `/me` 行为 —— 否则 401/超时/身份失配的脚本会在
+    /// seed 阶段就把登录打断，`/me` 计数也会凭空多出一跳。
+    private func seedSignedInSession(stack: TestStack) async throws {
+        let session = makeAuthSession(transport: makeAuthTransport(), stack: stack)
         try await session.signIn(email: "tester@example.invalid", password: SecretString("placeholder"))
     }
 
@@ -68,7 +73,7 @@ final class SessionRestoreTests: XCTestCase {
     func testRestoreWithValidCredentialsEntersAuthenticated() async throws {
         let transport = loginAndMeTransport { _ in HTTPResponse(statusCode: 200, body: TestTransportData.me) }
         let stack = makeTestStack()
-        try await seedSignedInSession(transport: transport, stack: stack)
+        try await seedSignedInSession(stack: stack)
 
         let cold = makeAuthSession(transport: transport, stack: stack)
         let state = try await cold.restoreSession()
@@ -97,7 +102,7 @@ final class SessionRestoreTests: XCTestCase {
             }
         }
         let stack = makeTestStack()
-        try await seedSignedInSession(transport: transport, stack: stack)
+        try await seedSignedInSession(stack: stack)
 
         let cold = makeAuthSession(transport: transport, stack: stack)
         let state = try await cold.restoreSession()
@@ -122,7 +127,7 @@ final class SessionRestoreTests: XCTestCase {
             }
         }
         let stack = makeTestStack()
-        try await seedSignedInSession(transport: transport, stack: stack)
+        try await seedSignedInSession(stack: stack)
 
         let cold = makeAuthSession(transport: transport, stack: stack)
         let state = try await cold.restoreSession()
@@ -143,7 +148,7 @@ final class SessionRestoreTests: XCTestCase {
             }
         }
         let stack = makeTestStack()
-        try await seedSignedInSession(transport: transport, stack: stack)
+        try await seedSignedInSession(stack: stack)
 
         let cold = makeAuthSession(transport: transport, stack: stack)
         do {
@@ -171,7 +176,7 @@ final class SessionRestoreTests: XCTestCase {
             }
         }
         let stack = makeTestStack()
-        try await seedSignedInSession(transport: transport, stack: stack)
+        try await seedSignedInSession(stack: stack)
 
         let cold = makeAuthSession(transport: transport, stack: stack)
         box.session = cold
@@ -194,7 +199,7 @@ final class SessionRestoreTests: XCTestCase {
             }
         }
         let stack = makeTestStack()
-        try await seedSignedInSession(transport: transport, stack: stack)
+        try await seedSignedInSession(stack: stack)
 
         let cold = makeAuthSession(transport: transport, stack: stack)
         let state = try await cold.restoreSession()
@@ -223,7 +228,7 @@ final class SessionRestoreTests: XCTestCase {
             }
         }
         let stack = makeTestStack()
-        try await seedSignedInSession(transport: transport, stack: stack)
+        try await seedSignedInSession(stack: stack)
 
         let cold = makeAuthSession(transport: transport, stack: stack)
         let state = try await cold.restoreSession()
@@ -243,7 +248,7 @@ final class SessionRestoreTests: XCTestCase {
             }
         }
         let stack = makeTestStack()
-        try await seedSignedInSession(transport: transport, stack: stack)
+        try await seedSignedInSession(stack: stack)
 
         let cold = makeAuthSession(transport: transport, stack: stack)
         await cold.setBeforeSessionActivation { [cold] in
@@ -262,7 +267,7 @@ final class SessionRestoreTests: XCTestCase {
         )
         let transport = loginAndMeTransport { _ in HTTPResponse(statusCode: 200, body: mismatch) }
         let stack = makeTestStack()
-        try await seedSignedInSession(transport: transport, stack: stack)
+        try await seedSignedInSession(stack: stack)
 
         let cold = makeAuthSession(transport: transport, stack: stack)
         let state = try await cold.restoreSession()

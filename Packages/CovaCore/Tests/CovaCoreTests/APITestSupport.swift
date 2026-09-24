@@ -1,4 +1,4 @@
-import CovaCore
+@testable import CovaCore
 import Foundation
 import XCTest
 
@@ -68,11 +68,24 @@ final class InMemoryOwnerStore: OwnerScopedStoring, @unchecked Sendable {
 }
 
 /// 读取总是抛错的凭证存储（m-2：读失败必须可观测，不能等同于「本无凭证」）。
+///
+/// `failingReads` 可在登录后翻转为 `true`：登录本身（两步流的 `/me`）也要读 access token，
+/// 所以「一上来就读不出」的存储会把登录打断；能翻转才既能建立一次真实登录、
+/// 又能覆盖「登录之后 keychain 读不出」这一 m-2 场景。
 final class ReadFailingSecureStore: SecureStore, @unchecked Sendable {
     private let inner: InMemorySecureStore
+    private let lock = NSLock()
+    private var failing: Bool
 
-    init(inner: InMemorySecureStore) {
+    init(inner: InMemorySecureStore, failingReads: Bool = true) {
         self.inner = inner
+        self.failing = failingReads
+    }
+
+    func setFailingReads(_ value: Bool) {
+        lock.lock()
+        failing = value
+        lock.unlock()
     }
 
     func set(_ secret: SecretString, for item: SecureStoreItem) throws {
@@ -80,6 +93,10 @@ final class ReadFailingSecureStore: SecureStore, @unchecked Sendable {
     }
 
     func secret(for item: SecureStoreItem) throws -> SecretString? {
+        lock.lock()
+        let shouldFail = failing
+        lock.unlock()
+        guard shouldFail else { return try inner.secret(for: item) }
         throw SecureStoreError.status(-25300)
     }
 
@@ -92,20 +109,126 @@ final class ReadFailingSecureStore: SecureStore, @unchecked Sendable {
     }
 }
 
-/// 登录脚本：第一次返回账号 A，之后返回账号 B（切号测试用）。
-final class SwitchLoginScript: @unchecked Sendable {
-    static let secondLogin = Data(
-        #"{"user":{"id":"user-0002","name":"乙","role":"user","email":"b@example.invalid","covaId":null,"phone":null,"isArtist":false,"isPartner":false},"token":"SECOND_ACCESS","refreshToken":"SECOND_REFRESH","expiresIn":7200}"#.utf8
-    )
+// MARK: - 登录两步流（`POST /api/auth/login` → `GET /api/auth/me`）测试装配
 
+/// 测试账号在登录两步流中的**成对**响应。
+///
+/// 生产 `signIn` 两步：`/login` 只建立凭证，`/me` 才是权威身份，且两步的 `user.id` 必须一致
+/// （不一致即 fail-closed，见 `CovaAuthSession.signIn`）。因此「stub 了登录」的测试必须同时
+/// stub `/me`，且两份响应同 id —— 本类型把两者绑成一个值，让「只装其一」无处可藏。
+enum TestAccount: String, CaseIterable, Sendable {
+    case a
+    case b
+
+    var principal: PrincipalID {
+        switch self {
+        case .a: return PrincipalID(rawValue: "user-0001")
+        case .b: return PrincipalID(rawValue: "user-0002")
+        }
+    }
+
+    var accessToken: String {
+        switch self {
+        case .a: return "ACCESS_TOKEN_PLACEHOLDER"
+        case .b: return "SECOND_ACCESS"
+        }
+    }
+
+    var refreshToken: String {
+        switch self {
+        case .a: return "REFRESH_TOKEN_PLACEHOLDER"
+        case .b: return "SECOND_REFRESH"
+        }
+    }
+
+    /// `POST /api/auth/login` 响应体（`user.id == principal.rawValue`）。
+    var loginBody: Data {
+        switch self {
+        case .a:
+            return TestTransportData.login
+        case .b:
+            return Data(
+                #"{"user":{"id":"user-0002","name":"乙","role":"user","email":"b@example.invalid","covaId":null,"phone":null,"isArtist":false,"isPartner":false},"token":"SECOND_ACCESS","refreshToken":"SECOND_REFRESH","expiresIn":7200}"#.utf8
+            )
+        }
+    }
+
+    /// `GET /api/auth/me` 响应体：`user.id` 与本账号 `loginBody` 一致，身份字段由 `/me` 给全。
+    var meBody: Data {
+        switch self {
+        case .a:
+            return TestTransportData.me
+        case .b:
+            return Data(
+                #"{"user":{"id":"user-0002","name":"乙","role":"user","email":"b@example.invalid","covaId":"COVA-0002","phone":null,"isArtist":false,"isPartner":false},"entitlements":{"plan":"free","subscriptionId":null,"activeUntil":null,"creditsBalance":0,"monthlyCredits":0,"canDownload":true,"canUseCovaAI":true,"canRequestProjects":false}}"#.utf8
+            )
+        }
+    }
+
+    var loginResponse: HTTPResponse { HTTPResponse(statusCode: 200, body: loginBody) }
+    var meResponse: HTTPResponse { HTTPResponse(statusCode: 200, body: meBody) }
+
+    /// `/me` 给出的权威身份（断言用：登录成功后 `state` 里的 user 必须等于它）。
+    var meUser: AuthUser {
+        get throws { try JSONDecoder().decode(CovaMeResponse.self, from: meBody).user }
+    }
+
+    func item(_ kind: CredentialKind) -> SecureStoreItem {
+        SecureStoreItem(principalId: principal, kind: kind)
+    }
+}
+
+/// 登录两步流的派发脚本：按顺序给出各账号的 `/login`，并按 `/me` 出示的 access token
+/// 找回**签发该 token 的账号**、回它的 `/me`。
+///
+/// 用 token 而非「第几次调用」配对，切号 / 并发场景下不会把 B 的身份错发给 A 的 `/me`。
+/// 未知 token 直接 401（不兜底空 body）：漏装或装错 `/me` 会立刻红，而不是被掩盖。
+final class AuthFlowScript: @unchecked Sendable {
+    private let accounts: [TestAccount]
     private let lock = NSLock()
-    private var count = 0
+    private var served = 0
 
-    func next() -> Data {
+    init(accounts: [TestAccount] = [.a]) {
+        self.accounts = accounts
+    }
+
+    /// 第 N 次登录回第 N 个账号；账号用尽后停在最后一个（切到 B 之后再登录仍是 B）。
+    func nextLoginResponse() -> HTTPResponse {
         lock.lock()
         defer { lock.unlock() }
-        count += 1
-        return count == 1 ? TestTransportData.login : Self.secondLogin
+        served += 1
+        return accounts[min(served, accounts.count) - 1].loginResponse
+    }
+
+    func meResponse(for request: HTTPRequest) -> HTTPResponse {
+        guard let bearer = request.bearerToken,
+              let account = accounts.first(where: { $0.accessToken == bearer }) else {
+            return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
+        }
+        return account.meResponse
+    }
+}
+
+/// 装好登录两步流的假传输层：`/login` 与 `/me` 由 `script` 成对派发。
+///
+/// - Parameters:
+///   - script: 账号脚本（默认单账号 A）。
+///   - other: 其余路由（刷新 / 登出 / 受保护资源）由调用方脚本化；默认 200 `{}`。
+func makeAuthTransport(
+    script: AuthFlowScript = AuthFlowScript(),
+    other: @escaping @Sendable (HTTPRequest) async throws -> HTTPResponse = { _ in
+        HTTPResponse(statusCode: 200, body: TestTransportData.ok)
+    }
+) -> FakeHTTPTransport {
+    FakeHTTPTransport { request in
+        switch request.url.path {
+        case CovaAuthSession.loginPath:
+            return script.nextLoginResponse()
+        case CovaAuthSession.mePath:
+            return script.meResponse(for: request)
+        default:
+            return try await other(request)
+        }
     }
 }
 
