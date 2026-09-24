@@ -130,7 +130,7 @@ public struct StudioMessageDto: Codable, Equatable, Sendable, Identifiable {
     }
 
     /// 缺 `id` 时拼一个**确定性视图标识**（角色 + 时间戳 + 正文前缀）：同一条消息每次解码
-    /// 都得到同一个键，SwiftUI 不会重排气泡；它只用于列表身份，**不冒充后端给过消息号**。
+    /// 都得到同一个键，列表视图因此不会重排气泡；它只用于列表身份，**不冒充后端给过消息号**。
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let alias = try decoder.container(keyedBy: MessageAliasKey.self)
