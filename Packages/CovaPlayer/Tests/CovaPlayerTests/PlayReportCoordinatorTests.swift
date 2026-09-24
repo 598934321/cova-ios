@@ -453,7 +453,8 @@ final class PlayReportCoordinatorTests: XCTestCase {
         if case .queued = queued {} else { return XCTFail("后台应挂起：\(queued)") }
         let sent = await subject.lifecyclePhaseChanged(.active)
         XCTAssertEqual(sent.count, 1)
-        XCTAssertEqual(try wireSources(await submitter.requests), ["track_detail"])
+        let requests = await submitter.requests
+        XCTAssertEqual(try wireSources(requests), ["track_detail"])
     }
 
     func testWrongOperationTokenIsRejected() {

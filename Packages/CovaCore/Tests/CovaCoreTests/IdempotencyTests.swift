@@ -209,7 +209,16 @@ final class IdempotencyTests: XCTestCase {
         let first = try PlayReportRequestDto(trackId: "library-1", source: .playlist, token: token)
         let replay = try PlayReportRequestDto(trackId: "library-1", source: .playlist, token: token)
         XCTAssertEqual(first.source, replay.source)
-        XCTAssertEqual(try JSONEncoder().encode(first), try JSONEncoder().encode(replay))
+        // 按**键值**比对而不是编码字节：JSONEncoder 不保证对象键的输出顺序
+        // （同一份代码在 iOS 上就会写出不同字节序），比字节会把这条用例写成抛硬币。
+        let firstBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(first)) as? [String: Any]
+        )
+        let replayBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(replay)) as? [String: Any]
+        )
+        XCTAssertEqual(firstBody as NSDictionary, replayBody as NSDictionary)
+        XCTAssertEqual(firstBody["source"] as? String, "playlist")
     }
 
     /// TD-24：写请求 DTO 拒绝 operation↔key 错配（DTO 层不再接受任意键）。
