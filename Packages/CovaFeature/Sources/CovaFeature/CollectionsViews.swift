@@ -291,7 +291,11 @@ public struct FavoritesView: View {
     /// `kind` 取 `.privateCandidate`：它不是库曲，`POST /api/tracks/play` 只认库曲 id，
     /// 按 `.libraryTrack` 起播会拿 `note:<uuid>` 去打一个必然 404 的上报。
     static func playbackItem(for note: NoteFavoriteDto) -> PlaybackItem? {
-        guard let audio = displayURL(note.audioUrl), let audioURL = try? AudioURL(https: audio) else { return nil }
+        // 音频只认生产出口（D10）：`PrivateAudioFetcher` 那一层同样会按主机拒绝，
+        // 这里先拒是为了让"不能播"落在能说话的地方，而不是变成一个网络错。
+        guard let raw = note.audioUrl, let candidate = displayURL(raw),
+              CovaEnvironment.isProductionOrigin(candidate),
+              let audioURL = try? AudioURL(https: candidate) else { return nil }
         // `PlaybackItem.id` 的口径是 `[A-Za-z0-9_-]`（同时是缓存文件名），`note:` 前缀进不去。
         guard let noteID = note.noteIdentifier else { return nil }
         return try? PlaybackItem(

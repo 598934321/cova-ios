@@ -37,7 +37,9 @@ public struct FavoritesListDto: Decodable, Equatable, Sendable {
 }
 
 /// 一条收藏的**种类**（决定它走哪个收藏端点）。
-public enum FavoriteItemDto: Equatable, Sendable {
+///
+/// 刻意只 `Decodable`（同 `FavoritesListDto`：条目里可能带签名地址，不给序列化通路）。
+public enum FavoriteItemDto: Decodable, Equatable, Sendable {
     case library(TrackDto)
     case note(NoteFavoriteDto)
 
@@ -258,6 +260,11 @@ public struct FavoriteMutationRequestDto: Codable, Equatable, Sendable {
 public struct FavoriteMutationResponseDto: Codable, Equatable, Sendable {
     public let message: String?
     public let favoriteCount: Int?
+
+    public init(message: String? = nil, favoriteCount: Int? = nil) {
+        self.message = message
+        self.favoriteCount = favoriteCount
+    }
 
     enum CodingKeys: String, CodingKey {
         case message
