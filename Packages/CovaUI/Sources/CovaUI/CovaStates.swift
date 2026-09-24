@@ -1,5 +1,41 @@
 import SwiftUI
 import ImageIO
+import CovaCore
+
+/// 封面取图的**出口守卫**（D23②）：跳转逐跳裁决，不合规的那一跳**在出站之前**就被拒。
+///
+/// 为什么这里必须有 delegate：`URLSession` 默认会自动跟随跨主机 302（2026-09-25 本地环回
+/// 探针实测：无 delegate 时落地那台确实收到了 GET），所以只在拿到数据之后判 origin
+/// 等于「让出去一次再后悔」。
+private final class CovaArtworkEgressGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let original = task.originalRequest?.url, let landing = request.url else {
+            completionHandler(nil)
+            return
+        }
+        // 封面腿一个凭证都不该带；带了就走「凭证类」那一条（只能同源），名单主机一律不跟。
+        let carriesCredentials = request.value(forHTTPHeaderField: "Authorization") != nil
+        guard CovaEnvironment.mediaRedirectAllowed(
+            from: original,
+            to: landing,
+            carriesCredentials: carriesCredentials
+        ) else {
+            completionHandler(nil)
+            return
+        }
+        var sanitized = request
+        sanitized.httpMethod = "GET"
+        // 纵深防御：放行也不许把 Authorization 带进存储主机（硬边界 3）。
+        sanitized.setValue(nil, forHTTPHeaderField: "Authorization")
+        completionHandler(sanitized)
+    }
+}
 
 /// 封面位图的**内存缓存**（PLAN M3：首屏与滚动 60fps）。
 ///
@@ -14,6 +50,31 @@ enum CovaArtworkCache {
     /// 降采样上限（长边像素）。本 App 最大的封面位是全屏播放器的封面 ≈ 340pt，
     /// @3x 也只要 1020px —— 取 1024 既不掉画质也不留原图的体积。
     private static let maxPixel: CGFloat = 1024
+
+    /// 出口受控的取图会话（D23②）：`URLSession.shared` 在 CovaUI 里从此不再出现 ——
+    /// ephemeral（地址与字节都不进磁盘缓存）+ 禁 cookie + 跳转按上面的守卫裁决。
+    /// 超时按「小图快取」形状给（不是音频那套 7 天资源超时）。
+    nonisolated(unsafe) private static let egressSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 5 * 60
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        return URLSession(
+            configuration: configuration,
+            delegate: CovaArtworkEgressGuard(),
+            delegateQueue: nil
+        )
+    }()
+
+    /// D23② 的出口判定：生产 origin ∪ 许可名单存储主机（名单只在
+    /// `CovaEnvironment.sanctionedStorageHosts` 一处定义）。**发起之前**判。
+    static func isSanctioned(_ url: URL) -> Bool {
+        CovaEnvironment.isSanctionedMediaURL(url)
+    }
 
     @MainActor private static let cache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
@@ -32,12 +93,20 @@ enum CovaArtworkCache {
     }
 
     /// 下载 + 解码都在**非主 actor** 上做；主 actor 只碰缓存与最终位图。
+    ///
+    /// 名单之外的地址返回 nil（UI 回退到音符占位），**不发一次请求** —— 不是红屏：
+    /// 封面今天就是跨源在 COS 上，把「唯一出口」照字面执行成「只准 covalink.cn」
+    /// 会让每一张封花都失败（那是把守卫写错，不是把策略写对；见 D23 的理由列）。
     @MainActor static func fetch(_ url: URL) async -> UIImage? {
         if let hit = image(for: url) { return hit }
+        guard isSanctioned(url) else { return nil }
         return await Task.detached(priority: .userInitiated) {
-            guard let (data, response) = try? await URLSession.shared.data(from: url),
+            guard let (data, response) = try? await Self.egressSession.data(from: url),
                   let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else { return nil }
+                  (200..<300).contains(http.statusCode),
+                  // 投递面兜底（与音频层 C2 同一口径）：落地那一条仍必须在名单内。
+                  // delegate 只挂在**我们自己建的**会话上，判一次不贵。
+                  let landing = http.url, Self.isSanctioned(landing) else { return nil }
             return downsampled(data)
         }.value
     }

@@ -284,4 +284,198 @@ final class CovaEnvironmentTests: XCTestCase {
         }
         XCTAssertNil(CovaEnvironment.resolveMediaURL(nil))
     }
+
+    // MARK: - R17-6：补全必须**逐字节保住**百分号编码
+
+    /// 线上口径：部署侧的后端是从**查询参数原文**里读媒体地址的
+    /// （`web` 仓 `src/app/api/tracks/[id]/preview-url/route.ts:37,47` 用
+    /// `searchParams.get('url')`，签名侧 `src/lib/proxy-audio-sign.ts:49` 同），
+    /// 而 Next 的查询解析把 `+` 当**空格**解。旧实现把相对地址拆成 `queryItems` 再重编码，
+    /// `%2B` 被解成 `+` 又原样写出 ⇒ 任何含 `+` 的值到服务端就 HMAC 不匹配。
+    /// 判据钉在「出站字符串与入站原文逐字节相同」，不是「解码后看起来差不多」。
+    func testResolveMediaURLPreservesPercentEncodingVerbatim() throws {
+        let raw = "/api/proxy/audio?url=https%3A%2F%2Fcdn.invalid%2Fsample%2Btake.mp3&exp=1790000000000&sig=ab%2Bcd%2Fef%3D%3D"
+        let url = try XCTUnwrap(CovaEnvironment.resolveMediaURL(raw))
+        XCTAssertEqual(url.absoluteString, "https://covalink.cn\(raw)", "补全只许加 host，查询原文一个字符都不许动")
+        XCTAssertEqual(
+            url.query,
+            "url=https%3A%2F%2Fcdn.invalid%2Fsample%2Btake.mp3&exp=1790000000000&sig=ab%2Bcd%2Fef%3D%3D",
+            "R17-6：%2B/%2F/%3D 必须原样留在查询里"
+        )
+        XCTAssertEqual(url.query?.contains("%2B"), true, "%2B 不许被降级成裸 +")
+        // 解码侧读到的仍是原值（`+` 不被解成空格 ⇒ 后端 searchParams.get 拿到的是同一串）。
+        let items = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(items.map(\.name), ["url", "exp", "sig"])
+        XCTAssertEqual(items.first?.value, "https://cdn.invalid/sample+take.mp3")
+        XCTAssertEqual(items.last?.value, "ab+cd/ef==")
+    }
+
+    /// 对照面（不许反向修成双重编码）：已编码的 `%252B` 保持 `%252B`，
+    /// 字面 `+` 保持字面 `+`（那是服务端自己写出来的形态，客户端不替它改语义）。
+    func testResolveMediaURLDoesNotReEncodeOrDoubleEncodeQueryText() throws {
+        let alreadyEncoded = "/api/proxy/audio?url=a%252Bb.mp3&sig=1"
+        XCTAssertEqual(
+            CovaEnvironment.resolveMediaURL(alreadyEncoded)?.query,
+            "url=a%252Bb.mp3&sig=1",
+            "R17-6：修复不得变成二次编码"
+        )
+        let literalPlus = "/api/proxy/audio?url=a+b.mp3&sig=1"
+        XCTAssertEqual(
+            CovaEnvironment.resolveMediaURL(literalPlus)?.absoluteString,
+            "https://covalink.cn/api/proxy/audio?url=a+b.mp3&sig=1"
+        )
+        // 无查询、只有路径的形态一个字节都不许多（原测试已覆盖，这里补查询为空的边界）。
+        XCTAssertEqual(
+            CovaEnvironment.resolveMediaURL("/api/tracks/one/preview-stream?")?.absoluteString,
+            "https://covalink.cn/api/tracks/one/preview-stream"
+        )
+        // 绝对 https 直链仍原样交出（这条腿与查询保真无关，不许被顺手动过）。
+        XCTAssertEqual(
+            CovaEnvironment.resolveMediaURL("https://cdn.invalid/x.mp3?sig=a%2Bb")?.absoluteString,
+            "https://cdn.invalid/x.mp3?sig=a%2Bb"
+        )
+    }
+
+    /// 保真的正面表述：**逐字节**等于「生产 host + 入站原文」，且补出来的地址仍是生产出口。
+    /// （任何「先解码再重编码」的实现都会在这一表格上某行失守 —— R17-6 就是 `%2B` 那一行。）
+    func testResolveMediaURLIsByteIdenticalToTheInboundTextForEveryAcceptedQueryShape() throws {
+        for raw in [
+            "/api/tracks/one/preview-stream",
+            "/api/tracks/one/preview-stream?seg=2",
+            "/api/proxy/audio?url=https%3A%2F%2Fcdn.invalid%2Fa.mp3&exp=1&sig=%2Bx",
+            "/api/proxy/audio?a=b%20c&d=%25",
+            "/api/proxy/audio?sig=a+b",
+            "/api/proxy/audio?sig=%252B",
+            "/api/v1//x?q=%2F%2F",
+        ] {
+            let url = try XCTUnwrap(CovaEnvironment.resolveMediaURL(raw), "补全失败：\(raw)")
+            XCTAssertEqual(url.absoluteString, "https://covalink.cn\(raw)", "出站原文与入站原文必须逐字节相同：\(raw)")
+            XCTAssertTrue(CovaEnvironment.isProductionOrigin(url), "保真不许把出口放宽：\(raw)")
+        }
+    }
+
+    // MARK: - D23：两类请求的出口（凭证类钉死同源，公开媒体类走显式名单）
+
+    /// 名单主机本身（唯一事实源在 `sanctionedStorageHosts`）：两个桶、一个存储区。
+    func testMediaAllowListContainsExactlyTheSanctionedBucketHosts() {
+        XCTAssertEqual(
+            CovaEnvironment.sanctionedStorageHosts,
+            [
+                "covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com",
+                "covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com",
+            ],
+            "名单扩容 = 改代码 + 过 D23，不许由运行时输入决定"
+        )
+        XCTAssertTrue(CovaEnvironment.isSanctionedStorageHost("covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com"))
+        XCTAssertTrue(CovaEnvironment.isSanctionedStorageHost("COVALINK-AUDIO-1301797874.cos.ap-shanghai.myqcloud.com"),
+                      "host 大小写不敏感")
+    }
+
+    /// D23②：公开媒体出口 = 生产出口 ∪ 名单；其余一律关（**精确**匹配，不是 `*.myqcloud.com`）。
+    func testSanctionedMediaURLOpenssOnlyTheNamedStorageHostsAndKeepsClosingEverythingElse() {
+        let accepted = [
+            "https://covalink.cn/api/tracks/one/preview-stream",
+            "https://covalink.cn:443/covers/a.jpeg",
+            "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg",
+            "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3?sign=stub",
+        ]
+        for text in accepted {
+            XCTAssertTrue(CovaEnvironment.isSanctionedMediaURL(URL(string: text)!), "应放行：\(text)")
+        }
+        let refused = [
+            // 近亲主机：把名单当**后缀**挂上去（DNS 上的真正 host 是 attacker.test）
+            "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com.attacker.test/a.jpeg",
+            // 前缀相似但不是那台桶（少了点号分隔 ⇒ 完全不同的 host）
+            "https://evil-myqcloud.com/a.jpeg",
+            "https://myqcloud.com/a.jpeg",
+            // 同存储区、别的桶（含用户私产 uploads 桶与别人的同名前缀桶）
+            "https://covalink-uploads-1301797874.cos.ap-shanghai.myqcloud.com/u.mp3",
+            "https://covalink-covers-9999999999.cos.ap-shanghai.myqcloud.com/a.jpeg",
+            // 别的地域（换区就是换主机，必须显式过 D23）
+            "https://covalink-covers-1301797874.cos.ap-beijing.myqcloud.com/a.jpeg",
+            // 生产 host 的子域不是生产 host
+            "https://cdn.covalink.cn/a.jpeg",
+            "https://covalink.cn.evil.invalid/a.jpeg",
+            // 形态不合格
+            "http://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/a.jpeg",
+            "https://user@covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/a.jpeg",
+            "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com:8443/a.jpeg",
+            "https://127.0.0.1:3110/a.jpeg",
+            "file:///tmp/a.jpeg",
+        ]
+        for text in refused {
+            XCTAssertFalse(CovaEnvironment.isSanctionedMediaURL(URL(string: text)!), "不该放行：\(text)")
+        }
+    }
+
+    /// D23①（不可谈判的一半）：带凭证的请求只能落在**同一权威**，名单不构成放行理由。
+    func testCredentialBearingRedirectPolicyNeverLeavesProductionAuthority() {
+        let original = URL(string: "https://covalink.cn/api/tracks/one/preview-stream")!
+        XCTAssertTrue(CovaEnvironment.mediaRedirectAllowed(
+            from: original,
+            to: URL(string: "https://covalink.cn/api/tracks/one/preview-stream?sig=rotated")!,
+            carriesCredentials: true
+        ), "同权威换址是服务端正常形态（NEEDS-15 那条腿）")
+        XCTAssertTrue(CovaEnvironment.mediaRedirectAllowed(
+            from: original,
+            to: URL(string: "https://covalink.cn:443/api/tracks/one/preview-stream")!,
+            carriesCredentials: true
+        ), "min-2：规范端口是同一台主机")
+        for refused in [
+            // 已授权分支那一条：302 到整曲桶（NEEDS-29）⇒ 名单里也不行，凭证不出同源
+            "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3",
+            "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg",
+            // 名单外
+            "https://other-authority.invalid/pawned.m4a",
+            // 别的 host / 别的端口 / 降级
+            "https://cdn.covalink.cn/api/tracks/one/preview-stream",
+            "https://covalink.cn:8443/api/tracks/one/preview-stream",
+            "http://covalink.cn/api/tracks/one/preview-stream",
+        ] {
+            XCTAssertFalse(CovaEnvironment.mediaRedirectAllowed(
+                from: original,
+                to: URL(string: refused)!,
+                carriesCredentials: true
+            ), "带凭证绝不跟到：\(refused)")
+        }
+        // 凭证类如果一开始就不在生产出口上（装配错了），落地也不许跟。
+        XCTAssertFalse(CovaEnvironment.mediaRedirectAllowed(
+            from: URL(string: "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3")!,
+            to: URL(string: "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full2.mp3")!,
+            carriesCredentials: true
+        ), "凭证类请求的发起地本身就必须是生产出口")
+    }
+
+    /// D23②/③：不带凭证的跳转只能在名单内漂（名单→名单可以，名单→名单外一律拒）。
+    func testCredentialFreeRedirectPolicyStaysInsideTheAllowList() {
+        let cover = URL(string: "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg")!
+        XCTAssertTrue(CovaEnvironment.mediaRedirectAllowed(
+            from: cover,
+            to: URL(string: "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3")!,
+            carriesCredentials: false
+        ), "名单主机之间跳转仍在名单内")
+        XCTAssertTrue(CovaEnvironment.mediaRedirectAllowed(
+            from: URL(string: "https://covalink.cn/api/media/x")!,
+            to: cover,
+            carriesCredentials: false
+        ), "公开媒体从生产出口落到封面桶是今天的真实形态")
+        for refused in [
+            "https://evil-myqcloud.com/a.jpeg",
+            "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com.attacker.test/a.jpeg",
+            "http://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/a.jpeg",
+            "file:///tmp/a.jpeg",
+        ] {
+            XCTAssertFalse(CovaEnvironment.mediaRedirectAllowed(
+                from: cover,
+                to: URL(string: refused)!,
+                carriesCredentials: false
+            ), "名单外落地：\(refused)")
+        }
+        // 发起地本身不在名单内 ⇒ 这一类根本没有资格（配置漂移关在外面）。
+        XCTAssertFalse(CovaEnvironment.mediaRedirectAllowed(
+            from: URL(string: "https://cdn.invalid/a.jpeg")!,
+            to: cover,
+            carriesCredentials: false
+        ))
+    }
 }

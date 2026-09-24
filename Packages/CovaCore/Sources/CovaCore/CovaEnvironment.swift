@@ -11,20 +11,105 @@ public enum CovaEnvironment {
     /// 唯一允许的默认 HTTPS 端口。
     public static let apiPort = 443
 
+    /// 出口形态守卫（两类请求共用，D23）：`https` + 有 host + 无 userinfo + authority 规范
+    /// + 非私网/环回/内网域名 + 规范端口。合格则返回**归一化 host**，否则 nil（fail-closed）。
+    ///
+    /// 抽出来只为了让「生产出口」与「许可名单存储主机」不可能长两套口径 ——
+    /// min-2 的教训就是同一个规范端口规则在两处各写一遍、其中一处漏改。
+    static func normalizedEgressHost(of url: URL) -> String? {
+        guard url.scheme?.lowercased() == "https" else { return nil }
+        guard let host = url.host()?.lowercased(), !host.isEmpty else { return nil }
+        guard url.user == nil, url.password == nil else { return nil }
+        guard hasCanonicalAuthority(url) else { return nil }
+        guard !isNonPublicHost(host) else { return nil }
+        guard url.port == nil || url.port == apiPort else { return nil }
+        return host
+    }
+
     /// 出站 URL 的 fail-closed 判定：任一条不满足即拒绝。
     ///
     /// 拒绝面：非 `https`、无 host、带 userinfo（`https://user@…`）、authority 非规范
     /// （如 `:0443`）、私网/环回/链路本地/内网域名、host 非生产 host、显式非 443 端口
     /// （含 3110 provider 网关）。
     public static func isProductionOrigin(_ url: URL) -> Bool {
-        guard url.scheme?.lowercased() == "https" else { return false }
-        guard let host = url.host()?.lowercased(), !host.isEmpty else { return false }
-        guard url.user == nil, url.password == nil else { return false }
-        guard hasCanonicalAuthority(url) else { return false }
-        guard !isNonPublicHost(host) else { return false }
-        guard host == apiBaseURL.host()?.lowercased() else { return false }
-        guard url.port == nil || url.port == apiPort else { return false }
-        return true
+        normalizedEgressHost(of: url) == apiBaseURL.host()?.lowercased()
+    }
+
+    // MARK: - D23：两类请求的出口（凭证类钉死同源，公开媒体类走显式名单）
+
+    /// 对象存储桶域名的**公共后缀**（腾讯云 COS 三段式域名的后两段：`.cos.<地域>.myqcloud.com`）。
+    public static let storageZoneSuffix = ".cos.ap-shanghai.myqcloud.com"
+
+    /// 许可名单上的**桶名**（D23② 的唯一事实源，2026-09-25 只读核对 `web` 仓
+    /// `src/lib/page-media.ts:91-96` 与 `src/lib/catalog-audio-url.ts:10-12`）：
+    /// · `covalink-covers-…`：封面桶，**公开读**（App 里每一张封面今天就在这台主机上）；
+    /// · `covalink-audio-…`：整曲桶，私有读，只允许**服务端签发的地址**出现在查询串里
+    ///   （NEEDS-29 未解锁前它仍然是「有权益分支的落地主机」，不是凭证出口）。
+    ///
+    /// 刻意**不**放宽成 `*.myqcloud.com`：那样会把 `covalink-uploads-…`（用户私产桶）与
+    /// 任何别人账号下同前缀的桶一起放进来 —— `web` 侧正因为这个被否过一次。
+    /// 名单按「桶名 + 存储区」**精确**匹配（既不是前缀也不是通配）：新增桶 = 改这一行 + 过 D23。
+    public static let sanctionedStorageBuckets: [String] = [
+        "covalink-covers-1301797874",
+        "covalink-audio-1301797874",
+    ]
+
+    /// 许可名单主机全名（`桶.存储区`）。
+    public static let sanctionedStorageHosts: [String] = CovaEnvironment.sanctionedStorageBuckets
+        .map { "\($0)\(CovaEnvironment.storageZoneSuffix)" }
+
+    /// D23②：host 是否就是名单上的那台存储主机（精确全等，大小写不敏感）。
+    public static func isSanctionedStorageHost(_ rawHost: String) -> Bool {
+        let host = rawHost.lowercased()
+        return sanctionedStorageHosts.contains { $0.lowercased() == host }
+    }
+
+    /// D23②：**不带凭证**的公开媒体出口判定 = 生产出口 ∪ 许可名单存储主机。
+    ///
+    /// 这不是「任何 https 主机」：名单之外的桶、别的地域（`.cos.ap-beijing.…`）、
+    /// 前缀相似的 `evil-myqcloud.com`、把名单主机当后缀挂上去的
+    /// `covalink-covers-….myqcloud.com.attacker.test` 一律不合格。
+    public static func isSanctionedMediaURL(_ url: URL) -> Bool {
+        guard let host = normalizedEgressHost(of: url) else { return false }
+        return host == apiBaseURL.host()?.lowercased() || isSanctionedStorageHost(host)
+    }
+
+    /// 权威归一化（`scheme://host`，**规范端口折叠**）：`covalink.cn` 与 `covalink.cn:443`
+    /// 是同一台主机（min-2），非规范端口就是另一台主机。非 https / 无 host → nil。
+    public static func normalizedAuthority(of url: URL) -> String? {
+        guard url.scheme?.lowercased() == "https" else { return nil }
+        guard let host = url.host()?.lowercased(), !host.isEmpty else { return nil }
+        if let port = url.port, port != apiPort { return "\(url.scheme!.lowercased())://\(host):\(port)" }
+        return "https://\(host)"
+    }
+
+    /// 两条地址是否同一台主机（任一边取不出权威即 false）。
+    public static func isSameAuthority(_ lhs: URL, _ rhs: URL) -> Bool {
+        guard let first = normalizedAuthority(of: lhs), let second = normalizedAuthority(of: rhs) else {
+            return false
+        }
+        return first == second
+    }
+
+    /// **D23 的唯一跳转裁决面**：一条 3xx 的 `Location` 能不能被跟。
+    ///
+    /// · `carriesCredentials == true`（请求带 `Authorization: Bearer …`）⇒ 落地必须**仍是同一权威**
+    ///   且仍在生产出口内。许可名单**不构成**放行理由 —— 凭证永不出生产出口，这是不可谈判的一半
+    ///   （硬边界 2/3、D5、D7、D10）。
+    /// · `carriesCredentials == false`（公开媒体：封面、签名地址）⇒ 落地必须在
+    ///   `isSanctionedMediaURL` 名单内，且**发起那一条本身也得在名单内**
+    ///   （名单主机之间跳转仍在名单内；名单外根本没有发起的资格）。
+    /// · 两类共用出口形态守卫：不许降级 http、不许 userinfo、不许非规范端口、不许私网。
+    public static func mediaRedirectAllowed(
+        from original: URL,
+        to landing: URL,
+        carriesCredentials: Bool
+    ) -> Bool {
+        if carriesCredentials {
+            guard isProductionOrigin(original), isProductionOrigin(landing) else { return false }
+            return isSameAuthority(original, landing)
+        }
+        return isSanctionedMediaURL(original) && isSanctionedMediaURL(landing)
     }
 
     /// 相对路径 + 查询项 → 生产 origin 下的绝对 URL。
@@ -60,8 +145,8 @@ public enum CovaEnvironment {
     /// 判定只补同源绝对地址，**不放宽出口守卫**：
     /// · 绝对 `https` 直链原样交出（host 由下游裁决：封面归封面，音频归
     ///   `PrivateAudioFetcher` 的 `isProductionOrigin` 那一道）；
-    /// · 无 scheme、无 authority、以 `/` 开头的站内路径 → 走 `makeAPIURL` 钉死生产 host，
-    ///   查询项按 `queryItems` 传递（笔记收藏的 `/api/proxy/audio?…&sig=…` 就是这一形态）；
+    /// · 无 scheme、无 authority、以 `/` 开头的站内路径 → 钉死生产 host，**查询原文逐字节
+    ///   带走**（笔记收藏的 `/api/proxy/audio?…&sig=…` 就是这一形态；R17-6）；
     /// · 其余一律 `nil`（fail-closed，**不猜 host**）：`http://`、`file://`、任何非 https scheme、
     ///   `//evil.invalid/x`（协议相对，authority 逃逸）、`///evil.invalid`、
     ///   `api/tracks/1`（非站内绝对路径）、含 `#` 片段、含反斜杠、`.`/`..` 与 `%2e` 穿越段。
@@ -81,10 +166,28 @@ public enum CovaEnvironment {
         }
         let components = URLComponents(string: raw)
         guard components?.fragment == nil else { return nil }
-        return makeAPIURL(
-            path: components?.path ?? parsed.path,
-            queryItems: components?.queryItems ?? []
-        )
+        // R17-6：**不再**走 `queryItems` 往返。旧实现把查询解码成项、再由 `makeAPIURL` 重新编码，
+        // 于是 `%2B` 被发成裸 `+`、`%3A%2F%2F` 被发成 `://`、`%3D%3D` 被发成 `==`。
+        // 而部署侧的后端是从**查询原文**里读媒体地址的（`web` 仓
+        // `src/app/api/tracks/[id]/preview-url/route.ts:37,47` 的 `searchParams.get('url')`、
+        // `src/lib/proxy-audio-sign.ts:49` 的签名比对），Next 的查询解析把 `+` 当**空格**解
+        // ⇒ 任何含 `+` 的值到服务端都对不上 HMAC（今天出厂的 `sig` 是十六进制所以未爆，
+        // 但「保真」不许依赖别人的字符集）。
+        // 补全只做一件事：在生产 origin 前拼上**原文**（一个字符都不改），再把重拼结果逐字节
+        // 比一遍 —— 任何被 Foundation 悄悄「修复」过的形态（空格、控制字符…）都 fail-closed 丢掉，
+        // 而不是发出一条「我以为发不出去」的地址。修复方向不是二次编码（那会把 `%252B` 再降一档）。
+        let path: String
+        if let separator = raw.firstIndex(of: "?") {
+            path = String(raw[..<separator])
+        } else {
+            path = raw
+        }
+        guard makeAPIURL(path: path) != nil else { return nil }
+        let anchored = apiBaseURL.absoluteString + (raw.hasSuffix("?") ? String(raw.dropLast()) : raw)
+        guard let url = URL(string: anchored), url.absoluteString == anchored, isProductionOrigin(url) else {
+            return nil
+        }
+        return url
     }
 
     /// 路径穿越守卫（m-3）：拒绝 `.` / `..` 路径段，以及百分号编码的 `%2e`（大小写不敏感）。

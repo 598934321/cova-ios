@@ -70,13 +70,11 @@ enum AudioAuthorityMatch {
     /// `CovaEnvironment.isProductionOrigin` 早就把显式 443 当作合法规范端口放行，
     /// 而这里的旧归一化把端口写进字符串，于是服务端一次带端口的合法重定向就会被判成
     /// 「权威换人」而误杀（NEEDS-15 未解锁前又多一处堵点）。两处的口径必须同源：
-    /// **只有非规范端口才算另一台主机**。
+    /// **只有非规范端口才算另一台主机** ⇒ 归一化本身已经上收到 `CovaEnvironment`（D23），
+    /// 这里只剩转授，防止两处再一次各自漂移。
     static func origin(of url: URL?) -> String? {
-        guard let url, let scheme = url.scheme?.lowercased(), scheme == "https",
-              let host = url.host?.lowercased(), !host.isEmpty
-        else { return nil }
-        if let port = url.port, port != CovaEnvironment.apiPort { return "\(scheme)://\(host):\(port)" }
-        return "\(scheme)://\(host)"
+        guard let url else { return nil }
+        return CovaEnvironment.normalizedAuthority(of: url)
     }
 
     /// 请求发起的权威与落地响应的权威是否同一台。
@@ -85,10 +83,92 @@ enum AudioAuthorityMatch {
     /// 属于调用方（`PrivateAudioFetcher`）在发起前判的一次；本层要拦的是
     /// 「自动跟随重定向后，字节其实来自另一台主机」这一件事 —— 它必须在
     /// **一个字节都没写盘之前**被发现。
+    ///
+    /// D23 之后它的定位是**第二道**（投递面兜底）：跳转的第一道裁决已经挪到出站之前
+    /// （`MediaEgressHop` + `AudioRedirectGuard`）。这道仍不许拆 —— 注入式会话（测试桩、
+    /// 以及任何不带本层守卫的 `URLSession`）拿不到「先拒再决定」的能力，只能靠这里兜住。
     static func matches(requestURL: URL, responseURL: URL?) -> Bool {
         guard let requested = origin(of: requestURL) else { return false }
         guard let landed = origin(of: responseURL) else { return false }
         return requested == landed
+    }
+}
+
+/// D23（R17-3）：跳转的**唯一裁决面**（纯函数，零 URLSession 可断言）。
+///
+/// 旧形状是「URLSession 自动跟随 ⇒ 302 的那一跳**已经出站** ⇒ 只在投递时拒绝」，
+/// 于是「唯一网络出口」这条硬边界实际只是「不把跨源字节交给播放器」。现在：
+/// `AudioRedirectGuard` 把 URLSession 的自动跟随**无条件**关掉，3xx 原样交回这里，
+/// 由本类型按「请求带不带凭证」两类裁决（`CovaEnvironment.mediaRedirectAllowed`）：
+/// · 带 Bearer ⇒ 只有同一权威的生产出口可以跟（许可名单不构成放行理由）；
+/// · 不带凭证 ⇒ 只能落在许可名单内（生产出口 ∪ 封面桶/整曲桶），且落地也必须在名单内。
+/// 被拒的那一条**一次都不出站** —— 这才是「出口在发起前判定」的可测形态。
+enum MediaEgressHop {
+    /// 3xx 的 `Location` → 绝对落地地址；拿不出来（空头/空值/形状可疑）→ nil。
+    ///
+    /// 相对 `Location` 是 RFC 9110 §10.2.2 允许的形态，必须**相对发起那一条请求**解析
+    /// （不是相对生产根，更不是字符串拼接）。
+    static func landing(of response: HTTPURLResponse, requesting url: URL) -> URL? {
+        guard let header = response.value(forHTTPHeaderField: "Location") else { return nil }
+        let target = header.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard target.isEmpty == false else { return nil }
+        // 片段从不外发、反斜杠部分解析器视同 `/` —— 与 `CovaEnvironment.resolveMediaURL` 同口径。
+        guard target.contains("#") == false, target.contains("\\") == false else { return nil }
+        if let absolute = URL(string: target), absolute.scheme != nil { return absolute }
+        return URL(string: target, relativeTo: url)?.absoluteURL
+    }
+
+    /// 追一跳：先按类别裁决，再决定**这一条新请求长什么样**。
+    ///
+    /// 新请求由这里重建而不是复用 URLSession 递来的 `newRequest`：后者会**继承**上一跳的请求头，
+    /// 那是「Bearer 跟着跳转漂到别家主机」的经典形态。重建之后凭证只在
+    /// 「原始权威 == 落地权威」时才原样延续 —— 许可名单主机一次都拿不到它。
+    static func hoppedRequest(
+        to landing: URL,
+        from previous: URLRequest,
+        original: URLRequest,
+        timeout: TimeInterval
+    ) -> URLRequest? {
+        guard let originalURL = original.url else { return nil }
+        // 「带不带凭证」取**原始与当前这一跳的并**：中途莫名其妙长出来的 Authorization 头
+        // 也必须按凭证类裁决（只能同源），而不是被当成公开腿放出去。
+        let carriesCredentials = previous.value(forHTTPHeaderField: "Authorization") != nil
+            || original.value(forHTTPHeaderField: "Authorization") != nil
+        guard CovaEnvironment.mediaRedirectAllowed(
+            from: originalURL,
+            to: landing,
+            carriesCredentials: carriesCredentials
+        ) else { return nil }
+        var request = URLRequest(url: landing)
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+        guard carriesCredentials, CovaEnvironment.isSameAuthority(originalURL, landing) else {
+            return request
+        }
+        request.setValue(
+            original.value(forHTTPHeaderField: "Authorization"),
+            forHTTPHeaderField: "Authorization"
+        )
+        return request
+    }
+}
+
+/// D23：URLSession 那一层的**无条件不跟随**。
+///
+/// 为什么是「一律拒」而不是「按名单放行」：放行就把同一个判定写了两遍（这里一遍、
+/// `MediaEgressHop` 一遍），而这一遍在 XCTest 里根本不可观测 —— `URLProtocol` 桩不驱动
+/// URLSession 的跳转机器（真 socket 才驱动，2026-09-25 本地环回探针实测：无委托时
+/// URLSession 确实向落地主机发出了 GET，交回调用方的已经是落地那一条的 200）。
+/// 一律拒 ⇒ 3xx 带着 `Location` 原样回到 `writeAudio`，出站与否只剩**一个**判定点、一个可测点。
+final class AudioRedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }
 
@@ -110,9 +190,13 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
     public static let resourceTimeout: TimeInterval = 7 * 24 * 60 * 60
     /// 写盘块大小（64KB：避免逐字节 syscall，也避免整包进内存）。
     public static let writeChunkBytes = 64 * 1024
+    /// D23：一条传输里允许**自己**追出去的跳转上限（自指 `Location` 不许变成出站风暴）。
+    public static let maximumRedirectHops = 5
 
     private let lock = NSLock()
     private let configurationProvider: @Sendable () -> URLSessionConfiguration
+    /// D23：会话级跳转守卫（一律不自动跟随）。每个代际的会话都挂同一个无状态实例。
+    private let redirectGuard = AudioRedirectGuard()
     /// 当前这一代的会话；`cancelInFlightTransfers()` 把它下线并置 nil（下一次调用换代）。
     private var liveSession: URLSession?
     private var lockedCancellationCount = 0
@@ -123,9 +207,18 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
 
     /// - Parameters:
     ///   - session: 注入会话（离线桩件用）；nil 时按生产配置惰性建会话。
+    ///     ⚠ 注入的会话**带不上**本层的跳转守卫（`URLSession` 的 delegate 在创建时就定死了），
+    ///     所以走这条腿的用例测不到「出站前拒绝」那一半，只测得到投递面的 `AudioAuthorityMatch`
+    ///     兜底 —— 生产装配一个都不走（D23 的接线由 `configuration:` 那条腿被测到）。
     ///   - chunkWrite: 分块落盘原语覆盖（见 `PrivateAudioChunkWrite`：只为让「短写」这一分支
     ///     在零竞态下可被判据覆盖，短写判定本身不可注入、始终在生产管道里执行）。
-    public init(session: URLSession? = nil, chunkWrite: PrivateAudioChunkWrite? = nil) {
+    ///   - configuration: 会话**配置**覆盖（D23）：与生产同一条建会话的腿（同一个守卫、
+    ///     同一套超时/无缓存形状），只换配置 —— 让桩 `URLProtocol` 能装进真实装配里。
+    public init(
+        session: URLSession? = nil,
+        chunkWrite: PrivateAudioChunkWrite? = nil,
+        configuration: (@Sendable () -> URLSessionConfiguration)? = nil
+    ) {
         self.injectedChunkWrite = chunkWrite
         if let session {
             let injected = session
@@ -133,7 +226,7 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
             self.liveSession = injected
             self.lockedSessionGeneration = 1
         } else {
-            self.configurationProvider = Self.makeDefaultConfiguration
+            self.configurationProvider = configuration ?? Self.makeDefaultConfiguration
         }
     }
 
@@ -154,15 +247,29 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
     }
 
     /// 当前会话（惰性换代）。终态下线后为 nil。
+    ///
+    /// D23：会话**必须**带 `AudioRedirectGuard` 创建 —— 少了它，服务端一次 302 就会被
+    /// URLSession 在任何人裁决之前跟掉（那是 R17-3 的根因）。
     private func currentSession() -> URLSession? {
         lock.lock()
         defer { lock.unlock() }
         if lockedShutDown { return nil }
         if let liveSession { return liveSession }
-        let created = URLSession(configuration: configurationProvider())
+        let created = URLSession(
+            configuration: configurationProvider(),
+            delegate: redirectGuard,
+            delegateQueue: nil
+        )
         liveSession = created
         lockedSessionGeneration += 1
         return created
+    }
+
+    /// 当前这一代会话是否真的挂了跳转守卫（internal：D23 的**接线**可观测面，仅测试用）。
+    var currentSessionCarriesRedirectGuard: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return liveSession?.delegate is AudioRedirectGuard
     }
 
     /// 已作废在途的次数（可观测面：清理确实发生）。
@@ -231,27 +338,7 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
             request.setValue("Bearer \(authorization.rawValue)", forHTTPHeaderField: "Authorization")
         }
         guard let session = currentSession() else { throw PlayerError.cancelled }
-        let stream: URLSession.AsyncBytes
-        let response: URLResponse
-        do {
-            (stream, response) = try await session.bytes(for: request)
-        } catch is CancellationError {
-            throw PlayerError.cancelled
-        } catch let error as URLError where error.code == .cancelled {
-            throw PlayerError.cancelled
-        } catch is URLError {
-            throw PlayerError.badStatus(0)
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw PlayerError.hostRejected
-        }
-        // C2：响应的**最终**权威必须仍是发起那一台主机。URLSession 默认会自动跟随
-        // 跨主机重定向，而 `HTTPURLResponse.url` 就是落地那一条 —— 不在这里判，
-        // 任意主机的字节就会被当作 `file://` 交付播放。判在 `createFile` 之前：
-        // 被拒绝时连文件都不该存在。
-        guard AudioAuthorityMatch.matches(requestURL: url, responseURL: http.url) else {
-            throw PlayerError.hostRejected
-        }
+        let (stream, http) = try await openCheckedStream(from: session, startingAt: request)
         guard (200..<300).contains(http.statusCode) else {
             throw PlayerError.badStatus(http.statusCode)
         }
@@ -303,6 +390,65 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
             expectedBytes: expected,
             statusCode: http.statusCode
         )
+    }
+
+    /// 出站腿：建连、取首字节流，并把 3xx 按 **D23** 自己裁决要不要追。
+    ///
+    /// 返回的一定是**可以交付字节**的那一条响应（2xx/3xx 已被分流处理）。状态判定留给调用方，
+    /// 本函数只管三件事：错误归一（MAJ-4）、权威兜底（C2）、跳转裁决（D23）。
+    ///
+    /// 跳转循环的不变量：
+    /// · URLSession 那一层由 `AudioRedirectGuard` **无条件**不自动跟随 ⇒ 每一次跳转出站都经过这里；
+    /// · 每一次裁决都相对**最初那一条**请求（`original`）比对，链上任何一跳都不许漂出类别边界；
+    /// · 被拒 ⇒ `PlayerError.hostRejected`，且**一次出站都没有**（这是 R17-3 要的形态）；
+    /// · 3xx 却没有 `Location` ⇒ 服务端故障，按 `badStatus(状态码)` 如实报，不伪装成出口决定；
+    /// · 超出 `maximumRedirectHops` ⇒ 同上收尾，绝不让自指跳转变成出站风暴。
+    private func openCheckedStream(
+        from session: URLSession,
+        startingAt initial: URLRequest
+    ) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
+        var request = initial
+        var hops = 0
+        while true {
+            // 每一次迭代都是一次真实出站：合流/登出/换号之后一律不许再打（D16②）。
+            if Task.isCancelled { throw PlayerError.cancelled }
+            guard let requesting = request.url else { throw PlayerError.hostRejected }
+            let stream: URLSession.AsyncBytes
+            let response: URLResponse
+            do {
+                (stream, response) = try await session.bytes(for: request)
+            } catch is CancellationError {
+                throw PlayerError.cancelled
+            } catch let error as URLError where error.code == .cancelled {
+                throw PlayerError.cancelled
+            } catch is URLError {
+                throw PlayerError.badStatus(0)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw PlayerError.hostRejected
+            }
+            // C2（投递面兜底）：响应的**最终**权威必须仍是发起那一台主机。判在 `createFile`
+            // 之前 —— 被拒绝时连文件都不该存在。注入式会话没有本层守卫（见 `init` 的警告），
+            // 这道就是它唯一的防线，所以 D23 之后仍然不许拆。
+            guard AudioAuthorityMatch.matches(requestURL: requesting, responseURL: http.url) else {
+                throw PlayerError.hostRejected
+            }
+            guard (300..<400).contains(http.statusCode) else { return (stream, http) }
+            guard hops < Self.maximumRedirectHops else { throw PlayerError.badStatus(http.statusCode) }
+            guard let landing = MediaEgressHop.landing(of: http, requesting: requesting) else {
+                throw PlayerError.badStatus(http.statusCode)
+            }
+            guard let next = MediaEgressHop.hoppedRequest(
+                to: landing,
+                from: request,
+                original: initial,
+                timeout: Self.requestTimeout
+            ) else {
+                throw PlayerError.hostRejected
+            }
+            hops += 1
+            request = next
+        }
     }
 
     /// 流式读取段的错误归一（MAJ-4）：取消 → `.cancelled`（不计入失败连击）；

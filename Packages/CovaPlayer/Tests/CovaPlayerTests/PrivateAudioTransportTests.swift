@@ -30,6 +30,12 @@ private final class StubAudioURLProtocol: URLProtocol {
         /// 环 4 第 6 批（MAJ-4）：`midStreamFailure` 生效前先交出的块数（默认 1，
         /// 保证「已经写了字节」再失败 —— 零字节失败走的是 `bytes(for:)` 那条已归一的腿）。
         var chunksBeforeFailure = 1
+        /// D23（R17-3）：按**请求绝对地址**覆写的脚本 —— 一次传输里出站两次（原请求 +
+        /// 传输自己追的那一跳）时，用这一条把第二跳单独脚本化（键不命中就沿用主脚本）。
+        var responses: [String: Script] = [:]
+        /// D23（R17-3）：响应头 `Location`（跳转目标）。与 `statusCode` 3xx 搭配使用；
+        /// nil = 这一条响应不带跳转。
+        var location: String?
     }
 
     private static let lock = NSLock()
@@ -61,7 +67,10 @@ private final class StubAudioURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        let current = Self.snapshot(for: request)
+        let scripted = Self.snapshot(for: request)
+        // D23：第二跳（传输自己按裁决追出去的那一次）可以单独脚本化；键不命中就沿用主脚本。
+        let key = request.url?.absoluteString ?? ""
+        let current = scripted.responses[key] ?? scripted
         if let failure = current.failure {
             client?.urlProtocol(self, didFailWithError: failure)
             return
@@ -69,6 +78,11 @@ private final class StubAudioURLProtocol: URLProtocol {
         var headers: [String: String] = ["Content-Type": "audio/mp4"]
         if let length = current.contentLength {
             headers["Content-Length"] = String(length)
+        }
+        // D23：3xx + Location 是「服务端要求换地址」的唯一载体（跳转目标不许是签名地址，
+        // 测试夹具一律用 `.invalid` 保留 TLD）。
+        if let location = current.location {
+            headers["Location"] = location
         }
         let body = current.landingChunks ?? current.chunks
         let target = current.landedURLString.flatMap(URL.init(string:)) ?? request.url!
@@ -104,6 +118,33 @@ private final class StubAudioURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+/// D23 用例用：跳转回调的答案盒（`completionHandler` 是 escaping 的，局部 var 捕获在
+/// Swift 6 严格并发下不成立；锁内一次性记账，断言在回调之后读）。
+private final class RedirectAnswer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didRecord = false
+    private var recorded: URLRequest?
+
+    func record(_ request: URLRequest?) {
+        lock.lock()
+        defer { lock.unlock() }
+        didRecord = true
+        recorded = request
+    }
+
+    var didAnswer: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didRecord
+    }
+
+    var request: URLRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
 }
 
 final class PrivateAudioTransportTests: XCTestCase {
@@ -330,6 +371,442 @@ final class PrivateAudioTransportTests: XCTestCase {
         )
         XCTAssertEqual(receipt.bytesWritten, 18, "min-2：规范端口落地不是换权威")
         XCTAssertEqual(try Data(contentsOf: file).count, 18)
+    }
+
+    // MARK: - D23（R17-3）：跳转在**出站之前**裁决，而不是在投递时拒绝
+
+    /// 出口面的事实（本组用例的前提，2026-09 探针实测）：
+    /// · 真 socket 上 URLSession **会**自动跟随跨主机 302（落地那台确实收到 GET），
+    ///   而 `URLProtocol` 桩不触发那套机器 ⇒ 桩只能交出「已经落地」的响应形态（上一段 C2 用例）。
+    /// · 因此本组用例钉的是**传输自己那一条跳转腿**：302 + `Location` 交回调用方时，
+    ///   追不追这一跳由 D23 的类别裁决决定，而「不追」必须是**一次出站都没有**。
+    private static let productionAudioPath = "https://covalink.cn/api/tracks/library-0001/preview-stream"
+    /// 许可名单上的公开媒体桶（D23②，形态取自 `web` 仓 `src/lib/page-media.ts:95`）。
+    private static let sanctionedCoverLanding =
+        "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg"
+    /// 名单外（假 host，`.invalid` 保留 TLD：桩万一没接管，结果是红而不是出网）。
+    private static let unsanctionedLanding = "https://other-authority.invalid/pawned.m4a"
+
+    private func hopScript(_ body: Data) -> StubAudioURLProtocol.Script {
+        .init(
+            statusCode: 200,
+            chunks: [],
+            contentLength: body.count,
+            failure: nil,
+            landingChunks: [body],
+            responses: [:],
+            location: nil
+        )
+    }
+
+    /// D23①：同一权威内的合法跳转必须由**传输自己**追出去并交付字节（旧实现在这里
+    /// 直接把 302 当成 `badStatus(302)` 失败 —— 「自动跟随」已经被出口守卫拿掉了，
+    /// 不追就等于把服务端一次正常的换址判成故障）。
+    func testSanctionedSameAuthorityRedirectIsFollowedByTheTransportItself() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let landing = "\(Self.productionAudioPath)?seg=2"
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 302,
+            chunks: [],
+            contentLength: 0,
+            failure: nil,
+            landingChunks: [],
+            responses: [landing: hopScript(Data(repeating: 0x27, count: 24))],
+            location: landing
+        ))
+        let file = target(in: directory)
+        let receipt = try await makeTransport().writeAudio(
+            from: URL(string: Self.productionAudioPath)!,
+            authorization: SecretString("stub-token"),
+            to: file,
+            expectedBytes: nil
+        )
+        XCTAssertEqual(receipt.bytesWritten, 24, "同权威跳转的字节必须照常交付")
+        let captured = StubAudioURLProtocol.captured()
+        XCTAssertEqual(captured.map(\.url?.absoluteString), [Self.productionAudioPath, landing])
+        XCTAssertEqual(try Data(contentsOf: file).count, 24)
+    }
+
+    /// D23①（非 negotiable 的那一半）：**带凭证**的请求绝不因为「落地在许可名单上」就放行 ——
+    /// 凭证类只能留在同一权威。旧实现只在投递时按权威判（302 会先出站再被拒），
+    /// 本用例钉的是「裁决在发起之前：一条出站都不许多」。
+    func testCredentialBearingRedirectOntoTheMediaAllowListIsRefusedWithoutAnyEgress() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 302,
+            chunks: [],
+            contentLength: 0,
+            failure: nil,
+            landingChunks: [],
+            responses: [Self.sanctionedCoverLanding: hopScript(Data(repeating: 0x01, count: 8))],
+            location: Self.sanctionedCoverLanding
+        ))
+        let file = target(in: directory)
+        do {
+            _ = try await makeTransport().writeAudio(
+                from: URL(string: Self.productionAudioPath)!,
+                authorization: SecretString("stub-token"),
+                to: file,
+                expectedBytes: nil
+            )
+            XCTFail("带凭证的请求不得跟到许可名单主机")
+        } catch let error as PlayerError {
+            XCTAssertEqual(error, .hostRejected, "出口裁决必须是主机拒绝：\(error)")
+        }
+        let captured = StubAudioURLProtocol.captured()
+        XCTAssertEqual(captured.count, 1, "被拒的跳转一个出站都不许多：\(captured.compactMap(\.url?.host))")
+        XCTAssertEqual(captured.map(\.url?.host), ["covalink.cn"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    /// D23③（其余一律关）：名单外主机的 302 同样在发起前被拒 —— 这条腿今天是
+    /// 「先出站、落地时再拒」（reviewer 实测），错误码也不对（302 被当成状态码故障）。
+    func testCredentialBearingRedirectToUnsanctionedHostIsRefusedWithoutAnyEgress() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 302,
+            chunks: [],
+            contentLength: 0,
+            failure: nil,
+            landingChunks: [],
+            responses: [Self.unsanctionedLanding: hopScript(Data(repeating: 0x02, count: 8))],
+            location: Self.unsanctionedLanding
+        ))
+        let file = target(in: directory)
+        do {
+            _ = try await makeTransport().writeAudio(
+                from: URL(string: Self.productionAudioPath)!,
+                authorization: SecretString("stub-token"),
+                to: file,
+                expectedBytes: nil
+            )
+            XCTFail("名单外主机不得被访问")
+        } catch let error as PlayerError {
+            XCTAssertEqual(error, .hostRejected, "出口裁决必须是主机拒绝，不是 badStatus(302)：\(error)")
+        }
+        let captured = StubAudioURLProtocol.captured()
+        XCTAssertEqual(captured.map(\.url?.host), ["covalink.cn"], "落地那台一次都不许多：\(captured.compactMap(\.url?.host))")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    /// D23②：**不带凭证**的公开媒体可以跟到许可名单上的存储桶，且追出去那一次
+    /// 绝不许带上 Authorization（凭证永远不进名单主机 —— 这是名单放行的前提条件）。
+    func testCredentialFreeRedirectOntoTheMediaAllowListIsFollowedWithoutCredentials() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 302,
+            chunks: [],
+            contentLength: 0,
+            failure: nil,
+            landingChunks: [],
+            responses: [Self.sanctionedCoverLanding: hopScript(Data(repeating: 0x03, count: 12))],
+            location: Self.sanctionedCoverLanding
+        ))
+        let file = target(in: directory)
+        let receipt = try await makeTransport().writeAudio(
+            from: URL(string: Self.productionAudioPath)!,
+            authorization: nil,
+            to: file,
+            expectedBytes: nil
+        )
+        XCTAssertEqual(receipt.bytesWritten, 12, "公开媒体跟到名单桶必须交付字节")
+        let captured = StubAudioURLProtocol.captured()
+        XCTAssertEqual(captured.map(\.url?.absoluteString), [Self.productionAudioPath, Self.sanctionedCoverLanding])
+        XCTAssertTrue(captured.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == nil },
+                      "许可名单主机上永远不许出现 Bearer")
+    }
+
+    /// D23②的收口：名单内主机之间的跳转仍然要在名单内，但**降级到 http / 带 userinfo**
+    /// 一律按名单外处理（形态合法不等于权威合法）。
+    func testCredentialFreeRedirectToDowngradedOrSpoofedHostIsRefused() async throws {
+        for landing in [
+            "http://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg",
+            "https://user@covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg",
+            "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com.attacker.test/a.jpeg",
+            "https://evil-myqcloud.com/covers/a.jpeg",
+            "file:///tmp/pawned.m4a",
+        ] {
+            let directory = TemporaryDirectory()
+            defer { directory.remove() }
+            StubAudioURLProtocol.configure(.init(
+                statusCode: 302,
+                chunks: [],
+                contentLength: 0,
+                failure: nil,
+                landingChunks: [],
+                responses: [landing: hopScript(Data(repeating: 0x04, count: 6))],
+                location: landing
+            ))
+            let file = target(in: directory)
+            do {
+                _ = try await makeTransport().writeAudio(
+                    from: URL(string: Self.productionAudioPath)!,
+                    authorization: nil,
+                    to: file,
+                    expectedBytes: nil
+                )
+                XCTFail("落地形态不合格却跟进了出站：\(landing)")
+            } catch let error as PlayerError {
+                XCTAssertEqual(error, .hostRejected, "落地 \(landing) 必须按名单外拒绝：\(error)")
+            }
+            XCTAssertEqual(StubAudioURLProtocol.captured().count, 1, "落地 \(landing) 不得出站第二次")
+        }
+    }
+
+    /// 服务端常给相对 `Location`（RFC 9110 §10.2.2 允许）：必须相对**发起那一条请求**解析，
+    /// 而不是相对生产根、也不是当字符串拼接。
+    func testRelativeRedirectLocationIsResolvedAgainstTheRequestingURL() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let landing = "https://covalink.cn/api/tracks/library-0001/moved.m4a"
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 302,
+            chunks: [],
+            contentLength: 0,
+            failure: nil,
+            landingChunks: [],
+            responses: [landing: hopScript(Data(repeating: 0x05, count: 9))],
+            location: "/api/tracks/library-0001/moved.m4a"
+        ))
+        let receipt = try await makeTransport().writeAudio(
+            from: URL(string: Self.productionAudioPath)!,
+            authorization: SecretString("stub-token"),
+            to: target(in: directory),
+            expectedBytes: nil
+        )
+        XCTAssertEqual(receipt.bytesWritten, 9)
+        XCTAssertEqual(StubAudioURLProtocol.captured().last?.url?.absoluteString, landing)
+    }
+
+    /// 新代码自己的界：跳转链必须有界（恶意/故障服务端自指 `Location` 不许变成出站风暴）。
+    /// 这条对旧实现是恒真（旧实现一跟都不跟），它守的是本次改动引入的能力。
+    func testRedirectChainStopsAfterABoundedNumberOfHops() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 302,
+            chunks: [],
+            contentLength: 0,
+            failure: nil,
+            landingChunks: [],
+            responses: [:],
+            location: Self.productionAudioPath
+        ))
+        do {
+            _ = try await makeTransport().writeAudio(
+                from: URL(string: Self.productionAudioPath)!,
+                authorization: SecretString("stub-token"),
+                to: target(in: directory),
+                expectedBytes: nil
+            )
+            XCTFail("自指跳转链必须被界住")
+        } catch let error as PlayerError {
+            XCTAssertEqual(error, .badStatus(302), "超界必须收尾成可分类的状态错误，而不是继续出站：\(error)")
+        }
+        let captured = StubAudioURLProtocol.captured()
+        XCTAssertGreaterThan(captured.count, 1, "这一条要求传输确实追过跳转")
+        XCTAssertLessThanOrEqual(captured.count, 8, "跳转链无界：\(captured.count) 次出站")
+    }
+
+    /// 3xx 却没有 `Location`：那是服务端故障，不是出口决定 —— 两类错误不许混成一条。
+    func testRedirectWithoutLocationHeaderIsAStatusFailureNotAHostRejection() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        for status in [301, 302, 307] {
+            StubAudioURLProtocol.configure(.init(
+                statusCode: status, chunks: [], contentLength: 0, failure: nil,
+                landingChunks: [], responses: [:], location: nil
+            ))
+            do {
+                _ = try await makeTransport().writeAudio(
+                    from: URL(string: Self.productionAudioPath)!,
+                    authorization: SecretString("stub-token"),
+                    to: target(in: directory, name: "hop-\(status).part"),
+                    expectedBytes: nil
+                )
+                XCTFail("无 Location 的 \(status) 必须失败")
+            } catch let error as PlayerError {
+                XCTAssertEqual(error, .badStatus(status), "\(status) 无 Location 必须如实报状态码：\(error)")
+            }
+            XCTAssertEqual(StubAudioURLProtocol.captured().count, 1)
+        }
+    }
+
+    // MARK: - D23 的纯裁决面（零 URLSession）与守卫接线
+
+    /// `Location` 解析：相对形态相对**发起那一条**解析；形状可疑/空值一律拿不出来。
+    func testRedirectLocationParsingRules() {
+        func response(_ location: String?, status: Int = 302) -> HTTPURLResponse {
+            HTTPURLResponse(
+                url: URL(string: "https://covalink.cn/api/tracks/one/preview-stream")!,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: location.map { ["Location": $0] } ?? [:]
+            )!
+        }
+        let requesting = URL(string: "https://covalink.cn/api/tracks/one/deep/preview-stream")!
+        XCTAssertEqual(
+            MediaEgressHop.landing(of: response("/api/tracks/two"), requesting: requesting)?.absoluteString,
+            "https://covalink.cn/api/tracks/two",
+            "根相对：基准是发起那一条的 scheme://authority"
+        )
+        XCTAssertEqual(
+            MediaEgressHop.landing(of: response("moved.m4a"), requesting: requesting)?.absoluteString,
+            "https://covalink.cn/api/tracks/one/deep/moved.m4a",
+            "纯相对：基准是发起那一条整串（RFC 9110 ⇒ 换掉最后一段，不是拼到根上）"
+        )
+        XCTAssertEqual(
+            MediaEgressHop.landing(of: response(Self.sanctionedCoverLanding), requesting: requesting)?.absoluteString,
+            Self.sanctionedCoverLanding
+        )
+        XCTAssertNil(MediaEgressHop.landing(of: response(nil), requesting: requesting), "无 Location 头")
+        XCTAssertNil(MediaEgressHop.landing(of: response(""), requesting: requesting), "空 Location")
+        XCTAssertNil(MediaEgressHop.landing(of: response("   "), requesting: requesting), "只有空白")
+        XCTAssertNil(
+            MediaEgressHop.landing(of: response("/api/tracks/two#frag"), requesting: requesting),
+            "片段从不外发"
+        )
+        XCTAssertNil(
+            MediaEgressHop.landing(of: response("/api\\..\\evil"), requesting: requesting),
+            "反斜杠部分解析器视同 /"
+        )
+    }
+
+    /// 追出去的那一条请求：类别裁决 + 凭证只沿同一权威（名单主机永远拿不到 Bearer）。
+    func testHoppedRequestRebuildKeepsCredentialsOffAllowListedHosts() throws {
+        let landingBucket = URL(string: Self.sanctionedCoverLanding)!
+        let production = URL(string: Self.productionAudioPath)!
+        var credentialled = URLRequest(url: production)
+        credentialled.setValue("Bearer stub-token", forHTTPHeaderField: "Authorization")
+
+        // 凭证类 → 名单桶：裁决直接拒（连请求都不该被建出来）。
+        XCTAssertNil(MediaEgressHop.hoppedRequest(
+            to: landingBucket, from: credentialled, original: credentialled, timeout: 15
+        ), "凭证跟到名单桶 = 请求根本不该存在")
+
+        // 凭证类 → 同权威：放行且 Bearer 原样延续（同源换址是正常形态）。
+        let sameAuthority = URL(string: "\(Self.productionAudioPath)?seg=2")!
+        let kept = try XCTUnwrap(MediaEgressHop.hoppedRequest(
+            to: sameAuthority, from: credentialled, original: credentialled, timeout: 15
+        ))
+        XCTAssertEqual(kept.url, sameAuthority)
+        XCTAssertEqual(kept.httpMethod, "GET")
+        XCTAssertEqual(kept.timeoutInterval, 15)
+        XCTAssertEqual(kept.value(forHTTPHeaderField: "Authorization"), "Bearer stub-token")
+
+        // 公开媒体类（无凭证）→ 名单桶：放行，且**一个头都不许多**（不继承上一跳）。
+        var anonymous = URLRequest(url: production)
+        anonymous.setValue("Bearer should-not-exist", forHTTPHeaderField: "X-Stub-Legacy")
+        let opened = try XCTUnwrap(MediaEgressHop.hoppedRequest(
+            to: landingBucket, from: anonymous, original: anonymous, timeout: 15
+        ))
+        XCTAssertNil(opened.value(forHTTPHeaderField: "Authorization"), "公开腿不许凭空长出凭证")
+        XCTAssertNil(opened.value(forHTTPHeaderField: "X-Stub-Legacy"), "跳转请求由本层重建，不继承上一跳的自定义头")
+        XCTAssertEqual(opened.httpMethod, "GET")
+
+        // 名单外落地一律建不出请求。
+        for refused in [Self.unsanctionedLanding, "http://covalink.cn/x.m4a", "file:///tmp/x.m4a"] {
+            let url = try XCTUnwrap(URL(string: refused))
+            XCTAssertNil(MediaEgressHop.hoppedRequest(
+                to: url, from: anonymous, original: anonymous, timeout: 15
+            ), "名单外：\(refused)")
+        }
+    }
+
+    /// 守卫接线（D23 的根因面）：生产那一条建会话的腿**必须**挂上跳转守卫。
+    /// 旧实现 `URLSession(configuration:)` 没有 delegate ⇒ URLSession 自己就把 302 跟掉了
+    /// （真 socket 上落地主机确实会收到 GET —— 2026-09-25 本地环回探针实测）。
+    func testTransportBuiltSessionCarriesTheRedirectGuard() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let stubConfiguration = URLSessionConfiguration.ephemeral
+        stubConfiguration.protocolClasses = [StubAudioURLProtocol.self]
+        let transport = URLSessionPrivateAudioTransport(configuration: { stubConfiguration })
+        XCTAssertFalse(
+            transport.currentSessionCarriesRedirectGuard,
+            "没人请求就不该建会话（换代只在真正需要时发生）"
+        )
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 200, chunks: [Data(repeating: 0x1a, count: 5)], contentLength: 5, failure: nil
+        ))
+        _ = try await transport.writeAudio(
+            from: URL(string: Self.productionAudioPath)!,
+            authorization: SecretString("stub-token"),
+            to: target(in: directory),
+            expectedBytes: nil
+        )
+        XCTAssertTrue(transport.currentSessionCarriesRedirectGuard, "出口守卫必须在**发起之前**就在位")
+        await transport.cancelInFlightTransfers()
+        _ = try await transport.writeAudio(
+            from: URL(string: Self.productionAudioPath)!,
+            authorization: nil,
+            to: target(in: directory, name: "second.part"),
+            expectedBytes: nil
+        )
+        XCTAssertTrue(transport.currentSessionCarriesRedirectGuard, "换代之后守卫必须在位（不许只挂第一代）")
+        transport.shutDown()
+    }
+
+    /// 守卫本体：任何自动跳转都被拒（`completionHandler(nil)`），任务从未被启动 ⇒ 零出站。
+    ///
+    /// 这是 delegate 方法**本身**的判据（`URLProtocol` 桩不驱动 URLSession 的跳转机器，
+    /// 所以「跟了没有」在桩上不可见 —— 那半由上面 `openCheckedStream` 的循环用例承担）。
+    func testRedirectGuardRefusesEveryAutomaticRedirectWithoutStartingTheTask() throws {
+        // 桩的请求账本是**类级共享**的（跨用例不清零）：先空脚本过一次，把账本清干净，
+        // 否则「零出站」这条断言读的是上一个用例留下的数量。
+        StubAudioURLProtocol.configure(.init(statusCode: 200, chunks: [], contentLength: 0, failure: nil))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubAudioURLProtocol.self]
+        let redirectGuard = AudioRedirectGuard()
+        let session = URLSession(configuration: configuration, delegate: redirectGuard, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        // 任务只创建、**从不 resume** ⇒ 这一条腿一个字节都不许多出设备。
+        let task = session.dataTask(with: URLRequest(url: URL(string: Self.productionAudioPath)!))
+        let redirect = HTTPURLResponse(
+            url: URL(string: Self.productionAudioPath)!,
+            statusCode: 302,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Location": Self.sanctionedCoverLanding]
+        )!
+        let answer = RedirectAnswer()
+        redirectGuard.urlSession(
+            session,
+            task: task,
+            willPerformHTTPRedirection: redirect,
+            newRequest: URLRequest(url: URL(string: Self.sanctionedCoverLanding)!),
+            completionHandler: { answer.record($0) }
+        )
+        XCTAssertTrue(answer.didAnswer, "守卫必须真的回答这个跳转（不回答 = 任务永远挂在那里）")
+        XCTAssertNil(answer.request, "守卫必须交出 nil（连名单内的落地也不**自动**跟：跟不跟由 writeAudio 裁决）")
+        XCTAssertEqual(StubAudioURLProtocol.captured().count, 0, "任务从未启动 ⇒ 一次出站都不该发生")
+    }
+
+    /// 等价变异防线（TD-9 口径）：跳转守卫不许把「拒跟随」写成「取消整个任务」。
+    /// 取消会让上层收到裸 `-999` → 被归一成 `.cancelled`，从而**看不见**出口裁决；
+    /// 正确形态是把 3xx 原样交回调用方（由 `openCheckedStream` 抛 `.hostRejected`）。
+    func testRefusedRedirectStillSurfacesThe302ToTheCaller() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        StubAudioURLProtocol.configure(.init(
+            statusCode: 302, chunks: [], contentLength: 0, failure: nil,
+            landingChunks: [], responses: [:], location: Self.unsanctionedLanding
+        ))
+        do {
+            _ = try await makeTransport().writeAudio(
+                from: URL(string: Self.productionAudioPath)!,
+                authorization: SecretString("stub-token"),
+                to: target(in: directory),
+                expectedBytes: nil
+            )
+            XCTFail("必须失败")
+        } catch let error as PlayerError {
+            XCTAssertNotEqual(error, .cancelled, "出口裁决不许长成取消的样子")
+            XCTAssertEqual(error, .hostRejected)
+        }
     }
 
     // MARK: - 环 4 · 第 6 批 MAJ-4：读循环里的取消必须归一，不许算成写失败
