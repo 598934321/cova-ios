@@ -382,7 +382,7 @@ public struct AISessionDetailView: View {
         }
     }
 
-    /// 出现条件与格数全部由 CovaCore 的纯映射决定（那里有 13 条用例钉住），本屏只负责画。
+    /// 出现条件与格数全部由 CovaCore 的纯映射决定（那里有 15 条用例钉住），本屏只负责画。
     ///
     /// 三个输入各自是什么：
     /// · `plan.status` —— §3-I 的**出现/收起**条件（只有 `delivery_preparing` / `rehydrating`）。

@@ -64,6 +64,9 @@ public struct DeliveryProgress: Equatable, Sendable {
     public var rightColumnText: String { percentText ?? stepText }
     /// VoiceOver（09 §7）：值变化**不**逐帧播报，只在元素被聚焦时读当前值。
     /// 「第 N 步，共 M 步」这个既有句式保留，M 换成**真**分母。
+    /// 如实记一处字面差异：§7 那句写的是「补充制作中，<百分比>」，本轮按协调者口径
+    /// 继续用步数句式（右列已经印百分比，AX 再念一遍是两遍数字）⇒ 差异留给 G2 验收二选一，
+    /// 不在代码里假装 §7 就是这么写的。
     /// 后端那句话自带句号（实测 `"…两个 Demo。"`）⇒ 句末标点已存在时不再补「，」，
     /// 免得念成「…两个 Demo。，第 4 步」。
     public var voiceOverLabel: String {
@@ -122,7 +125,7 @@ public struct StudioWorkflowGroup: Equatable, Sendable {
 ///    后一半是这条规则的全部微妙处：**后端不保证把每一组的键都报进 `completedSteps`** ——
 ///    没有那半条，一个键没被报过的组会**永远**亮着未完成（进度条从此收不了口）。
 ///    如实写明：2026-09-24 那份实测载荷里三个早期组的键**恰好都报过**，所以这半条在那份载荷上
-///    看不出来 —— 它由用例 `testActiveIndexPastAGroupsKeysCompletesThatGroup`
+///    看不出来 —— 它由用例 `testActiveIndexPastAGroupKeysCompletesThatGroup`
 ///    （`{"completedSteps":["collect"],"activeStep":"mix"}`）单独钉住，形状取自 web 同一处规则。
 /// 3. 未知键 ⇒ **不给位置**，因此既不能点亮某一格，也不能让「走过去了」这条规则成立
 ///    （`activeStep` 不认识 ⇒ 这条规则整体不触发，而不是当成 0 或当成末尾）。
