@@ -982,6 +982,17 @@ public actor PlaybackCoordinator {
     ///
     /// - Parameter owned: 跨越那次 actor hop **之前**的引擎命令权归属。
     /// - Returns: 是否真的对引擎下了 `pause`（`false` = 归属已换且声音不是本腿造成的，没碰引擎）。
+    ///
+    /// 可测性（如实写在这里，别让下一个人以为四处都已钉死）：本判据的两半由**共用它的**
+    /// `.repeated` 那条腿钉住 —— 那条腿的窗口是 `engine.seek` / `engine.play`（可 park），
+    /// 见 `PlaybackCoordinatorTests` 的
+    /// `testStalePlayAfterSameItemReloadMustNotTouchTheEngine`（恒摁 ⇒ 红）与
+    /// `testStalePlayLandingAfterTheEntryPauseMustUndoItsOwnSound`（撤掉 epoch 那一半 ⇒ 红）。
+    /// 四个收敛腿自己的窗口只有这一次 hop，而 `playbackEnded` 是**同步** actor 方法
+    /// （实测：上报挂在闸门里的 `submit` 上时它照样立刻返回 ⇒ actor 可重入）⇒
+    /// 「撤掉某一处的捕获 + 复核」这条变异**压不红任何用例**，那一半仍是欠账
+    /// （`testEachConvergingLegStillPausesThroughTheOwnershipRuleWhenNothingTookOver`
+    /// 只钉住了另一半：这四处确实还会通过本判据去摁）。
     @discardableResult
     private func pauseEngineIfStillOwned(_ owned: UInt64?) async -> Bool {
         if engineCommandGeneration != owned, lastLandedEpoch != owned { return false }

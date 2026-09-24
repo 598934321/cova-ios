@@ -2138,6 +2138,16 @@ final class PlaybackCoordinatorTests: XCTestCase {
     /// 播完）是那种形态（前置里断「上报恰好 1 次」）；②④ 那两条链路上账本已被上游关掉 ⇒
     /// `closeEpisodeIfNeeded()` 同腿直落、根本不挂起 ⇒ 窗口本来就更窄。这是第 14 轮压不出
     /// 后果的第二层原因，也是本批不敢把「park 在 hop 里」写进测试主张的理由。
+    ///
+    /// **本批变异实测**（每次撤动后 `md5` 与干净字节逐字一致才计入，415 条全量）：
+    ///   · 撤掉判据里 `lastLandedEpoch` 那一半 ⇒ **1 条红**
+    ///     （`testStalePlayLandingAfterTheEntryPauseMustUndoItsOwnSound`，即约束 ②）；
+    ///   · 把判据整体删成恒摁 ⇒ **2 条红**
+    ///     （`testPlayLandingAfterOwnershipChangeMustNotReportSecondEpisode` +
+    ///      `testStalePlayAfterSameItemReloadMustNotTouchTheEngine`，即约束 ①）；
+    ///   · **把四处调用点的捕获 + 复核整体撤回裸 `engine.pause()` ⇒ 0 条红**（单独撤回
+    ///     ① 那一处同样是 0 条红）—— 这一条就是上面那句「不可杀」的实测数字，
+    ///     不粉饰成已闭合。
     func testEachConvergingLegStillPausesThroughTheOwnershipRuleWhenNothingTookOver() async {
         // ---- ① `apply(.stopped)`：`.off` 走到队尾 → 收停止，引擎必须真的被摁 ----
         do {
