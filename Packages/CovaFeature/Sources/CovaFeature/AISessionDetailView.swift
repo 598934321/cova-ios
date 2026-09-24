@@ -22,6 +22,9 @@ public struct AISessionDetailView: View {
     @State private var lines: [TranscriptLine] = []
     @State private var plans: [OneStepPlanCardDto] = []
     @State private var candidates: [GenerationCandidateDto] = []
+    /// 候选 ♡ 的账：键 = `mediaReferenceId`，**每次详情载荷到达都整本重新播种**
+    /// （留下未确认的乐观翻转 = 把本地的谎继续显示成后端的谎）。
+    @State private var favorites = CandidateFavoriteLedger()
     @State private var creditsBalance: Int?
     @State private var runLabel: String?
     @State private var degradeLabel: String?
@@ -152,19 +155,74 @@ public struct AISessionDetailView: View {
         } else {
             settled = candidate.audioUrl?.rawValue.isEmpty == false
         }
-        return CovaListRow(
-            title: candidate.title ?? "版本 \(index + 1)",
-            subtitle: settled ? "可以试听" : "制作中",
-            artwork: CovaArtwork(url: URL(string: candidate.coverUrl ?? ""), title: candidate.title ?? "")
-        ) {
-            Image(systemName: settled ? "play.circle" : "hourglass").foregroundStyle(CovaColor.muted)
-        } action: {
-            guard settled, let raw = candidate.audioUrl?.rawValue, let url = URL(string: raw),
-                  let item = Self.playbackItem(for: candidate, url: url) else {
-                session.showToast("试听文件没取到，重试", isError: true)
-                return
+        return VStack(alignment: .leading, spacing: CovaSpace.xs) {
+            CovaListRow(
+                title: candidate.title ?? "版本 \(index + 1)",
+                subtitle: settled ? "可以试听" : "制作中",
+                artwork: CovaArtwork(url: URL(string: candidate.coverUrl ?? ""), title: candidate.title ?? "")
+            ) {
+                Image(systemName: settled ? "play.circle" : "hourglass").foregroundStyle(CovaColor.muted)
+            } action: {
+                guard settled, let raw = candidate.audioUrl?.rawValue, let url = URL(string: raw),
+                      let item = Self.playbackItem(for: candidate, url: url) else {
+                    session.showToast("试听文件没取到，重试", isError: true)
+                    return
+                }
+                Task { await session.play(items: [item], at: 0) }
             }
-            Task { await session.play(items: [item], at: 0) }
+            candidateActionBar(candidate)
+        }
+    }
+
+    /// 候选卡底部操作条（09 §3-H 列了三件：♡ 收藏 / ↓ 下载 / ⤴ 分享）。
+    ///
+    /// · **↓ 下载** —— **不渲染**：D12 明令 v1.0 不开任何扣费入口，09 §5 的终态行原文即
+    ///   「下载入口仍按 D12 隐藏」，合规评审放行后再接。
+    @ViewBuilder
+    private func candidateActionBar(_ candidate: GenerationCandidateDto) -> some View {
+        HStack(spacing: CovaSpace.sm) {
+            // 「无 mediaReferenceId 时整钮不渲染」（09 §5 / §8）：不是 disabled，是不进视图树。
+            if CandidateFavoriteLedger.canFavorite(candidate) {
+                favoriteButton(candidate)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, CovaSpace.pageGutter)
+    }
+
+    private func favoriteButton(_ candidate: GenerationCandidateDto) -> some View {
+        let on = CandidateFavoriteLedger.isFavorite(candidate, in: favorites)
+        return Button {
+            Task { await toggleFavorite(candidate) }
+        } label: {
+            Image(systemName: on ? "heart.fill" : "heart")
+                .font(.system(size: 16))
+                .foregroundStyle(on ? CovaColor.accent : CovaColor.muted)
+                // ♡ 是触控目标（09 §7「≥44pt」），图标 16pt 不能当热区。
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(on ? "取消收藏" : "收藏")
+    }
+
+    /// ♡ 的一次往返：乐观翻转 → 真发 `PATCH …/retention` → 失败**回落到服务端事实并说出来**。
+    ///
+    /// 请求体就是契约给的 `{favorite}` 一个字段，**不带幂等键**：该端点按值幂等
+    /// （反复 PUT 同一个布尔值不产生第二次副作用，与「下载 checkout / plans/start」不是一类写）。
+    /// 若后端将来要求幂等键，那是改契约 ⇒ 先登记 NEEDS，不在客户端加字段。
+    private func toggleFavorite(_ candidate: GenerationCandidateDto) async {
+        guard let intent = favorites.beginToggle(candidate) else { return }   // 吞后发 / 无处可调
+        do {
+            let response = try await session.studio.setCandidateFavorite(
+                referenceID: intent.referenceID, intent.target
+            )
+            favorites.confirm(
+                referenceID: intent.referenceID, sent: intent.target, echoed: response.favorite
+            )
+        } catch {
+            favorites.reject(referenceID: intent.referenceID)
+            session.showToast("收藏没保存上，再试一次", isError: true)
         }
     }
 
@@ -262,6 +320,8 @@ public struct AISessionDetailView: View {
             }
             plans = planList
             candidates = result.generationJobs.last?.candidates() ?? []
+            // 服务端为事实源（PRD 4.2）⇒ 载荷一到就以它重播 ♡ 账，不保留上一轮的乐观值。
+            favorites.reseed(from: candidates)
             creditsBalance = try? await session.catalog.me().entitlements.creditsBalance
             phase = .ready
             // 首页输入卡带过来的一句话：进屏后自动发一次（01 §2「提交后跳转创作会话详情」）。
