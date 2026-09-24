@@ -130,16 +130,29 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     /// 只记待用速率，等 `play()` 落地再生效。
     ///
     /// **待用槽的生命周期**（第 14 轮 R14-2：每一次清空都为了「上一个持有者的命令不得由
-    /// 下一个持有者执行」；两侧的正反镜像见 `AVPlayerEngineTests`）：
-    ///   · `play()` —— **取走并清空**（与置真意图同一段锁内完成）；
-    ///   · `pause()` —— **保留**：暂停期里改的速就是等下一次起播生效的那一个；
+    /// 下一个持有者执行」；第 21 轮 R15-2 查出不等价的两条边**零测试**，本段随之给每条边
+    /// 点名它的钉死用例 —— 五条边现在各自都有「改动此处 ⇒ 该条变红」的可测后果
+    /// （两条变异的实测红色计数记在本批 commit message；评审出处
+    /// `docs/review-g3e-round4.md` 第 15 轮 R15-2）：
+    ///   · `play()` —— **取走并清空**（与置真意图同一段锁内完成）。
+    ///     钉它的是 `testTakenPendingRateDoesNotOverrideANewerRateOnTheNextStart`：
+    ///     中间插一次「播放中当场改速」，再走第二次 `play()` —— 漏掉清空就是把已消费的
+    ///     陈旧速率重新写回 `player.rate`，盖掉更新过的那一个；
+    ///   · `pause()` —— **保留**：暂停期里改的速就是等下一次起播生效的那一个。
+    ///     钉它的是 `testPauseKeepsThePendingRateAcrossARepeatedPause`：形状必须是
+    ///     「**先记待用、后摁暂停**」（「对已经暂停的引擎再摁一次 pause」是真形状：
+    ///     协调器公开的 `pause()` 对不可暂停状态照样摁、装载入口为摁住旧声摁一次
+    ///     （`loadCurrent`）、`pauseEngineIfStillOwned` 五处收敛腿各摁一次），
+    ///     在 pause 的状态转移里插一句清空就是把用户挑的速率悄悄退回默认；
     ///   · `stopAndRelease()` —— **清空**：引擎已不属于任何持有者，留着它下一次 `play()`
-    ///     就会以上一个持有者的速率起播（评审在真机引擎上实测到的泄漏）；
+    ///     就会以上一个持有者的速率起播（评审在真机引擎上实测到的泄漏）。
+    ///     钉它的是 `testPendingRateDoesNotOutliveRelease`；
     ///   · `load(_:)` 接受新条目 —— **清空**：待用速率是针对**被换掉那一条**提的请求，
     ///     新条目没有继承它的道理。协调器每次起播后都会自己下 `setRate`
     ///     （`PlaybackCoordinator.loadCurrent`），所以这里清空不丢功能，
-    ///     只关掉跨持有者泄漏的另一个入口；
-    ///   · 被**拒绝**的装载（D7 / MAJ-8）不清空：引擎里仍是上一件在播，那一件才是这条速率的主人。
+    ///     只关掉跨持有者泄漏的另一个入口。钉它的是 `testPendingRateDoesNotCrossANewLoadedItem`；
+    ///   · 被**拒绝**的装载（D7 / MAJ-8）不清空：引擎里仍是上一件在播，那一件才是这条速率
+    ///     的主人。钉它的是 `testRejectedLoadKeepsPendingRateForTheItemStillInEngine`。
     public func setRate(_ rate: Double) async {
         guard rate.isFinite, rate > 0 else { return }
         // 「判意图」与「记待用」是一份状态的两半，必须落在同一段锁里（R14-3）。
@@ -273,7 +286,9 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     /// （「现在能不能直接下发」与「不能下发时记谁的值」），分两处判必然分叉。
     /// `play()` / `setRate()` / `pause()` / `stopAndRelease()` 这些 async 或半 async 入口
     /// 只经**一次**辅助调用完成转移，`player.*` 一律留在锁外（与观测者回调同一口径）。
-    /// 自查方式（本批实测各 1 处，全在那一区 + 声明处）：
+    /// 自查方式（第 21 批 R15-7 拆掉同义死重复 `discardPendingRate()` 之后重跑，本批实测
+    /// 全文 18 处命中 = 声明 2 处 + 注释 5 处 + 代码 11 处，代码那 11 处**全部**在下一区
+    /// 「锁内状态转移：意图与速率」之内，区外零读写）：
     /// `grep -n "wantsPlayback\b\|pendingRate\b" AVPlayerEngine.swift`。
     private func setItem(_ avItem: AVPlayerItem?) {
         lock.lock()
@@ -369,16 +384,12 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
         return true
     }
 
-    /// 作废待用速率（`load(_:)` 接受新条目那一腿，见 `setRate` 的契约注释）。
-    private func discardPendingRate() {
-        lock.lock()
-        defer { lock.unlock() }
-        pendingRate = nil
-    }
-
     /// 显式暂停 / 起播之外的意图翻转（`pause()` 用；释放走 `markReleased`）。
     ///
-    /// 刻意**不**清待用速率：暂停期里收到的改速就是要等下一次 `play()` 生效的那一个。
+    /// 刻意**不**清待用速率：暂停期里收到的改速就是要等下一次 `play()` 生效的那一个
+    /// （R15-2：第 21 批之前这句只是嘴上说的 —— 在本区插一句 `pendingRate = nil`
+    /// 全量 415 条 0 失败；现在钉它的是
+    /// `AVPlayerEngineTests.testPauseKeepsThePendingRateAcrossARepeatedPause`）。
     private func setWantsPlayback(_ value: Bool) {
         lock.lock()
         defer { lock.unlock() }
@@ -395,6 +406,10 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     }
 
     /// 接受新条目时清空待用速率（锁内；契约见 `setRate` 的生命周期注释）。
+    ///
+    /// 本区**只**留这一条「清空待用速率」的辅助（R15-7：原先并存一条同义的
+    /// `discardPendingRate()`，零调用点 —— 两条同义写法正是「改了一条、漏了另一条」的入口）。
+    /// `markReleased()` 的清的是「连同意图一起」的释放语义，与此处不同轴，故不合并。
     private func discardPendingRateForNewItem() {
         lock.lock()
         defer { lock.unlock() }

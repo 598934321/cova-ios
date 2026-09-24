@@ -472,6 +472,100 @@ final class AVPlayerEngineTests: XCTestCase {
         )
         engine.stopAndRelease()
     }
+
+    // MARK: - 第 21 批 R15-2：五条边里先前无人钉住的那两条（`pause()` 保留 / `play()` 取走）
+    //
+    // 第 19 批把「释放 / 换件 / 被拒装载」三条钉住后，评审在**全量 415 条**上又实测了两条变异
+    // 各自 0 失败（存活）：① 在 `pause()` 的状态转移里插一句 `pendingRate = nil`；
+    // ② 删掉 `startPlaybackTakingPendingRate()` 里那句清空。两条的后果都是用户可见的
+    // （①用户挑的速率悄悄退回默认、②陈旧速率盖掉更新过的那一个），差别只在既有夹具的
+    // **时序**上没有让「待用槽在 pause 时非空」「同一个槽被第二次起播读到」这两个形状出现过 ——
+    // 下面两条补的就是这两个时序，因此各自都是「正反镜像成对」的断言，不是恒真的一半。
+    //
+    // 资产长度：这里用 30 秒静音（既有三条用 1 秒）。这两条的时序比既有的长（两次起播 + 两次暂停），
+    // 1 秒的条目会在中途播完、按 `actionAtItemEnd = .pause` 自行停住，那之后 `player.rate`
+    // 的读数就不再由我们的赋值决定 —— 把这条窗口挪出时序之外，断言才只由「待用槽」说话。
+    // 零网络、零第三方依赖、文件只在测试沙盒里存在（`TemporaryDirectory` 收尾删除）。
+
+    /// 边「`pause()` —— **保留**」：暂停期间记下的待用速率，必须活过**再一次**暂停。
+    ///
+    /// 时序关键在「先记待用、后摁暂停」：既有的三条都在 `pause()` 之后才 `setRate`，
+    /// 于是「pause 顺手清空」那条变异落在一个本来就空的槽上 ⇒ 无任何断言会动（评审实测）。
+    /// 「暂停已经落地、又收到一次 pause」是真形状：`PlaybackCoordinator.pause()` 对不可暂停的
+    /// 状态照样 `await engine.pause()`（第 588 行），装载入口为摁住旧声再摁一次（第 1191 行），
+    /// 保持/收敛各腿经 `pauseEngineIfStillOwned`（第 997 行，五处调用）也摁 ——
+    /// 拆掉「保留」，用户挑的 2× 就会在下一次起播时悄悄退回默认。
+    func testPauseKeepsThePendingRateAcrossARepeatedPause() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let engine = AVPlayerEngine()
+        await engine.load(localizedItem(try SilentWAV.write(seconds: 30, stem: "pause-keeps", in: directory)))
+        await engine.play()
+        await engine.pause()
+
+        await engine.setRate(2)                        // 暂停中改速 → 只记不下发
+        let deferred = await engine.currentRate()
+        XCTAssertEqual(deferred, 0, accuracy: 0.001, "前置：改速 ≠ 起播（此刻 2.0 确实在槽里）")
+        await engine.pause()                           // ← 被钉住的那一下：不得抹掉槽里的 2.0
+        let afterSecondPause = await engine.currentRate()
+        XCTAssertEqual(afterSecondPause, 0, accuracy: 0.001, "前置：重复暂停仍是无声")
+
+        await engine.play()
+        let applied = await engine.currentRate()
+        XCTAssertEqual(
+            applied, 2, accuracy: 0.001,
+            "R15-2：`pause()` 保留待用速率 —— 再摁一次暂停后起播，用户挑的 2.0 必须仍然生效（实测 \(applied)）"
+        )
+
+        // 正向镜像：`pause()` 也只是「保留」，既不改写也不追加 —— 后一次请求才是生效的那一个。
+        await engine.pause()
+        await engine.setRate(3)
+        await engine.pause()
+        await engine.play()
+        let latest = await engine.currentRate()
+        XCTAssertEqual(
+            latest, 3, accuracy: 0.001,
+            "R15-2 镜像：两次暂停之间改的速必须赢过更早的那一条（实测 \(latest)）"
+        )
+        engine.stopAndRelease()
+    }
+
+    /// 边「`play()` —— **取走并清空**」：被消费掉的那一条不得在第二次起播时重播。
+    ///
+    /// 既有的三条各自只走一次起播，「读值」留、「清空」删掉的变异因此没人看得见（评审实测）。
+    /// 这里让同一个槽面对**第二次**起播，并且中间插入一次「当场下发」的改速（3.0）：
+    /// 槽没清空 ⇒ `play()` 会把陈旧的 2.0 重新写回 `player.rate`，盖掉更新过的那一个。
+    ///
+    /// 默认侧的口径（实测）：第二次 `play()` 在无待用值时读到的是 **1.0**
+    /// （`AVPlayer.play()` 自己把速率摁回 1×，它不记得我们当场下发过的 3.0 ——
+    /// 那正是「待用槽」这套机制存在的理由）。所以本条钉的是「不得等于 2.0」那一侧，
+    /// 与 `testPendingRateDoesNotOutliveRelease` 同一写法：默认侧 0 / 1 随就绪状态而定，
+    /// 不是本条的口径；陈旧侧（2.0）才是。
+    func testTakenPendingRateDoesNotOverrideANewerRateOnTheNextStart() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let engine = AVPlayerEngine()
+        await engine.load(localizedItem(try SilentWAV.write(seconds: 30, stem: "take", in: directory)))
+        await engine.setRate(2)                        // 未要播 → 记进待用槽
+        let deferred = await engine.currentRate()
+        XCTAssertEqual(deferred, 0, accuracy: 0.001, "前置：改速 ≠ 起播")
+
+        await engine.play()
+        let firstStart = await engine.currentRate()
+        XCTAssertEqual(firstStart, 2, accuracy: 0.001, "前置：待用速率在第一次起播时生效（实测 \(firstStart)）")
+
+        await engine.setRate(3)                        // 已在播 → 当场下发（R13-1 的另一半）
+        let newer = await engine.currentRate()
+        XCTAssertEqual(newer, 3, accuracy: 0.001, "前置：播放中改速当场生效（实测 \(newer)）")
+
+        await engine.play()                            // 第二次起播：那条 2.0 早该被取走了
+        let secondStart = await engine.currentRate()
+        XCTAssertLessThan(
+            secondStart, 1.5,
+            "R15-2：`play()` 是**取走**而不是「读一眼」—— 第二次起播不得把更新的 3.0 覆盖回已消费的 2.0（实测 \(secondStart)）"
+        )
+        engine.stopAndRelease()
+    }
 }
 
 /// 引擎侧「速率真的落到 player」所需的**真资产**夹具：运行时写一段纯静音 WAV
