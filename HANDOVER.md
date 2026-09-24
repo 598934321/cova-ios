@@ -1008,39 +1008,73 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 | 17 状态画廊 | **无代码** | n/a | 设计内部屏，未排期；各屏的空/错/骨架**已分别落地**（`CovaEmptyState`/`CovaErrorState`/`CovaSkeleton`，见 TD-49 的族缺口） |
 | 18 本地通知 | 无自有屏（符合 spec） | 行为面在 `CovaCore` 用例里 | 深链载体待裁决（改 Info.plist 需批准） |
 
-**一句话结论**：**游客能看到 11 屏**（01/03/05/06/07/10/11/13/14/15/16，含 3 组 AX 对照）；
-**看不到的全部卡在同一个地方 —— 没有账号**（02 的有内容态、08/09/12a/12b/12c），
-外加 04 抽屉缺一个走查键。12d 与 17 是**按裁决不做**，不是漏。
 
-## 16. 现场快照（2026-09-24 07:59，供 `/goal resume` 接手；覆盖 §13 里 09-23 的那一份）
+**一句话结论（2026-09-24 22:45 更正）**：上一稿说"看不到的全部卡在同一个地方 —— 没有账号"，
+**现在已经不是这样**：用户给了测试账号，01/02/03/04(部分)/05/07/08/09/12a/12b/12c 的**登录态**
+都已出过真机截图（`docs/acceptance/auth-20260924/`，含 09 的默认档与 AX 档对照）。
+剩下的缺口是**内容面**而不是"进不去"：04 抽屉的 spec 六组 + 底部我的卡片正在补，
+09 的制作进度此前是"永不填满"（第 23 批 E5 改吃真实 `workflowState`），
+12d 与 17 仍是**按裁决不做**，不是漏。
 
-**工作树里那份 RED 在途件已被协调者收尾并提交（`62ef3e8`）—— 本节下面关于"红一条、别提交"的描述已作废**：
-补了 `AVPlayerEngine.discardPendingRateForNewItem()`（`load()` 接受新件时在锁内清空待用槽），
-同一条测试从红转绿，**414 tests / 0 failures，TEST_EXIT=0**。这条红→绿本身就是"撤掉清空必红"的自证。
+## 16. 现场快照（2026-09-24 22:45 本地，供接手；**07:59 那份整段作废**）
 
-**HEAD 是绿的**：`62ef3e8`。干净 clone 实测 `CovaPlayerTests` 410/0/0（那是 R14-2/3 落地前的数，
-现在工作树字节是 **414/0**）、`CovaCoreTests` **408/0**。`PLAYER_MIN` 仍是 **409（待抬到 414）**。
+> 上一份还在讲 R14-5 在途、`PLAYER_MIN` 待抬到 414 —— 那些都已落地。只以本节为准。
+> 它那句"第 18 批的两条假主张已在 `Scripts/test-count-baseline.env` 更正"当时是**假的**
+> （第 15 轮 R15-3 就是打这个），从 `8fbab6e` 起才是真的。
 
-**剩余步骤（按顺序）**：
-1. **R14-5 还没动**：四处 `engine.pause()` 跨 actor hop 无归属/epoch 复核
-   （`apply(.stopped)` / `haltBecauseNothingIsLoaded` / `handleFailure` 终态 / `convergeStalledLoad`），
-   与 `:908-920` 那段自称"穷举"的注释二选一处理 —— 补复核，或把注释收窄到实际强制的范围。
-   **08:32 已把设计定死，接手不必重推**：照 `apply(.repeated)` 的形状，在每处
-   `await closeEpisodeIfNeeded()` **之前**取 `let ownedGeneration = engineCommandGeneration`，
-   hop 之后 `guard engineCommandGeneration == ownedGeneration else { 不碰引擎; return }`；
-   并保留参考实现里那条**唯一例外**（归属已换、但 `lastLandedEpoch == ownedGeneration`
-   ⇒ 声音是这条腿自己造成的，只有它能摁）。四处共用一个私有辅助（例如
-   `pauseEngineIfStillOwned(_ owned: UInt64?) async -> Bool`），别在四处各写一套 ——
-   `:908-920` 那段"穷举"注释届时应改为**指向这个辅助**，让注释与代码同一处真相。
-   ⚠️ **必须带前置为红的测试**：用 `OrderingGatedEngine`（`CovaPlayerTestSupport.swift`，
-   有 `entered*`/`release*` 会合信号）把 hop 卡住，期间起一播新代际，断言
-   ①新播放不被摁停、②"声音是自己造成的"那一侧仍然摁得到。两条各自可杀，
-   否则就是第 14 轮 R14-1 那个"恒真对手测试"的重演。
-2. 抬 `PLAYER_MIN` 409 → 实测终值（当前 414）。
-3. 跑一次全量 `Scripts/check.sh`（十步 + D12 + 三层禁 UI），版本递增 **0.2.65(76)**，
-   钉 tag `g3e-r15`，派第 15 轮（任务书加两条：端到端跑 check.sh 复盖 R14-6；
-   评审须自报"finding 条数 == 判词计数"——第 14 轮抬头 3M、正文 4 条 Major 的那笔账）。
+### 今天已落地、且我逐个复核过"声称的文件 == 真提交的文件"
 
-**协调者自己欠的账，也在这里**：第 18 批我写下过两条假主张（m8 被杀、r1 双覆盖），已在
-`docs/review-g3e-round4.md` §O 与 `Scripts/test-count-baseline.env` 更正；第 19 批实例报的每条
-"变异 ⇒ N 条红"仍要**我自己重跑**才算闭合，别引用它的数字。
+| commit | 内容 | 实测 |
+|---|---|---|
+| `8fbab6e` | §P 归档 + R15-3：第 18 批两处假主张在原处标注否证、补齐第 19 批 409→414 的来源、R15-2 两条欠账写进门禁文件 | `grep -c "第 19 批"` 0 ⇒ 3；env 解析契约不破坏（非注释且非 KEY=整数的行数 = 0） |
+| `db9f940` | R15-2 两条镜像用例 + R15-7 删零调用点辅助 | 变异 A（pause 里加清空）⇒ 417 条 1 红；变异 B（删 play 的清空）⇒ 1 红；md5 还原逐字一致 |
+| `4b78451` | R15-6 消息合成键改吃整段正文 FNV-1a/64 + 同响应内 `#2/#3`；NEEDS-28 | 修前 15 条 5 红（实测两条同键），修后 15/0；"去重只挂平铺分支"的变异 ⇒ 1 红 |
+| `d755275` | R15-1 登录提交纪律 + R15-4 回滚清理失败可观测 + R15-5 先 refresh 后 access；D21④ 就地更正 + 新增 D22 | 撤修法 ⇒ 本文件 6 条 **11 处断言红**（exit 65），补上 ⇒ 6/0（exit 0）；自查出的"三个归属面不一致"先看红（1 failure）再看绿 |
+| `9abd9b0` | §Q：第 21 批记账 + 第 22 批四处入口缺陷的**线上取证** | 全部是我自己跑的 curl，只取键名/计数/HTTP 码 |
+| `5c1095d` | E1 新建会话的 id 键（四处并读裁决：无号或多号互不相同一律报错） | 修前 20 条 4 红（含 `{"session":{"id":""}}` **静默解出空串** —— 比报告说的更糟），修后 20/0 |
+
+### 基线 / 版本 / 门禁的真话
+
+- `Scripts/test-count-baseline.env`：**`APP_MIN=2`、`CORE_MIN=418`、`PLAYER_MIN=415`** ——
+  两个下限现在都**低于**实测（player 已 417；core 合流后 > 418）。抬到终值只在最终字节那一次做，
+  且必须"下限恰好等于实测"（本仓口径不是 `>=` 就行）。
+- `project.yml` 仍是 `0.2.65(76)`；版本递增同样留给最终字节。
+- **不许声称 HEAD 绿**：今天这些改动**尚未**跑过端到端 `bash Scripts/check.sh`。
+  上一次完整通过是 414/418/415 那组字节上的事。（`sh Scripts/check.sh` 会因进程替换语法报错 —— 用 bash。）
+
+### 在途（四个实例，文件域互斥）
+
+1. **E2** 播放上报 `source`（实测 `app-ios` ⇒ **400 播放来源无效**；`discover` ⇒ 200）：
+   `PlayReportDTOs.swift` / `Idempotency.swift` / `PlayReportCoordinator.swift` / `CovaDependencies.swift` + 测试。
+2. **E3** 目录筛选参数（实测 `q=`/`dimension=`/`term=` 被忽略；被认的是 `search=` 与维度名作键）
+   + 收藏混排 feed（实测 note 条目 `artist:null`、无 `favoriteCount/energy/tags`；
+   note id 打 `DELETE /api/favorites` ⇒ **404**，正解 `/api/notes/:id/favorite`）：
+   `CatalogService.swift` / `CollectionDTOs.swift` / `LibraryDTOs.swift` / `CollectionsViews.swift` / `PlazaAndSettings.swift` / `HomeView.swift` / `ArtistHomeView.swift`。
+3. **M3** 04 抽屉按 spec 六组 + 底部我的卡片 + AX 档"组标题隐藏、分组改由语义承担" + 07 sheet AX 档近全屏：
+   `CovaRootView.swift` / `AppSession.swift` / `DetailViews.swift` / `LoginAndMine.swift`。
+   ⚠️ CovaFeature **没有测试目标** ⇒ 它的验收只有"编译过 + 我用模拟器肉眼截图"，别把编译当验收。
+4. **E5** 09 制作进度改吃 `session.workflowState`（我实测有 `completedSteps/activeStep/summaries`；
+   步骤词表与 5 组交付分组取自 web 的 `WORKFLOW_STEPS` + `tutorialStepsFromWorkflow`，
+   含"active 下标越过该组最大下标 ⇒ 该组算完成"那一半）⇒ **NEEDS-25 的前提被推翻**：
+   `StudioSessionDTOs.swift` / `DeliveryProgress.swift` / `AISessionDetailView.swift` + 两份测试。
+
+### 接手步骤（按顺序）
+
+1. 等四个实例落地，逐个 `git show --stat` 复核实际包含的文件与它声称的一致（pathspec 漏未跟踪文件已踩两次）。
+2. 实例自报的"变异 ⇒ N 条红"只算线索：红数要我自己重跑一遍才算闭合（第 19 批那笔账就是这么炸的）。
+3. 抬 `CORE_MIN`/`PLAYER_MIN` 到当轮实测终值 → 版本递增 → `bash Scripts/check.sh` → 钉 tag `g3e-r16`。
+4. 派第 16 轮隔离复审：§L 约束集 + §M 树指纹前置（按 `g3e-r16` 重算 8 项）+ 点名靶子 ——
+   E1–E5 取证是否只到"看起来对"、被改写的既有测试是否只增不减、`workflowState` 缺省是否退化成今天的形状、
+   被 4xx 拒绝的上报条目会不会永远留在待重试队列里、以及老规矩：**评审给的修法也要先证伪**。
+5. 截图位（走查钩子 `COVA_PREVIEW_*`）：04 抽屉默认+AX、07 sheet AX、09 进度真的在走、
+   新建会话能开出来（E1）、收藏里有生成曲目（E3b）、广场筛选真的改变结果（E3a）。
+   纪律照旧：全新 derivedData、看退出码、产物里 grep 本批新符号、**肉眼读图**；
+   `simctl launch` 没有 `--setenv`（要用 `SIMCTL_CHILD_` 前缀），且启动参数会持久化 ⇒ 每次把全部键传全。
+
+### 协调者自己欠的账
+
+- 今天**三次**"从记忆里写 `old_string`"导致 Edit 落空（其中一次正是 R15-3 的正主）。重申：
+  改任何文档/代码前先 grep 出原文，别凭印象拼。
+- NEEDS 侧两条要就地更正（不是新增）：**NEEDS-2** 的框法（后端有 documented 闭集，不是"待放行"）、
+  **NEEDS-25**（进度其实有字段）。等对应实例落地、我复核过字节之后再动，不许提前写"已更正"。
+- M3 余量：13/16 已出 AX 证据、14 本就单列；真机 60fps 未测；12d/17 按裁决不建；**G4 未开始**。

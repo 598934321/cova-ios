@@ -769,7 +769,7 @@ R15-1 收尾时自查出一处**没被 finding 点到的同族残留**：定点�
 
 | # | 缺陷 | 线上实测（我跑的） | 后果 |
 |---|---|---|---|
-| E1 | 新建创作会话的响应键读错：`POST /api/find-my-song/sessions` 回 `{session:{sessionId,…}}`，**没有 `id` 键**，而 iOS 的 `SessionKeys` 只声明 `id` | `top-level keys = session`；`has session.id = false`；`has session.sessionId = true` | 解码必抛 ⇒ **无法开新会话**。本周那次 M2 真机跑通是因为该账号已有旧会话可复用，掩盖了它 |
+| E1 | 新建创作会话的响应键读错：`POST /api/find-my-song/sessions` 回 `{session:{sessionId,…}}`，**没有 `id` 键**，而 iOS 的 `SessionKeys` 只声明 `id` | `top-level keys = session`；`has session.id = false`；`has session.sessionId = true` | 解码必抛 ⇒ **无法开新会话**。**本表上一稿把"为什么一直没露头"说错了**：不是"账号里有旧会话可复用"——create 路径里没有复用这回事，两处 POST 都会新建；真实原因是那次 M2 走查是从 08 列表点进**已有**会话行（只走 GET），从未触发 POST ⇒ 缺陷一直藏在没走过的入口后面（`5c1095d` 复核并更正）。同一批复查还发现修前的形状比报上来的更糟：`{"session":{"id":""}}` 会**静默解出空串 id**，正面违反"sessionId 缺失不得猜路由"。 |
 | E2 | 播放上报的 `source` 用了后端闭集白名单之外的 `app-ios` | 同一条 track：`source=app-ios` ⇒ **HTTP 400** `error=播放来源无效`；`source=discover` ⇒ **200** keys `authenticated,idempotentReplay,message,play,recorded` | **iOS 的播放历史一条都没记上**。旧注释把它写成"NEEDS-2 待后端放行"——那是把客户端选错值记成了后端缺口 |
 | E3a | 目录筛选参数名全错：iOS 发 `q=`/`dimension=`/`term=` | `search=zzzz`⇒0、`mood=zzzz`⇒0、`scene=`⇒0、`energy=`⇒0、`type=`⇒0（**被识别**）；`q=zzzz`⇒20、`keyword=`⇒20、`tag=`/`tags=`⇒20、`dimension=&term=`⇒20（**被忽略**，基线 20） | 广场/曲库的搜索与维度筛选**静默无效**，永远是不筛选的第 1 页 |
 | E3b | 收藏列表是混排的：`GET /api/favorites` 会把生成曲目以 note 形态混进来，字段集与库内 track 不同，而 iOS 用严格 `TrackDto` 解整个数组 | 我给一个公开 note 加了收藏再还原（账号已回到 0）：该条目 `source="note"`、`id="note:<uuid>"`、`artist=null`、**无** `favoriteCount`/`energy`/`tags`；库内 track 三者齐全且 `artist` 非空。取消收藏走 `DELETE /api/favorites` 用 note id ⇒ **404**；正确端点是 `POST/DELETE /api/notes/:id/favorite` ⇒ 200 `{favorited,…}` | 只要用户收藏过任何一首生成曲目，**整个收藏页报错**；且 note 型条目的取消收藏必然失败 |
