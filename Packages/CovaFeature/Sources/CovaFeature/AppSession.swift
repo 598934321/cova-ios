@@ -157,6 +157,7 @@ public final class AppSession {
         case aiSession(String)
         case membership
         case enterprise
+        case artist(String)
     }
     public var path: [Route] = []
 
@@ -325,7 +326,23 @@ public final class AppSession {
 
     public func play(tracks: [TrackDto], at index: Int) async {
         let items = tracks.compactMap { Self.playbackItem(from: $0) }
+        // 歌词（02 §6 / D15：静态文本，无时间轴）跟着**这一次起播的那条曲目**进来 ——
+        // `PlaybackItem` 刻意不带 lyrics 字段（播放层不该知道目录内容），所以这一份
+        // 只在 UI 层存活，并绑定 itemID：换到别的曲目就自动失效，不会把上一首的词留给下一首。
+        let safeIndex = min(max(index, 0), tracks.count - 1)
+        lyricsOwnerID = tracks[safeIndex].id
+        currentLyrics = tracks[safeIndex].lyrics
         await play(items: items, at: index)
+    }
+
+    /// 当前歌词 + 它属于哪一条曲目（视图必须比对 itemID 才能显示）。
+    public private(set) var currentLyrics: String?
+    public private(set) var lyricsOwnerID: String?
+
+    /// 快照里的曲目换了 ⇒ 歌词账跟着作废（不留上一首的词）。
+    public var lyricsForCurrentItem: String? {
+        guard let lyricsOwnerID, let snapshot, snapshot.item?.id == lyricsOwnerID else { return nil }
+        return currentLyrics
     }
 
     public func play(items: [PlaybackItem], at index: Int = 0) async {

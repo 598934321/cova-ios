@@ -232,7 +232,9 @@ public struct TrackDetailSheet: View {
             }
             Spacer()
             Menu {
-                Button("查看艺人") { session.showToast("艺人页在下一版接入（当前仅登记入口）") }
+                Button("查看艺人") {
+                    if let artist = track?.artist { session.path.append(.artist(artist.id)) }
+                }
                 Button("复制链接") {
                     UIPasteboard.general.string = "https://covalink.cn/tracks/\(trackID)"
                     session.showToast("链接已复制")
@@ -259,7 +261,7 @@ public struct TrackDetailSheet: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(track.titleCn ?? track.title)
                             .font(CovaType.title).foregroundStyle(CovaColor.fg)
-                        Button { session.showToast("艺人页在下一版接入（当前仅登记入口）") } label: {
+                        Button { session.path.append(.artist(track.artist.id)) } label: {
                             Text(track.artistNameCn ?? track.artist.name)
                                 .font(CovaType.callout).foregroundStyle(CovaColor.secondary)
                         }

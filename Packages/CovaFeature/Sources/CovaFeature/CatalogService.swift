@@ -26,11 +26,12 @@ public struct CatalogService: Sendable {
         try await client.get("/api/library/taxonomy")
     }
 
-    /// 曲库分页列表（级联筛选 + 搜索 + 分页）。
-    /// 分页用 **page/pageSize**（契约真实形状；没有 cursor）。
+    /// 曲库分页列表（级联筛选 + 搜索 + 分页 + **按艺人筛**）。
+    /// 分页用 **page/pageSize**（契约真实形状；没有 cursor）。`artistId` 是契约 §2 明列的筛选项，
+    /// 16 艺人页就靠它 + 响应内嵌的 `tracks[].artist` 拿人设（**不发明** `/api/artists/:id`）。
     public func tracks(
         dimension: String? = nil, term: String? = nil, query: String? = nil,
-        page: Int = 1, pageSize: Int = 20
+        artistID: String? = nil, page: Int = 1, pageSize: Int = 20
     ) async throws -> TrackPageDto {
         var items = [
             URLQueryItem(name: "page", value: String(page)),
@@ -39,6 +40,7 @@ public struct CatalogService: Sendable {
         if let dimension { items.append(URLQueryItem(name: "dimension", value: dimension)) }
         if let term { items.append(URLQueryItem(name: "term", value: term)) }
         if let query { items.append(URLQueryItem(name: "q", value: query)) }
+        if let artistID { items.append(URLQueryItem(name: "artistId", value: artistID)) }
         return try await client.get("/api/tracks", queryItems: items)
     }
 

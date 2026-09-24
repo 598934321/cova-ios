@@ -68,6 +68,10 @@ public struct PlayerView: View {
     @Environment(AppSession.self) private var session
     @Environment(\.dismiss) private var dismiss
     @State private var dragPosition: Double?
+    /// 02 §2/§5：点封面切换底部面板内容（歌词 / 队列）。默认歌词。
+    @State private var panel: PlayerPanel = .lyrics
+
+    enum PlayerPanel { case lyrics, queue }
 
     public init() {}
 
@@ -86,6 +90,7 @@ public struct PlayerView: View {
             progress(snap)
             transport(snap)
             secondary(snap)
+            bottomPanel
             Spacer()
         }
         .padding(CovaSpace.pageGutter)
@@ -95,11 +100,15 @@ public struct PlayerView: View {
     @ViewBuilder
     private func artwork(_ snap: PlaybackSnapshot?) -> some View {
         if let item = snap?.item {
-            CovaArtwork(url: item.coverURL?.value, title: item.title)
-                .frame(maxWidth: .infinity)
-                .aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
-                .shadow(color: .black.opacity(0.25), radius: 24, y: 12)
+            Button { withAnimation(.easeOut(duration: 0.18)) { togglePanel() } } label: {
+                CovaArtwork(url: item.coverURL?.value, title: item.title)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(1, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
+                    .shadow(color: .black.opacity(0.25), radius: 24, y: 12)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("切换歌词与队列面板")
         } else {
             CovaEmptyState(symbol: "music.note", title: "没有在播的曲目", hint: "从首页或曲库选一首。")
         }
@@ -108,9 +117,81 @@ public struct PlayerView: View {
     @ViewBuilder
     private func texts(_ snap: PlaybackSnapshot?) -> some View {
         VStack(spacing: 2) {
+            // 02 §8：私有候选在标题栏下方挂「生成候选 · 仅本人可见」徽标（warning 色），
+            // 且这一类条目**不触发播放上报**、也不放收藏 ♡（收藏走候选卡上的 retention 接口）。
+            if snap?.item?.kind == .privateCandidate {
+                Text("生成候选 · 仅本人可见")
+                    .font(CovaType.caption).foregroundStyle(CovaColor.warning)
+                    .padding(.horizontal, CovaSpace.sm).padding(.vertical, 2)
+                    .background(Capsule().fill(CovaColor.warning.opacity(0.12)))
+            }
             Text(snap?.item?.title ?? "—").font(CovaType.title).foregroundStyle(CovaColor.fg).lineLimit(1)
             Text(snap?.item?.artist ?? "").font(CovaType.callout).foregroundStyle(CovaColor.secondary).lineLimit(1)
         }
+    }
+
+    private func togglePanel() {
+        panel = panel == .lyrics ? .queue : .lyrics
+    }
+
+    /// 底部面板（02 §5/§6）。歌词是**静态文本滚动**（D15：后端没有时间轴数据，
+    /// 逐行时间轴歌词是全局禁令），取不到就显示「纯音乐 / 暂无歌词」。
+    @ViewBuilder
+    private var bottomPanel: some View {
+        VStack(alignment: .leading, spacing: CovaSpace.sm) {
+            HStack {
+                Text(panel == .lyrics ? "歌词" : "播放队列")
+                    .font(CovaType.subhead).foregroundStyle(CovaColor.muted)
+                Spacer()
+                Button(panel == .lyrics ? "看队列" : "看歌词") { togglePanel() }
+                    .font(CovaType.caption).foregroundStyle(CovaColor.accent)
+            }
+            if panel == .lyrics {
+                lyricsBlock
+            } else {
+                queueBlock
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var lyricsBlock: some View {
+        if let lyrics = session.lyricsForCurrentItem, !lyrics.isEmpty {
+            ScrollView(.vertical, showsIndicators: false) {
+                Text(lyrics)
+                    .font(CovaType.body).foregroundStyle(CovaColor.fg)
+                    .lineSpacing(6)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .frame(maxHeight: 140)
+        } else {
+            Text("纯音乐 / 暂无歌词")
+                .font(CovaType.subhead).foregroundStyle(CovaColor.muted)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, CovaSpace.lg)
+        }
+    }
+
+    /// 队列面板只显**快照里有的**信息；没有队列事实源时不编造列表。
+    private var queueBlock: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: CovaSpace.sm) {
+                if let item = session.snapshot?.item {
+                    HStack(spacing: CovaSpace.sm) {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .foregroundStyle(CovaColor.accent)
+                        Text(item.title).font(CovaType.callout).foregroundStyle(CovaColor.fg)
+                        Text(item.artist).font(CovaType.caption).foregroundStyle(CovaColor.muted)
+                    }
+                }
+                Text("完整队列的编辑在下一版接入（当前只有当前项这一个事实源）")
+                    .font(CovaType.caption).foregroundStyle(CovaColor.muted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: 140)
     }
 
     private func progress(_ snap: PlaybackSnapshot?) -> some View {

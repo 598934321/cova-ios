@@ -139,6 +139,7 @@ public struct LibraryView: View {
                         }
                         .contextMenu {
                             Button("曲目详情") { session.detailTrackID = track.id }
+                            Button("查看艺人") { session.path.append(.artist(track.artist.id)) }
                         }
                     }
                     if page < totalPages {

@@ -47,6 +47,7 @@ public struct CovaRootView: View {
         case "enterprise": return .enterprise
         default:
             if raw.hasPrefix("playlist:") { return .playlist(String(raw.dropFirst("playlist:".count))) }
+            if raw.hasPrefix("artist:") { return .artist(String(raw.dropFirst("artist:".count))) }
             if raw.hasPrefix("aiSession:") { return .aiSession(String(raw.dropFirst("aiSession:".count))) }
             return nil
         }
@@ -143,6 +144,7 @@ public struct CovaRootView: View {
                 case .aiSession(let id): AISessionDetailView(sessionID: id)
                 case .membership: MembershipView()
                 case .enterprise: EnterpriseView()
+                case .artist(let id): ArtistHomeView(artistID: id)
                 }
             }
         }
