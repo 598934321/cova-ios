@@ -1179,3 +1179,20 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
    `CollectionDTOs.swift:35` 一处 ⇒ 与我对 4/10 红因的判断一致：**不是集成冲突**。
    它还留下两条待办：`MembershipView.planName` 的重复文案该抽出、13 屏仍在本地自己拉 `/me`
    （M3 已经把 `/me` 提到 `AppSession` 了，13 该改读同一本账）。
+
+### 16.3 追加（23:13，最后一个动作）：**HEAD 现在是编译不过的**
+
+复核确认（不是我猜的）：`git show HEAD:…/CollectionDTOs.swift` 里 `FavoriteItemDto` 声明成
+`enum … : Equatable, Sendable`，**没有 `Decodable`**，而同文件 `:35` 在做
+`container.decode([FavoriteItemDto].self, forKey: .tracks)` ⇒ `error: requires that 'FavoriteItemDto'
+conform to 'Decodable'`。这就是我 23:07 那次 `check.sh` 红在 4/10 的那一处，而 23:10 我为了保住
+2755 行把它一起提交进了 `7257b6b`。
+
+- **我没有顺手修它**：E3 实例此刻还在改这个文件（工作树里它是脏的），它下一版大概率自己就补上了；
+  我去改只会和它撞。
+- ⇒ **接手第一件事**：`bash Scripts/check.sh` 之前，先看 `Packages/CovaCore/Sources/CovaCore/CollectionDTOs.swift`
+  是不是已经被 E3 补成 conforms `Decodable`；没有就补一个 `Decodable`（+ 它的 `init(from:)` 里
+  那两个 case 的解码），别在坏 HEAD 上跑任何"全绿"结论。
+- **谁把 HEAD 弄绿的，请在 commit message 里带上这一句**：`7257b6b` 是一笔**明知编译不过**的
+  checkpoint，它的唯一目的是不让并行实例的未提交工作随会话一起没了 —— 它**不是**里程碑，
+  也不该被 `git log` 的任何 ✅ 读法引用。
