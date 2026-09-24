@@ -836,7 +836,8 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 | 项 | 状态 | 证据 |
 |---|---|---|
 | `CovaCore`：DTO / API client（15s 超时 + single-flight refresh）/ SSE / 幂等键 / Keychain / owner 绑定持久化 | ✅ G3-b/c/d 已验收 | 门禁 6/10：`CovaCoreTests` 372 passed / 0 failed；7/10 行覆盖 **95.31%**；平台中立性静态不变量在 3/10 |
-| `CovaPlayer`：队列 / 循环三态 / ±15s / 锁屏（`MPRemoteCommandCenter`）/ 上报去重 / 私有音频 D7 硬顺序 | ⏳ **实现完成到第 18 批字节；验收未过** —— 第 14 轮隔离复审（tag `g3e-r14` = `a47e44f`）判**不放行**：0 Critical / 4 条 Major 编号（抬头写 3M，协调者按保守读全部当阻断），其中两条**否证协调者第 18 批自己写下的主张**。第 19 批修复在途。 | 该轮预检 **8/8 通过**（全新 clone + 自有 derivedData），独立复跑 `CovaPlayerTests` **409/0/0**（与 `PLAYER_MIN=409` 恰好相等）、`r2` 变异按主张红、覆盖下限降级通道逐项实测拒绝；协调者侧最终字节：`CovaPlayer` 行覆盖 **3339/3514 = 95.02%**、`CovaCore` 387/0 = **95.57%**。判词与逐条字节依据 = `docs/review-g3e-round4.md` §O |
+| `CovaPlayer`：队列 / 循环三态 / ±15s / 锁屏（`MPNowPlayingController`）/ 上报去重 / 私有音频 D7 硬顺序 | ⏳ **第 19 批在途**（07:45 实测）：R14-1 与 R14-4 **已落地**（`284c7ca` / `4f3b1f4`）—— 归属闸 `:1217` **保留**并补上可杀它的对手测试（带"靶子是活的"前置，防恒真断言），r1 的账也核清；R14-2 / R14-3 / R14-5 正在改 `AVPlayerEngine`。验收未过：没有任何一轮在正确基线上给出 0C/0M。 | 第 14 轮预检 8/8 有效、独立复跑 **409/0/0**（= 当时 `PLAYER_MIN`）；判词与协调者对评审修法的否证都在 `docs/review-g3e-round4.md` §O + §O 补充。**协调者落地前必做**：`md5` 比对确认变异实验没留在 HEAD、自己重跑它报的每条"变异 ⇒ N 条红"、跑一次全量 `Scripts/check.sh`、版本递增 0.2.65(76)、钉 `g3e-r15` 派第 15 轮 |
+| `CovaCore`：DTO / API client / SSE / 幂等键 / Keychain / owner 绑定持久化 + M2/M3 的纯判定 | ✅ G3-b/c/d 已验收；M2 收口的三本账（收藏乐观账本 / 进度映射 / 双 Demo 规则）已进核心层 | 本机实测 **408 tests / 0 failures**（`TEST_EXIT=0`，iPhone 17 Pro / 自有 derivedData），`CORE_MIN` 已按实测从 387 抬到 **408**（`2197488`）；覆盖 95%+（第 14 轮未独立复跑端到端，见 R14-6，留给第 15 轮） |
 | 门禁 `Scripts/check.sh`（**十步，零基 0/10…9/10**） | ✅ 成型且 fail-closed | 最终字节 EXIT=0；判据只消费权威机器可读产物；硬边界 8 已机制化为**白名单**（`944ba98`，TD-38 关闭）；**D12 禁售文案**机制化为第 3 步的 `Scripts/d12-copy-check.sh`（16 个禁词 + `¥` 只扫字符串字面量，内置"种一条违规必须红"的反向自测）；覆盖率阈值 **钉死 94% 且只能抬高**（`COVA_*_COVERAGE_MIN` 注入低于钉死值 ⇒ exit 7 并印真实阈值，第 13/14 轮各抓一半、现已闭合） |
 | 零第三方依赖 | ✅ | 2/10 + 3/10 断言无远程包 / 无框架 / 无二进制制品 |
 
