@@ -40,7 +40,9 @@ final class AVPlayerEngineTests: XCTestCase {
                 "\(kind) 的文案露出了枚举名：\(bare.description)"
             )
             XCTAssertFalse(
-                bare.description.rangeOfCharacter(from: .asciiLetters) != nil,
+                bare.description.rangeOfCharacter(
+                    from: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+                ) != nil,
                 "\(kind) 的空文案上屏串里不该有拉丁字母：\(bare.description)"
             )
             XCTAssertEqual(bare.description, kind.userLabel)
