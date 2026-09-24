@@ -39,6 +39,8 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     /// `readyToPlay` 或 `playbackLikelyToKeepUp`，若一律翻成 `.playing` 就会把暂停悄悄改回播放
     /// 并向锁屏发布 `isPlaying = true`（缺陷 M10）。观测者只在意图为「在播」时才上报播放。
     private var wantsPlayback = false
+    /// 暂停期间收到的目标速率；`play()` 落地时应用（见 `setRate` 的契约注释）。
+    private var pendingRate: Double?
 
     /// 观测者计数（**仅供测试断言 teardown 归零**；生产不使用）。
     internal private(set) var liveTimeObserverCount = 0
@@ -101,6 +103,11 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     public func play() async {
         setWantsPlayback(true)
         player.play()
+        if let pending = pendingRate {
+            // 暂停期间收到的改速请求在这里生效 —— 那时 `setRate` 只记不下发（见下方注释）。
+            pendingRate = nil
+            player.rate = Float(pending)
+        }
         continuation.yield(.playing)
     }
 
@@ -115,8 +122,15 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
         await player.seek(to: Self.time(seconds), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
+    /// **改速不等于起播**（第 13 轮 R13-1 的根因）：AVPlayer 的 `rate = x` 赋值会顺手起播，
+    /// 于是暂停期间一次纯改速会把刚摁停的引擎重新放响。引擎契约因此是：不在「要播」状态时
+    /// 只记待用速率，等 `play()` 落地再生效。
     public func setRate(_ rate: Double) async {
         guard rate.isFinite, rate > 0 else { return }
+        guard wantsPlayback else {
+            pendingRate = rate
+            return
+        }
         player.rate = Float(rate)
     }
 

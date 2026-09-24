@@ -612,8 +612,13 @@ public actor PlaybackCoordinator {
             await loadCurrent(autoplay: true)
             return
         }
+        let ownedGeneration = engineCommandGeneration
         state = .playing
         await engine.play()
+        // R13-1：`play()` 的挂起里换件装载可以起步并认领引擎。那时这句 `setRate`
+        // 就是往**别人正在装载的引擎**上补一刀 —— 归属已换 ⇒ 本腿到此为止，
+        // 状态与上报都交给那一代装载去写（它比本腿更知道引擎现在装的是谁）。
+        guard engineCommandGeneration == ownedGeneration else { return }
         await engine.setRate(playbackRate)
         await reportEpisodeIfNeeded()
         await publishNowPlaying(force: true)
@@ -666,6 +671,12 @@ public actor PlaybackCoordinator {
         guard !tornDown else { return playbackRate }
         guard rate.isFinite, rate > 0 else { return playbackRate }
         playbackRate = min(max(rate, 0.5), 2)
+        // R13-1：改速只在**引擎真的在响当前项**时下发。暂停 / 装载在途 / 终态时
+        // 一次 `setRate` 就是往别人手里递一把火（AVPlayer 的 rate 赋值顺手起播）。
+        // 引擎侧也补了同一把不变量，这里再钉一层，是为了让「没下令」这件事可被测试观测。
+        guard state.isSounding, engineEpisodeItemID == queue.current?.id else {
+            return playbackRate
+        }
         await engine.setRate(playbackRate)
         await publishNowPlaying(force: true)
         return playbackRate
@@ -1202,6 +1213,8 @@ public actor PlaybackCoordinator {
         if autoplay && userWantsPlayback {
             state = .playing
             await engine.play()
+            // 同一把归属闸（R13-1 的第三条腿）：`play()` 挂起期间被取代 ⇒ 不再命令速率。
+            guard engineCommandGeneration == generation else { return }
             await engine.setRate(playbackRate)
             guard continuationIsCurrent(
                 generation: generation, claimingEngineItem: prepared.id, requiresPlaybackIntent: true

@@ -217,9 +217,12 @@ final class AVPlayerEngineTests: XCTestCase {
     func testRateAndTimeAreReadableWithoutAnyItem() async {
         let engine = AVPlayerEngine()
         await engine.seek(to: 5)
+        // 新契约（第 13 轮 R13-1）：**空载且未要播**时 `setRate` 只记待用速率、不下发 ——
+        // AVPlayer 的 `rate = x` 赋值会顺手起播，所以「暂停中/空载时改个速度」
+        // 绝不能把引擎放响。待用值由 `play()` 落地时应用。
         await engine.setRate(2)
-        let rate = await engine.currentRate()
-        XCTAssertEqual(rate, 2, accuracy: 0.001)
+        let deferred = await engine.currentRate()
+        XCTAssertEqual(deferred, 0, accuracy: 0.001, "空载且未要播时不得真的改引擎速率（改速 ≠ 起播）")
         let time = await engine.currentTime()
         XCTAssertGreaterThanOrEqual(time, 0)
         let duration = await engine.currentDuration()

@@ -1148,7 +1148,7 @@ echo "          报告 0 行点名 Packages/CovaPlayer/Sources ⇒ 门禁不可�
 echo "          -enableCodeCoverage 的真实模拟器运行产出的 profdata + 该次运行的 .xctest 二进制，走"
 echo "          llvm-cov lcov（与 7/10 同方法论）。域由「该包非测试 target 的编译文件集合」精确界定，"
 echo "          不用 /Tests/ 名称启发式（防止把难覆盖文件塞进名为 Tests 的子目录来缩小分母，TD-10）。"
-echo "          阈值不变（≥80%，只允许抬高），读不到数据一律 fail-closed。"
+echo "          实际判定阈值 ${PLAYER_COVERAGE_MIN}%（基准 ${COVERAGE_FLOOR}%，只允许抬高；R13-4：这里以前印的是 80%，与真正判的 94% 不符），读不到数据一律 fail-closed。"
 
 lcov_sf_in_domain() { # $1=lcov $2=域清单（逐行绝对路径） -> 域内被点名的 SF（去重排序）
   awk -v DOM="$2" '

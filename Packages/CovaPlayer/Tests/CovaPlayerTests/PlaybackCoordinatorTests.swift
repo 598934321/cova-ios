@@ -2107,6 +2107,133 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(snap.state, .playing, "R9-1：良性导航不得把新起播摁停")
     }
 
+    // MARK: - 环 4 · 第 18 批：R13-1（速率腿）与 m8（并入复核的归属那一半）
+
+    /// 缺陷 R13-1（**Major**，第 13 轮）：`setPlaybackRate` 是无条件 `engine.setRate`，
+    /// 而 `AVPlayerEngine.setRate` 直写 `player.rate` —— AVPlayer 的速率赋值**顺手起播** ⇒
+    /// 「暂停中改个速度」会把刚摁停的引擎重新放响。
+    /// 本批两层各钉一刀：引擎侧「不在要播状态只记不下发」+ 协调器侧「没在响就不发命令」。
+    /// 协调器这一层的意义是**可观测**：测试能直接看见「没有 setRate 落在暂停之后」。
+    func testRateChangeWhilePausedNeverCommandsTheEngine() async {
+        let engine = ScriptedEngine()
+        let subject = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: nowPlaying)
+        _ = await subject.start(items: TestItems.makeMany(["a"]))
+        await subject.pause()
+        let ratesBefore = engine.count(of: "setRate")
+        let callsBefore = engine.calls.count
+
+        let applied = await subject.setPlaybackRate(1.5)
+
+        XCTAssertEqual(applied, 1.5, "速率本身要记下来（下次起播生效），只是不得现在下发")
+        XCTAssertEqual(
+            engine.count(of: "setRate"), ratesBefore,
+            "R13-1：暂停中改速绝不命令引擎；calls=\(engine.calls)"
+        )
+        XCTAssertEqual(engine.calls.count, callsBefore, "暂停中改速对引擎零操作（连 play/pause 都不许碰）")
+        let snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .paused, "R13-1：改速不得把暂停翻回放")
+    }
+
+    /// R13-1 的第二条腿：装载在途（入口摁声刚发生）时改速。
+    /// 这一条同时是「别把正常起播的速率也吞了」的正向对照 —— 放行装载后必须看到 setRate。
+    func testRateChangeDuringInFlightLoadDefersUntilTheLoadPlays() async {
+        let engine = ScriptedEngine()
+        let preparer = GatedSourcePreparer(gating: ["b"])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        _ = await subject.start(items: TestItems.makeMany(["a", "b"]), at: 0)
+        let switched = Task { await subject.start(at: 1) }
+        await assertSignalReached(target: 2, counter: preparer.requestSignal, what: "b 的装载进入在途")
+        let ratesWhileLoading = engine.count(of: "setRate")
+
+        _ = await subject.setPlaybackRate(2)
+        XCTAssertEqual(
+            engine.count(of: "setRate"), ratesWhileLoading,
+            "R13-1：装载在途（引擎没装着当前项）时改速不得下发；calls=\(engine.calls)"
+        )
+
+        await preparer.release("b")
+        _ = await switched.value
+        let snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "收尾：b 照常起播")
+        XCTAssertGreaterThan(
+            engine.count(of: "setRate"), ratesWhileLoading,
+            "正向对照：装载腿起播后要把记下的速率真正下发（本批没把速率吞掉）"
+        )
+    }
+
+    /// 第 13 轮 R13-3（**Major，证据完整性**）：m8（把「并入出声后复核」的归属那一半拆掉）
+    /// 在全量 405 条里 0 失败 ⇒ 主张 4 的闭合没有永久用例背书。本条就是那条背书：
+    /// 归属在 `engine.play()` 的挂起里被换掉时，重播腿既不能出声、
+    /// 也不能去 `closeEpisode` + 再报一次（那正是 R11-6 的集次拆分）。
+    func testPlayLandingAfterOwnershipChangeMustNotReportSecondEpisode() async {
+        let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 0, gatedPlayFromTurn: 2)
+        let submitter = StubPlayReportSubmitter()
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock,
+            reporter: PlayReportCoordinator(submitter: submitter), nowPlaying: nowPlaying
+        )
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r13-m8")))
+        await subject.setLoopMode(.all)
+        _ = await subject.start(items: TestItems.makeMany(["a"]))
+
+        let replay = Task { await subject.next() }
+        await assertSignalReached(
+            target: 1, counter: engine.enteredPlay, what: "重播腿的 play 已进到引擎并挂起"
+        )
+        let restarted = Task { await subject.start() }
+        _ = await restarted.value
+        let submissionsBefore = await submitter.callCount
+        engine.releasePlay()
+        _ = await replay.value
+
+        let submissionsAfter = await submitter.callCount
+        XCTAssertEqual(
+            submissionsAfter, submissionsBefore,
+            "m8 的对手测试：归属已换的重播腿不得 closeEpisode + 再起播上报（R11-6）"
+        )
+        let tail = Array(engine.calls.dropFirst(engine.calls.count))
+        XCTAssertTrue(tail.isEmpty, "本腿恢复之后对引擎零操作；tail=\(tail)")
+    }
+
+    /// R13-1 的第二条腿：`resume()` 在 `engine.play()` 挂起里被换件装载取代 ⇒
+    /// 它既不得再发 `setRate`（AVPlayer 的速率赋值顺手起播），也不得替那一代去上报/回显。
+    func testResumeSupersededDuringPlayMustNotCommandTheEngine() async {
+        let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 0, gatedPlayFromTurn: 2)
+        let preparer = GatedSourcePreparer(gating: ["b"])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r13-resume")))
+        _ = await subject.start(items: TestItems.makeMany(["a", "b"]), at: 0)
+        await subject.pause()
+        let ratesBeforeResume = engine.count(of: "setRate")
+
+        let resumed = Task { await subject.resume() }
+        await assertSignalReached(
+            target: 1, counter: engine.enteredPlay, what: "resume 的 play 已进到引擎并挂起"
+        )
+        // 挂起窗口里用户换曲：新一代认领引擎 + 入口摁声。
+        let switched = Task { await subject.start(at: 1) }
+        await assertSignalReached(target: 2, counter: preparer.requestSignal, what: "b 的装载进入在途")
+        let callsBeforeRelease = engine.calls.count
+        engine.releasePlay()
+        _ = await resumed.value
+
+        let tail = Array(engine.calls.dropFirst(callsBeforeRelease))
+        XCTAssertFalse(
+            tail.contains("setRate"),
+            "R13-1：归属已换的 resume 不得再命令速率（那会把 b 的装载窗口重新点着）；tail=\(tail)"
+        )
+        XCTAssertEqual(engine.count(of: "setRate"), ratesBeforeResume, "整条被取代的 resume 对速率零操作")
+        await preparer.release("b")
+        _ = await switched.value
+        let snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "收尾：b 由自己那一代起播，不受本条干扰")
+        XCTAssertEqual(snap.item?.id, "b")
+    }
+
     /// 缺陷 R8B-1（**Major**，第 8 轮 b 复审；第 13 批修）：「引擎装着当前项 + 正在响 +
     /// 在途台账未收」是一段**真实窗口** —— `loadCurrent` 写完 `engineEpisodeItemID` 后还要
     /// await 播放/上报/回显（上报是真网络 await）才收台账。旧 (a) 腿把「台账开着」读成
