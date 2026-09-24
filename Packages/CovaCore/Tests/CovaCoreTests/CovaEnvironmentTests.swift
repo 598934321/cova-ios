@@ -227,4 +227,61 @@ final class CovaEnvironmentTests: XCTestCase {
         XCTAssertEqual(dotted?.path, "/api/v1.2/tracks")
         XCTAssertTrue(CovaEnvironment.isProductionOrigin(dotted!))
     }
+
+    // MARK: - resolveMediaURL（R16-1：目录里的相对 audioUrl 必须补成同源绝对地址）
+
+    /// 线上实测形态（2026-09-24 只读探针：`GET /api/tracks` 的 20/20 行 `audioUrl` 都是相对路径，
+    /// 而 `cover` 是绝对地址）。旧实现在这里直接 `URL(string:)` + `AudioURL(https:)` ⇒
+    /// 没有 scheme ⇒ 被 `.missingScheme` 拒 ⇒ **整库静默不可播**。
+    func testResolveMediaURLTurnsRelativeAudioPathIntoSameOriginAbsolute() throws {
+        let raw = "/api/tracks/library-9749cdc210a624de9d0da02e/preview-stream"
+        let url = try XCTUnwrap(CovaEnvironment.resolveMediaURL(raw))
+        XCTAssertEqual(url.absoluteString, "https://covalink.cn\(raw)")
+        XCTAssertEqual(url.scheme, "https", "补全后必须带 scheme —— 否则播放侧依旧拒绝")
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(url), "补出来的地址必须仍落在唯一生产出口上")
+    }
+
+    /// 绝对 https 直链**原样交出**（这条腿不许被动过：封面今天就是绝对 CDN 地址，
+    /// 而音频的出口裁决在 `PrivateAudioFetcher` 那一侧，不在补全这一侧）。
+    func testResolveMediaURLKeepsAbsoluteHTTPSUnchanged() {
+        let absolute = "https://cdn.invalid/review/daily/COVA-20260917-DAILY/A.mp3"
+        XCTAssertEqual(CovaEnvironment.resolveMediaURL(absolute)?.absoluteString, absolute)
+        XCTAssertEqual(
+            CovaEnvironment.resolveMediaURL("https://covalink.cn/api/tracks")?.absoluteString,
+            "https://covalink.cn/api/tracks"
+        )
+    }
+
+    /// 笔记收藏的相对代理地址带查询（`/api/proxy/audio?…&sig=…`）：查询必须随 `queryItems`
+    /// 一起进生产出口，而不是把整串当 path 交给 `makeAPIURL`（那里的 `?` 是拒绝项）。
+    func testResolveMediaURLPreservesQueryForSameOriginProxyPath() throws {
+        let raw = "/api/proxy/audio?url=https%3A%2F%2Fcdn.invalid%2Fsample.mp3&exp=1790000000000"
+        let url = try XCTUnwrap(CovaEnvironment.resolveMediaURL(raw))
+        XCTAssertEqual(url.host, "covalink.cn")
+        XCTAssertEqual(url.path, "/api/proxy/audio")
+        let items = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(items.map(\.name), ["url", "exp"])
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(url))
+    }
+
+    /// fail-closed 面：一切可能改变 authority 或语义的形态都必须补不出来（**不猜 host**）。
+    func testResolveMediaURLFailsClosedOnEscapingShapes() {
+        for rejected in [
+            "//evil.invalid/x",               // 协议相对：authority 逃逸
+            "///evil.invalid",                // 两个前导斜杠同样带 authority
+            "api/tracks/1",                   // 不是站内绝对路径
+            "http://covalink.cn/a.mp3",       // 降级 scheme
+            "file:///tmp/a.mp3",              // 本地地址不得从目录里进来
+            "javascript:alert(1)",
+            "https://covalink.cn/a.mp3#frag", // 片段从不外发
+            "/api/tracks/1/preview-stream#frag",
+            "/api\\..\\evil",                 // 反斜杠部分解析器视同 `/`
+            "/api/../tracks",                 // 穿越段
+            "/api/%2e%2e/tracks",
+            "",
+        ] {
+            XCTAssertNil(CovaEnvironment.resolveMediaURL(rejected), "不该被补全：\(rejected)")
+        }
+        XCTAssertNil(CovaEnvironment.resolveMediaURL(nil))
+    }
 }

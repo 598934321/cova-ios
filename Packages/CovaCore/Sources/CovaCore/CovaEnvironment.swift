@@ -47,6 +47,46 @@ public enum CovaEnvironment {
         return url
     }
 
+    /// 目录/收藏里音频与封面地址原文（`audioUrl` / `cover`）→ 可出站绝对地址（R16-1）。
+    ///
+    /// 为什么必须有这一层（2026-09-24 只读探针，`GET /api/tracks`）：**20/20 行的
+    /// `audioUrl` 是相对路径**（`/api/tracks/<id>/preview-stream`），而 `cover` 是绝对地址。
+    /// 服务端把整曲桶转私有读后，公开响应只发本站代理端点（`web` 仓
+    /// `src/lib/catalog-audio-url.ts` 顶部注释 + `src/lib/api-dto.ts:135-137`），
+    /// 而旧客户端直接 `URL(string: track.audioUrl)` 交给 `AudioURL(https:)` ——
+    /// 相对地址没有 scheme ⇒ `.missingScheme` ⇒ 每一行都映射成 `nil`，**整库静默不可播**
+    /// （封面还是绝对地址，所以画面正常，故障看不见）。
+    ///
+    /// 判定只补同源绝对地址，**不放宽出口守卫**：
+    /// · 绝对 `https` 直链原样交出（host 由下游裁决：封面归封面，音频归
+    ///   `PrivateAudioFetcher` 的 `isProductionOrigin` 那一道）；
+    /// · 无 scheme、无 authority、以 `/` 开头的站内路径 → 走 `makeAPIURL` 钉死生产 host，
+    ///   查询项按 `queryItems` 传递（笔记收藏的 `/api/proxy/audio?…&sig=…` 就是这一形态）；
+    /// · 其余一律 `nil`（fail-closed，**不猜 host**）：`http://`、`file://`、任何非 https scheme、
+    ///   `//evil.invalid/x`（协议相对，authority 逃逸）、`///evil.invalid`、
+    ///   `api/tracks/1`（非站内绝对路径）、含 `#` 片段、含反斜杠、`.`/`..` 与 `%2e` 穿越段。
+    public static func resolveMediaURL(_ raw: String?) -> URL? {
+        guard let raw, raw.isEmpty == false else { return nil }
+        // 片段（`#…`）从不发给出口：签名与状态都住在 query 里，带片段的值是拼接出错的信号，
+        // 而不是「可以安全丢弃的一半」。反斜杠部分解析器视同 `/`，同样直接拒。
+        guard raw.contains("#") == false, raw.contains("\\") == false else { return nil }
+        guard let parsed = URL(string: raw) else { return nil }
+        if let scheme = parsed.scheme?.lowercased() {
+            return scheme == "https" ? parsed : nil
+        }
+        // 相对形态：只认「无 authority 的站内绝对路径」。`//host/x` 有 host，`///host` 有两个
+        // 前导斜杠 —— 两者都是 authority 逃逸的形状，绝不补全。
+        guard parsed.host == nil, raw.hasPrefix("//") == false, parsed.path.hasPrefix("/") else {
+            return nil
+        }
+        let components = URLComponents(string: raw)
+        guard components?.fragment == nil else { return nil }
+        return makeAPIURL(
+            path: components?.path ?? parsed.path,
+            queryItems: components?.queryItems ?? []
+        )
+    }
+
     /// 路径穿越守卫（m-3）：拒绝 `.` / `..` 路径段，以及百分号编码的 `%2e`（大小写不敏感）。
     ///
     /// host 已由 `makeAPIURL` 钉死为生产 host，因此穿越无法改变 origin；本检查是纵深防御，

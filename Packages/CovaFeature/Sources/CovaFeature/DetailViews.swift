@@ -333,8 +333,13 @@ public struct TrackDetailSheet: View {
                     }
                     CovaButton("加入队列", style: .secondary) {
                         Task {
-                            guard session.requireLoginForCollections(),
-                                  let item = AppSession.playbackItem(from: track) else { return }
+                            guard session.requireLoginForCollections() else { return }
+                            // 补不出可播地址就明说 —— 静默 `return` 会让「点了没反应」变成用户的问题
+                            // 而不是后端契约问题（R16-1 的可见面）。
+                            guard let item = AppSession.playbackItem(from: track) else {
+                                session.showToast("音频地址不可用，这首暂时播不了", isError: true)
+                                return
+                            }
                             await session.enqueue(item)
                         }
                     }

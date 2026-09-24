@@ -408,6 +408,16 @@ public final class AppSession {
 
     public func play(tracks: [TrackDto], at index: Int) async {
         let items = tracks.compactMap { Self.playbackItem(from: $0) }
+        // 旧形态在这里是**静默**的：整批 `compactMap` 出空队列 ⇒ `play(items:)` 直接 return，
+        // 用户点了播放但什么都没发生（R16-1 的表现面）。补地址失败现在只可能是后端给了
+        // 客户端不能猜的形态（协议相对 / 非 https / 穿越段），那就必须说一句，而不是憋着。
+        if items.isEmpty {
+            showToast("音频地址不可用，这首暂时播不了", isError: true)
+            return
+        }
+        if items.count < tracks.count {
+            showToast("\(tracks.count - items.count) 首的地址不可用，已跳过")
+        }
         // 歌词（02 §6 / D15：静态文本，无时间轴）跟着**这一次起播的那条曲目**进来 ——
         // `PlaybackItem` 刻意不带 lyrics 字段（播放层不该知道目录内容），所以这一份
         // 只在 UI 层存活，并绑定 itemID：换到别的曲目就自动失效，不会把上一首的词留给下一首。
@@ -428,7 +438,12 @@ public final class AppSession {
     }
 
     public func play(items: [PlaybackItem], at index: Int = 0) async {
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty else {
+            // 「点了没反应」必须是可解释的一件事，而不是一个静默 return（R16-1 的可见面：
+            // 上游 `compactMap` 把不能播的行全丢掉时，队列就是这里的那个空数组）。
+            showToast("音频地址不可用，暂时播不了", isError: true)
+            return
+        }
         _ = await player.start(items: items, at: min(index, items.count - 1))
         await refreshSnapshot()
     }
@@ -529,9 +544,13 @@ public final class AppSession {
     }
 
     /// `TrackDto` → `PlaybackItem`：私有音频一律 `bearerRequired`（D7：必须先本地化）。
+    ///
+    /// 地址先过 `CovaEnvironment.resolveMediaURL`：线上 `audioUrl` 实测是**相对路径**
+    /// （`/api/tracks/<id>/preview-stream`，20/20 行），补不成绝对同源地址就当不能播（R16-1）。
     public static func playbackItem(from track: TrackDto) -> PlaybackItem? {
-        guard let audio = URL(string: track.audioUrl), let audioURL = try? AudioURL(https: audio) else { return nil }
-        let cover = URL(string: track.cover).flatMap { try? AudioURL(https: $0) }
+        guard let audio = CovaEnvironment.resolveMediaURL(track.audioUrl),
+              let audioURL = try? AudioURL(https: audio) else { return nil }
+        let cover = CovaEnvironment.resolveMediaURL(track.cover).flatMap { try? AudioURL(https: $0) }
         return try? PlaybackItem(
             id: track.id,
             title: track.titleCn ?? track.title,
@@ -547,8 +566,9 @@ public final class AppSession {
     /// `SimilarTrackDto` → `PlaybackItem`：similar 是**另一套投影**（NEEDS-10/12），
     /// 不能按 `TrackDto` 解码，所以这里单独一条映射腿（07 的「播放全部」用它）。
     public static func playbackItem(from similar: SimilarTrackDto) -> PlaybackItem? {
-        guard let audio = URL(string: similar.audioUrl), let audioURL = try? AudioURL(https: audio) else { return nil }
-        let cover = URL(string: similar.cover).flatMap { try? AudioURL(https: $0) }
+        guard let audio = CovaEnvironment.resolveMediaURL(similar.audioUrl),
+              let audioURL = try? AudioURL(https: audio) else { return nil }
+        let cover = CovaEnvironment.resolveMediaURL(similar.cover).flatMap { try? AudioURL(https: $0) }
         return try? PlaybackItem(
             id: similar.id,
             title: similar.titleCn ?? similar.title,

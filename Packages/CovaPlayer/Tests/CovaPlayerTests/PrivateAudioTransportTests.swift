@@ -258,6 +258,26 @@ final class PrivateAudioTransportTests: XCTestCase {
         )
     }
 
+    /// R16-1 的两条真实形态（2026-09-24 只读核对 `web` 仓
+    /// `src/app/api/tracks/[id]/preview-stream/route.ts:47-55`）：
+    /// · 未授权 → **同源** 200 的裁剪字节段 ⇒ 必须放行（这是整库唯一能播的一条腿）；
+    /// · 已授权 → 302 到整曲桶 host ⇒ 必须按权威换人拒绝。
+    /// 守卫**不许**因为「已购用户播不了」就被放宽：它守的是「字节不得来自许可出口之外」。
+    func testPreviewStreamSameOriginIsAcceptedWhileEntitledBucketLandingIsRejected() {
+        let requested = URL(string: "https://covalink.cn/api/tracks/library-0001/preview-stream")!
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(requested), "前置：补全后的相对地址就是生产出口")
+        // 同源落地（换 query 也算同一台主机）。
+        XCTAssertTrue(AudioAuthorityMatch.matches(
+            requestURL: requested,
+            responseURL: URL(string: "https://covalink.cn/api/tracks/library-0001/preview-stream?seg=1")!
+        ))
+        // 已授权那一条腿落在整曲桶（假 host，形态照对象存储的三段式域名）。
+        XCTAssertFalse(AudioAuthorityMatch.matches(
+            requestURL: requested,
+            responseURL: URL(string: "https://cova-audio-fake.cos.cn-shanghai-legacy.invalid/tracks/full.mp3")!
+        ), "已授权分支的别家 host 落地必须被显式拒绝，而不是悄悄播预览段")
+    }
+
     /// min-2（复审探针同名）：同源判定与出口守卫必须同口径 ——
     /// `isProductionOrigin` 放行 `https://covalink.cn:443`，那么同源判定就不能把它判成另一台主机，
     /// 否则 NEEDS-15 未解锁之前又多了一个人工堵点（合法的带端口重定向被当成权威换人而 `.hostRejected`）。

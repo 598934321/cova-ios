@@ -59,7 +59,13 @@ final class LibraryDTOTests: XCTestCase {
         XCTAssertEqual(first.cover.hasPrefix("https://"), true)
         XCTAssertEqual(first.duration > 0, true)
         XCTAssertEqual(first.bpm > 0, true)
-        XCTAssertEqual(first.audioUrl.hasPrefix("https://"), true)
+        // R16-1：这里原本钉的是 `first.audioUrl.hasPrefix("https://")` —— 那是 2026-09-17
+        // 回灌时的形态，而 2026-09-24 实测 `GET /api/tracks` 的 20/20 行都是**相对路径**。
+        // 「以 https 开头」这条断言正是缺陷逃过去的原因：它把当时的**拼写**当成了契约，
+        // 于是客户端只写对了绝对地址那一半。改钉成真正要紧的不变量：**这串值必须能被
+        // 补成可出站的绝对地址**（两种拼写都放行），相对形态另有专门 fixture 覆盖。
+        XCTAssertNotNil(CovaEnvironment.resolveMediaURL(first.audioUrl))
+        XCTAssertEqual(URL(string: try XCTUnwrap(first.audioUrl))?.scheme, "https")
         XCTAssertEqual(first.waveformPeaks.count, 8)
         XCTAssertEqual(first.previewStart, 207.77)
         XCTAssertEqual(first.previewEnd > first.previewStart, true)
@@ -445,5 +451,26 @@ final class LibraryDTOTests: XCTestCase {
             try encodedTrackListQuery(TrackListQuery(page: 7, pageSize: 100)),
             "page=7&pageSize=100"
         )
+    }
+
+    /// R16-1：`GET /api/tracks` 的 `audioUrl` 线上实测是**相对路径**（2026-09-24 只读探针，
+    /// 20/20 行；服务端把整曲桶转私有读后只发本站 `preview-stream` 端点），
+    /// 而全部既有真实回灌 fixture 都是绝对地址 —— **解码与补全这两条腿从没覆盖过真实形态**。
+    /// 本条钉三件事：① 相对值照样能解码（`TrackDto.audioUrl` 是必填 String）；
+    /// ② 补全结果是同源绝对地址且过出口守卫（缺这一步就是「整库静默不可播」）；
+    /// ③ 同一份数据里 `cover` 仍是绝对直链 —— 两种拼写并存正是缺陷看不见的原因（画面正常）。
+    func testRelativeAudioUrlFixtureDecodesAndResolvesToProductionOrigin() throws {
+        let page = try Fixture.decode(TrackPageDto.self, "synthetic/track-page-relative-audio")
+        XCTAssertEqual(page.tracks.count, 3)
+        for track in page.tracks {
+            XCTAssertFalse(track.audioUrl.isEmpty, track.id)
+            XCTAssertEqual(track.audioUrl.hasPrefix("/api/tracks/"), true, "真实形态是站内代理端点")
+            XCTAssertEqual(track.audioUrl.hasPrefix("//"), false, "不许是协议相对")
+            let audio = try XCTUnwrap(CovaEnvironment.resolveMediaURL(track.audioUrl), track.id)
+            XCTAssertEqual(audio.absoluteString, "https://covalink.cn\(track.audioUrl)")
+            XCTAssertTrue(CovaEnvironment.isProductionOrigin(audio))
+            let cover = try XCTUnwrap(CovaEnvironment.resolveMediaURL(track.cover), track.id)
+            XCTAssertEqual(cover.absoluteString, track.cover)
+        }
     }
 }

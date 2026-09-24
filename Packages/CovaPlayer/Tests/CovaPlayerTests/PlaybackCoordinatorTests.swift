@@ -494,6 +494,18 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(after.item?.id, "b", "坏项不得被 .one 无限重试")
     }
 
+    /// R16-1a：出口守卫拒绝的是「字节来自不被允许的权威」，而不是「网络不通」。
+    /// 线上形态（`web` 仓 `preview-stream/route.ts:47-55`，只读核对）：已授权那一条腿
+    /// 302 到 COS host ⇒ `AudioAuthorityMatch` 判权威换人 → `.hostRejected`。
+    /// 把它桶进 `.network` 就是在骗买家「检查一下网络」，而真相是后端契约缺口。
+    func testHostRejectedIsClassifiedAsUnavailableSourceNotNetwork() {
+        XCTAssertEqual(PlaybackCoordinator.kind(for: .hostRejected), .invalidSourceURL)
+        // 不许顺手把真·网络形态也一起改判（这三条仍必须是可重试的网络类）。
+        XCTAssertEqual(PlaybackCoordinator.kind(for: .badStatus(502)), .network)
+        XCTAssertEqual(PlaybackCoordinator.kind(for: .truncated(expected: 10, actual: 4)), .network)
+        XCTAssertEqual(PlaybackCoordinator.kind(for: .credentialUnavailable), .network)
+    }
+
     func testPreparerFailureIsClassifiedAndNeverReachesEngine() async {
         let preparer = StubSourcePreparer()
         await preparer.configure(.failWith(.hostRejected))
@@ -501,7 +513,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
         _ = await subject.replaceQueue([TestItems.make("a", source: .bearerRequired(TestItems.audioURL()))])
         _ = await subject.start()
         let after = await subject.currentSnapshot()
-        XCTAssertEqual(after.lastFailure?.kind, .network)
+        XCTAssertEqual(after.lastFailure?.kind, .invalidSourceURL)
         XCTAssertEqual(engine.count(of: "load"), 0, "本地化失败绝不能把 Bearer 地址交给引擎")
     }
 
@@ -3280,9 +3292,11 @@ final class PlaybackCoordinatorTests: XCTestCase {
     ///   ② 「连续失败达上限」（design §9 的 3 次，夹着 5 次取消也不许推迟也不许提前）。
     func testCountedFailuresStillOpenFailureTerminalWithCancellationEchoInBetween() async {
         // ① 计数失败 + 无处可跳 → 终态（`hasCountedFailureLedger` 为真那一腿）。
-        //    `.hostRejected` 经 `PlaybackCoordinator.kind(for:)` 归一为 `.network` —— 计数形态。
+        //    `.badStatus` 经 `PlaybackCoordinator.kind(for:)` 归一为 `.network` —— 计数形态。
+        //    （R16-1a 之后 `.hostRejected` 改判 `.invalidSourceURL`；本用例要的是「计数」这条
+        //    语义，不是「权威被拒」那一条，所以夹具换成真·网络形态的失败。）
         let engine = ScriptedEngine()
-        let preparer = AttemptScriptedPreparer(gating: [0], outcomes: [0: .hostRejected])
+        let preparer = AttemptScriptedPreparer(gating: [0], outcomes: [0: .badStatus(503)])
         let subject = PlaybackCoordinator(
             engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
         )

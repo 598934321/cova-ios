@@ -1468,7 +1468,12 @@ public actor PlaybackCoordinator {
 
     static func kind(for error: PlayerError) -> PlayerFailure.Kind {
         switch error {
-        case .hostRejected, .badStatus, .truncated, .credentialUnavailable: return .network
+        // R16-1a：`.hostRejected` 不是「网络不通」。它是「字节落地的那台主机不是许可出口」
+        // （线上真实形态：已授权那一条腿被服务端 302 到整曲桶），重试不会改变结果。
+        // 桶进 `.network` 就是让买家去检查自己的 WiFi，而真相是后端契约缺口 —— 改判成
+        // 「地址形态不可用」，仍然计数（`.cancelled` 以外都计数），失败连击与终态语义不变。
+        case .hostRejected: return .invalidSourceURL
+        case .badStatus, .truncated, .credentialUnavailable: return .network
         case .emptyDownload, .writeFailed: return .missingFile
         case .notLocalized: return .localizationRequired
         case .cancelled, .staleSession: return .cancelled

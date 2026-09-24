@@ -218,10 +218,15 @@ public struct FavoritesView: View {
         switch item {
         case .library(let track):
             guard AppSession.playbackItem(from: track) != nil else {
-                session.showToast("这首暂时不能播", isError: true)
+                session.showToast("音频地址不可用，这首暂时播不了", isError: true)
                 return
             }
-            await session.play(tracks: libraryTracks.filter { $0.audioUrl.isEmpty == false }, at: 0)
+            // 队列里只留**真的能建出条目**的行：旧筛选看的是 `audioUrl` 空不空，
+            // 而相对地址（线上实测形态）非空却建不出来 ⇒ 空队列 + 零解释（R16-1）。
+            await session.play(
+                tracks: libraryTracks.filter { AppSession.playbackItem(from: $0) != nil },
+                at: 0
+            )
         case .note(let note):
             guard let playback = Self.playbackItem(for: note) else {
                 session.showToast("这首暂时不能播", isError: true)
@@ -255,7 +260,7 @@ public struct FavoritesView: View {
 
     private func artworkURL(of item: FavoriteItemDto) -> URL? {
         switch item {
-        case .library(let track): return URL(string: track.cover)
+        case .library(let track): return Self.displayURL(track.cover)
         case .note(let note): return Self.displayURL(note.cover)
         }
     }
@@ -271,16 +276,14 @@ public struct FavoritesView: View {
     /// 必要性：笔记条目的 `cover` / `audioUrl` 实测形态是 `/api/proxy/audio?…&sig=…` 或
     /// `/audio/suno_*.mp3` 这类相对路径（`web` 仓 `resolveNoteAudioUrl` + `playableAudioUrl`
     /// 会把 Suno 资产改写成签名代理），相对地址既不能播也不能取。
-    /// 补全只经 `CovaEnvironment.makeAPIURL`（D10 唯一出口），补不出来就当没有 —— 不猜 host。
+    /// 补全只经 `CovaEnvironment.resolveMediaURL`（内部就是 `makeAPIURL`，D10 唯一出口），
+    /// 补不出来就当没有 —— 不猜 host。
+    ///
+    /// R16-1：库曲 `audioUrl` 线上同样是相对路径（20/20 行），却走的是另一条腿
+    /// （旧 `URL(string:)` + `AudioURL(https:)`，相对值必被 `.missingScheme` 拒绝）。
+    /// 两条腿现在同一个口径，不再「笔记补全、库曲丢 null」。
     static func displayURL(_ raw: String?) -> URL? {
-        guard let raw, !raw.isEmpty, let parsed = URL(string: raw) else { return nil }
-        if parsed.scheme?.lowercased() == "https" { return parsed }
-        guard parsed.scheme == nil, parsed.host == nil, parsed.path.hasPrefix("/") else { return nil }
-        let components = URLComponents(string: raw)
-        return CovaEnvironment.makeAPIURL(
-            path: components?.path ?? parsed.path,
-            queryItems: components?.queryItems ?? []
-        )
+        CovaEnvironment.resolveMediaURL(raw)
     }
 
     /// 笔记条目 → `PlaybackItem`。

@@ -41,6 +41,7 @@
 | fixture | 用途 |
 |---|---|
 | `synthetic/track-with-variants.json` | 真实 page-1 数据里 `variantCount` 全为 0，故用合成样例覆盖「非空 `variants[]` + 未知字段忽略 + 可选字段缺失」路径 |
+| `synthetic/track-page-relative-audio.json` | **R16-1 的缺失形态**：真实回灌 fixture 的 `audioUrl` 全是绝对直链，而 2026-09-24 只读探针实测 `GET /api/tracks` 的 **20/20 行是相对路径**（`/api/tracks/<id>/preview-stream`；服务端 `src/lib/api-dto.ts:135-137` 把整曲桶直链一律改写为本站代理端点）。本样例 = `track-page.json` 的同一批行，只把 `audioUrl`/`audio_url` 换成该真实形态，`cover` 保持绝对（两种拼写并存正是「画面正常、音频静默不可播」的成因）。**不是**新造的模型示例 |
 
 ## 四、写请求体（**契约目标形态**，写操作/需登录 → 无法只读验证）
 
