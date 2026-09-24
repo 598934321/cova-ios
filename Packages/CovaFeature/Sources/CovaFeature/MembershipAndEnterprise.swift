@@ -14,6 +14,8 @@ import SwiftUI
 /// · `me` 取不到时**静默**（本屏按 spec 无骨架、无 Toast、无整屏错误态）。
 public struct MembershipView: View {
     @Environment(AppSession.self) private var session
+    /// 13 §Dynamic Type：AX 档下权益对照表换形态（表 → 逐套餐纵向卡片）。
+    @Environment(\.covaAXLayout) private var axLayout
     @State private var entitlements: Entitlements?
     @State private var activeUntil: String?
 
@@ -72,34 +74,67 @@ public struct MembershipView: View {
     private var comparison: some View {
         VStack(alignment: .leading, spacing: CovaSpace.md) {
             CovaSectionHeader("权益对比")
-            VStack(spacing: 0) {
-                HStack(spacing: CovaSpace.sm) {
-                    Text(" ").frame(maxWidth: .infinity, alignment: .leading)
-                    ForEach(Self.planNames, id: \.self) { name in
-                        Text(name).font(CovaType.caption).foregroundStyle(CovaColor.muted)
-                            .frame(width: 56)
-                    }
-                }
-                .padding(.vertical, CovaSpace.xs)
-                ForEach(Self.rows, id: \.label) { row in
+            // 表体那 56pt 的单元格是**为对照密度设计的**：字号一放大就截断，
+            // 与其让「不支持」变成「不支…」，不如在 AX 档换成逐套餐卡片（13 §Dynamic Type）。
+            if axLayout {
+                axPlanCards
+            } else {
+                VStack(spacing: 0) {
                     HStack(spacing: CovaSpace.sm) {
-                        Text(row.label).font(CovaType.subhead).foregroundStyle(CovaColor.fg)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        ForEach(Array(row.values.enumerated()), id: \.offset) { _, value in
-                            Text(value)
-                                .font(CovaType.caption)
-                                .foregroundStyle(Self.cellColor(value))
+                        Text(" ").frame(maxWidth: .infinity, alignment: .leading)
+                        ForEach(Self.planNames, id: \.self) { name in
+                            Text(name).font(CovaType.caption).foregroundStyle(CovaColor.muted)
                                 .frame(width: 56)
                         }
                     }
-                    .padding(.vertical, CovaSpace.sm)
-                    Divider().overlay(CovaColor.line)
+                    .padding(.vertical, CovaSpace.xs)
+                    ForEach(Self.rows, id: \.label) { row in
+                        HStack(spacing: CovaSpace.sm) {
+                            Text(row.label).font(CovaType.subhead).foregroundStyle(CovaColor.fg)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            ForEach(Array(row.values.enumerated()), id: \.offset) { _, value in
+                                Text(value)
+                                    .font(CovaType.caption)
+                                    .foregroundStyle(Self.cellColor(value))
+                                    .frame(width: 56)
+                            }
+                        }
+                        .padding(.vertical, CovaSpace.sm)
+                        Divider().overlay(CovaColor.line)
+                    }
                 }
+                .padding(.horizontal, CovaSpace.pageGutter)
             }
-            .padding(.horizontal, CovaSpace.pageGutter)
             Text("额度以官网为准").font(CovaType.caption).foregroundStyle(CovaColor.muted)
                 .frame(maxWidth: .infinity, alignment: .center)
         }
+    }
+
+    /// AX 档的替代形态：每套餐一张卡，卡内是「权益名 : 值」的纵向列表（13 §Dynamic Type）。
+    /// 取值走 `indices.contains` 而不是直接下标 —— `rows`/`planNames` 是两处静态常量，
+    /// 长度对不上时**宁可显示「—」也不能崩**。
+    private var axPlanCards: some View {
+        VStack(alignment: .leading, spacing: CovaSpace.md) {
+            ForEach(Array(Self.planNames.enumerated()), id: \.offset) { index, plan in
+                CovaCard {
+                    VStack(alignment: .leading, spacing: CovaSpace.xs) {
+                        Text(plan).font(CovaType.headline).foregroundStyle(CovaColor.fg)
+                        ForEach(Self.rows, id: \.label) { row in
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(row.label).font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                                Spacer(minLength: CovaSpace.sm)
+                                Text(row.values.indices.contains(index) ? row.values[index] : "—")
+                                    .font(CovaType.subhead)
+                                    .foregroundStyle(
+                                        Self.cellColor(
+                                            row.values.indices.contains(index) ? row.values[index] : "—"))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, CovaSpace.pageGutter)
     }
 
     private var notes: some View {
