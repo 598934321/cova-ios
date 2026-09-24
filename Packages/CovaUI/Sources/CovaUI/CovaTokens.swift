@@ -87,6 +87,12 @@ public enum CovaType {
     }
 }
 
+extension EnvironmentValues {
+    /// 系统「文字大小」进入 AX 档（≥ AX1）时为真。各屏据此按 spec §可访问性 **改排版**
+    /// （网格降列、右值另起一行、文本允许两行……），而不是让放大后的文字被 `lineLimit` 截掉。
+    public var covaAXLayout: Bool { dynamicTypeSize >= .accessibility1 }
+}
+
 /// 玻璃材质（design §「材质」）：背景模糊 + 细描边 + 内高光，深浅两态同一套参数。
 public struct CovaGlass: ViewModifier {
     public var elevated: Bool = false

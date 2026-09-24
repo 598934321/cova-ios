@@ -133,6 +133,8 @@ public struct CovaSectionHeader: View {
 public struct CovaListRow<Trailing: View>: View {
     private let title: String
     private let subtitle: String?
+    /// 12a/12b/03 §Dynamic Type：AX 档下两行文本**各自**允许 2 行，行高自适应。
+    @Environment(\.covaAXLayout) private var axLayout
     private let artwork: CovaArtwork?
     @ViewBuilder private let trailing: Trailing
     private let action: () -> Void
@@ -156,9 +158,11 @@ public struct CovaListRow<Trailing: View>: View {
                         .clipShape(RoundedRectangle(cornerRadius: CovaRadius.control - 4, style: .continuous))
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(CovaType.body).foregroundStyle(CovaColor.fg).lineLimit(1)
+                    Text(title).font(CovaType.body).foregroundStyle(CovaColor.fg)
+                        .lineLimit(axLayout ? 2 : 1)
                     if let subtitle {
-                        Text(subtitle).font(CovaType.subhead).foregroundStyle(CovaColor.secondary).lineLimit(1)
+                        Text(subtitle).font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                            .lineLimit(axLayout ? 2 : 1)
                     }
                 }
                 Spacer(minLength: CovaSpace.sm)

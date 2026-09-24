@@ -9,6 +9,8 @@ import UserNotifications
 /// 契约事实：`GET /api/playlists` **一次给全量、没有分页字段** ⇒ 本屏不发明 `?scene=`/`?page=`，
 /// 分类切换是**本地过滤**（不重骨架，快交叉淡入）。
 public struct PlaylistsPlazaView: View {
+    /// 05 §Dynamic Type：AX 档下网格由 2 列降为 1 列（卡宽 = 屏宽 − 2×页边距）。
+    @Environment(\.covaAXLayout) private var axLayout
     @Environment(AppSession.self) private var session
     @State private var phase: Phase = .loading
     @State private var playlists: [PlaylistDto] = []
@@ -79,7 +81,9 @@ public struct PlaylistsPlazaView: View {
         } else {
             ScrollView {
                 LazyVGrid(
-                    columns: [GridItem(.flexible(), spacing: CovaSpace.md), GridItem(.flexible())],
+                    columns: axLayout
+                        ? [GridItem(.flexible())]
+                        : [GridItem(.flexible(), spacing: CovaSpace.md), GridItem(.flexible())],
                     spacing: CovaSpace.lg
                 ) {
                     ForEach(shown, id: \.id) { playlist in
