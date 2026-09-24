@@ -293,25 +293,32 @@ done
 [ "$(printf '%s\n' "$PLAYER_UI_DYLIB_WEAK_OK" | wc -w | tr -d ' ')" -le 1 ] \
   || fail "PLAYER_UI_DYLIB_WEAK_OK 规模 > 1：G-17 只允许 UIKit 一项以 weak 形态豁免（扩大豁免面需评审）"
 
-# 阈值只允许抬高：任何低于基准的取值一律拒绝执行（fail-closed）
+# 阈值只允许抬高：任何低于**已钉死常量**的取值一律拒绝执行（fail-closed）。
+# 抬高前的常量先存一份，好让提示说的是"从哪儿抬上来的"（R13-3 顺手修的口径）。
+CORE_COVERAGE_PINNED="$CORE_COVERAGE_MIN"
+PLAYER_COVERAGE_PINNED="$PLAYER_COVERAGE_MIN"
 if [ -n "${COVA_CORE_COVERAGE_MIN:-}" ]; then
   case "$COVA_CORE_COVERAGE_MIN" in
     ''|*[!0-9]*) fail "COVA_CORE_COVERAGE_MIN 必须是整数，收到 '${COVA_CORE_COVERAGE_MIN}'" ;;
   esac
-  [ "$COVA_CORE_COVERAGE_MIN" -ge "$COVERAGE_FLOOR" ] \
-    || fail "COVA_CORE_COVERAGE_MIN=${COVA_CORE_COVERAGE_MIN} < 基准 ${COVERAGE_FLOOR}：阈值只允许抬高，拒绝执行"
+  # R13-3（第 13 轮）：比较对象必须是**当前钉死的常量**，不是 `COVERAGE_FLOOR`(80)。
+  # 旧写法让 `COVA_CORE_COVERAGE_MIN=80` 成为一条合法的"降级通道" —— 第 17 批钉的 94
+  # 可以被一个环境变量静默抹掉，而「阈值只允许抬高」这句话当场失效。
+  [ "$COVA_CORE_COVERAGE_MIN" -ge "$CORE_COVERAGE_MIN" ] \
+    || fail "COVA_CORE_COVERAGE_MIN=${COVA_CORE_COVERAGE_MIN} < 已钉死阈值 ${CORE_COVERAGE_MIN}%：环境变量只许在钉死常量之上继续抬高（与 COVERAGE_FLOOR 比较等于给降级开口子，R13-3），拒绝执行"
   CORE_COVERAGE_MIN="$COVA_CORE_COVERAGE_MIN"
-  echo "提示：核心层覆盖率阈值被抬高到 ${CORE_COVERAGE_MIN}%（基准 ${COVERAGE_FLOOR}%）"
+  echo "提示：核心层覆盖率阈值从钉死值 ${CORE_COVERAGE_PINNED}% 抬到 ${CORE_COVERAGE_MIN}%"
 fi
 
 if [ -n "${COVA_PLAYER_COVERAGE_MIN:-}" ]; then
   case "$COVA_PLAYER_COVERAGE_MIN" in
     ''|*[!0-9]*) fail "COVA_PLAYER_COVERAGE_MIN 必须是整数，收到 '${COVA_PLAYER_COVERAGE_MIN}'" ;;
   esac
-  [ "$COVA_PLAYER_COVERAGE_MIN" -ge "$COVERAGE_FLOOR" ] \
-    || fail "COVA_PLAYER_COVERAGE_MIN=${COVA_PLAYER_COVERAGE_MIN} < 基准 ${COVERAGE_FLOOR}：阈值只允许抬高，拒绝执行"
+  # 同上（R13-3）：与钉死的 `PLAYER_COVERAGE_MIN` 比较，不与 `COVERAGE_FLOOR` 比较。
+  [ "$COVA_PLAYER_COVERAGE_MIN" -ge "$PLAYER_COVERAGE_MIN" ] \
+    || fail "COVA_PLAYER_COVERAGE_MIN=${COVA_PLAYER_COVERAGE_MIN} < 已钉死阈值 ${PLAYER_COVERAGE_MIN}%：环境变量只许在钉死常量之上继续抬高（R13-3），拒绝执行"
   PLAYER_COVERAGE_MIN="$COVA_PLAYER_COVERAGE_MIN"
-  echo "提示：播放器层覆盖率阈值被抬高到 ${PLAYER_COVERAGE_MIN}%（基准 ${COVERAGE_FLOOR}%）"
+  echo "提示：播放器层覆盖率阈值从钉死值 ${PLAYER_COVERAGE_PINNED}% 抬到 ${PLAYER_COVERAGE_MIN}%"
 fi
 
 # 测试数量下限来自入库基线文件（删测试必须显式改它，随 commit 进入审查）。
