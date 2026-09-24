@@ -15,6 +15,8 @@ import SwiftUI
 /// · 右侧**不放「关注」**（无关注端点）；
 /// · `colorPalette` 只接受 `#RGB` / `#RRGGBB`，**不拿任意字符串当色值**试。
 public struct ArtistHomeView: View {
+    /// 16 §Dynamic Type：AX 档下头像 112 → 88，把宽度让给文本（图像本身不随字号放大）。
+    @Environment(\.covaAXLayout) private var axLayout
     @Environment(AppSession.self) private var session
     private let artistID: String
     @State private var phase: Phase = .loading
@@ -89,7 +91,7 @@ public struct ArtistHomeView: View {
     private func header(_ artist: ArtistDto) -> some View {
         VStack(spacing: CovaSpace.md) {
             CovaArtwork(url: URL(string: artist.avatar ?? ""), title: artist.name)
-                .frame(width: 112, height: 112)
+                .frame(width: axLayout ? 88 : 112, height: axLayout ? 88 : 112)
                 .clipShape(Circle())
                 .overlay(Circle().strokeBorder(swash(artist.colorPalette), lineWidth: 2))
                 .accessibilityLabel("\(artist.nameCn ?? artist.name) 的头像")
