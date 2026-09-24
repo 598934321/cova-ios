@@ -106,7 +106,8 @@ public struct StudioSessionListDto: Decodable, Equatable, Sendable {
 
 /// 会话详情里的消息条目。
 ///
-/// 只有 `id` 是必需的；正文可能落在 `text` 或 `content`（契约没写），
+/// `id` **不是**必需的（真实响应的消息就没有这个键，缺了按确定性视图标识合成，见 `init(from:)`）；
+/// 正文可能落在 `text` 或 `content`（契约没写），
 /// 两者都取不到 ⇒ `displayText == nil`，UI **跳过这条**而不是显示空白气泡。
 public struct StudioMessageDto: Codable, Equatable, Sendable, Identifiable {
     public let id: String
@@ -114,6 +115,11 @@ public struct StudioMessageDto: Codable, Equatable, Sendable, Identifiable {
     public let text: String?
     public let content: String?
     public let createdAt: String?
+
+    /// 这个 `id` 是**客户端合成的视图标识**还是**后端给的消息号**。合成键才允许在本次响应里
+    /// 被补序号（见 `withResponseUniqueIds`）；后端给的那一个是身份，客户端不许改写。
+    /// 不进 `CodingKeys` ⇒ 合成的 `encode(to:)` 不会把它当业务字段吐出去。
+    let idIsSynthesized: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -123,14 +129,46 @@ public struct StudioMessageDto: Codable, Equatable, Sendable, Identifiable {
         case createdAt
     }
 
+    /// 去重时「换身份、不换内容」的内部构造器：不给外部一个能凭空造消息号的入口。
+    init(
+        id: String,
+        role: String?,
+        text: String?,
+        content: String?,
+        createdAt: String?,
+        idIsSynthesized: Bool
+    ) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.content = content
+        self.createdAt = createdAt
+        self.idIsSynthesized = idIsSynthesized
+    }
+
     /// 真实响应的消息**没有 `id` 键**，时间戳叫 `timestamp` 而不是 `createdAt`
     /// （2026-09-24 真实账号实测：`{role, content, timestamp, attachments}`）。
     private enum MessageAliasKey: String, CodingKey {
         case timestamp
     }
 
-    /// 缺 `id` 时拼一个**确定性视图标识**（角色 + 时间戳 + 正文前缀）：同一条消息每次解码
-    /// 都得到同一个键，列表视图因此不会重排气泡；它只用于列表身份，**不冒充后端给过消息号**。
+    /// 缺 `id` 时拼一个**确定性视图标识**：`view:` + 角色 + 时间戳 + **整段正文**的指纹。
+    /// 同一条消息每次解码都得到同一个键；它只用于列表身份，**不冒充后端给过消息号**。
+    ///
+    /// 三条口径（R15-6：旧实现取正文**前 12 个字符**，评审用探针实测会撞车也会换身份）：
+    /// · **不截断** —— 指纹吃的是 `role / createdAt / text / content` 四个字段的全量
+    ///   （见 `stableFingerprint`），所以「同角色同时间戳、正文前 12 个字也相同、之后才分岔」
+    ///   的两条不同消息不再共用一个键。一份响应里出现重复键不是"难看"，是列表会**丢行/串内容**。
+    /// · **跨进程启动稳定** —— 指纹是自己实现的 FNV-1a/64，**不是** `hashValue`：后者每进程
+    ///   换种子，等于每次冷启动整屏气泡重排一次；也不含任何**下标**，所以翻页时后端把更早的
+    ///   消息 prepend 进来，已有条目的键**不变**。
+    /// · **正文一变键就变**（残余弱点，不藏）—— 内容寻址的身份没法在正文增长（流式追加、
+    ///   后端改写）时保持不变，而这条消息没有号可依据。要真正消除只有等响应带消息 `id`
+    ///   （**NEEDS-28**）；在此之前本键的稳定性口径是「同一份内容 ⇒ 同一个键」，
+    ///   不是「同一个气泡永远同一个键」。
+    ///
+    /// 逐字节相同的两条（角色、时间戳、正文全等）必然解出同一个键 —— 那一份响应内的重复
+    /// 由 `withResponseUniqueIds` 在**看得见整张清单**的地方补掉。
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let alias = try decoder.container(keyedBy: MessageAliasKey.self)
@@ -142,13 +180,90 @@ public struct StudioMessageDto: Codable, Equatable, Sendable, Identifiable {
         let decodedId = try container.decodeIfPresent(String.self, forKey: .id)
         // 先算完局部值再一次性赋给 self：在 init 里让闭包读 self.xxx 会撞上
         // 「所有存储属性初始化完成之前不得使用 self」。
-        let body = decodedText ?? decodedContent ?? ""
-        let viewId = "view:\(decodedRole ?? "-"):\(ownCreated ?? aliasStamp ?? "-"):\(body.prefix(12))"
+        let stamp = ownCreated ?? aliasStamp
+        let viewId = "view:\(decodedRole ?? "-"):\(stamp ?? "-"):" + Self.stableFingerprint(
+            role: decodedRole,
+            createdAt: stamp,
+            text: decodedText,
+            content: decodedContent
+        )
+        // 「有 `id` 键」与「有一个能用的号」是两件事：空串当身份用 ⇒ 整屏撞在一起，
+        // 与 `StudioSessionDto` 对 `id`/`sessionId` 的同一口径。
+        let realId = decodedId.flatMap { $0.isEmpty ? nil : $0 }
         role = decodedRole
         text = decodedText
         content = decodedContent
-        createdAt = ownCreated ?? aliasStamp
-        id = decodedId ?? viewId
+        createdAt = stamp
+        id = realId ?? viewId
+        idIsSynthesized = realId == nil
+    }
+
+    /// FNV-1a/64 —— 确定性、零依赖（依赖白名单为空 ⇒ 不能引 `CryptoKit` 之类）。
+    /// 每个字段按「存在位 + UTF-8 字节数 + 内容」喂进哈希，所以
+    /// `role="ab", createdAt="c"` 与 `role="a", createdAt="bc"` 不会拼成同一串字节，
+    /// 「键缺席」与「键是空串」也不同（`text` 没有 ≠ `text` 是 ""）。
+    /// 64 位指纹对不同输入仍可能理论撞车（约 2⁻⁶⁴），但不再是旧口径那种**按构造必撞**。
+    private static func stableFingerprint(
+        role: String?,
+        createdAt: String?,
+        text: String?,
+        content: String?
+    ) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        let prime: UInt64 = 0x100_0000_01b3
+        func mix(_ byte: UInt8) {
+            hash = (hash ^ UInt64(byte)) &* prime
+        }
+        for field in [role, createdAt, text, content] {
+            if let field {
+                mix(0x1f)
+                for byte in String(field.utf8.count).utf8 { mix(byte) }
+                mix(0x1c)
+                for byte in field.utf8 { mix(byte) }
+                mix(0x1d)
+            } else {
+                mix(0x1e)
+            }
+        }
+        return String(format: "%016llx", hash)
+    }
+
+    /// 把**同一份响应内**重复的合成键按出现顺序补成 `base`、`base#2`、`base#3`…
+    /// （第一条保持原键，后来的重复条目才移位）。
+    ///
+    /// 只有看得见整张清单的地方做得到这件事，而今天那个地方就是 `StudioSessionDetailDto`：
+    /// 单条 `init(from:)` 没有"前面已经出现过几次"的视野。**直接解 `[StudioMessageDto]`
+    /// 的调用点拿不到这层保证**（本仓暂无这种调用点，见该 DTO 的注释）。
+    ///
+    /// 残余弱点如实写明：`#n` 是**这一份有序清单内**的位置序号，所以后端在更早处 prepend
+    /// 一条一模一样的消息时，原来 `#2` 那条会变成 `#3` —— 逐字节相同的重复条目本来就无法
+    /// 用内容区分，这是"没有消息号"的直接后果（NEEDS-28）。后端给过 `id` 的条目**原样透传**，
+    /// 只占用键位以防合成键与它重合；真 id 自己在一批里重复属后端 bug，同样记 NEEDS-28。
+    static func withResponseUniqueIds(_ messages: [StudioMessageDto]) -> [StudioMessageDto] {
+        var used: Set<String> = []
+        used.reserveCapacity(messages.count)
+        return messages.map { message in
+            guard message.idIsSynthesized else {
+                used.insert(message.id)
+                return message
+            }
+            var candidate = message.id
+            var occurrence = 2
+            while used.contains(candidate) {
+                candidate = "\(message.id)#\(occurrence)"
+                occurrence += 1
+            }
+            used.insert(candidate)
+            guard candidate != message.id else { return message }
+            return StudioMessageDto(
+                id: candidate,
+                role: message.role,
+                text: message.text,
+                content: message.content,
+                createdAt: message.createdAt,
+                idIsSynthesized: true
+            )
+        }
     }
 
     public var displayText: String? {
@@ -163,6 +278,8 @@ public struct StudioMessageDto: Codable, Equatable, Sendable, Identifiable {
 
 /// `GET /api/find-my-song/sessions/:id` 详情信封（`{messages[], generationJobs[]}`，
 /// 也容忍外面再套一层 `{session:…}`）。
+/// 这里是**唯一看得见整份消息清单**的解码点 ⇒ 「一份响应内消息身份不重复」那条保证
+/// 只在这一层成立（`StudioMessageDto.withResponseUniqueIds`）。
 public struct StudioSessionDetailDto: Decodable, Equatable, Sendable {
     public let session: StudioSessionDto?
     public let messages: [StudioMessageDto]
@@ -195,7 +312,10 @@ public struct StudioSessionDetailDto: Decodable, Equatable, Sendable {
             decodedJobs = try nested.decodeIfPresent([GenerationJobDto].self, forKey: .generationJobs)
                 ?? decodedJobs
         }
-        messages = decodedMessages
+        // 合成键是**内容**的函数，所以"这一批里有几条"必须在这里补一次：
+        // 单条 `init(from:)` 看不到整张清单，逐字节相同的两条会解出同一个键
+        // （重复键在列表里是丢行/串内容，不是难看）。两条解码路径都过这一手。
+        messages = StudioMessageDto.withResponseUniqueIds(decodedMessages)
         generationJobs = decodedJobs
     }
 }

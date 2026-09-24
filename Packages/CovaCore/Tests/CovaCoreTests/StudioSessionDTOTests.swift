@@ -107,6 +107,107 @@ final class StudioSessionDTOTests: XCTestCase {
         XCTAssertFalse(detail.messages[0].isFromUser, "role 缺失按 agent 渲染（不把未知说成用户说的）")
     }
 
+    /// **R15-6 撞车探针（评审实测的那条）**：两条**确实不同**的消息 —— 角色相同、时间戳相同、
+    /// 正文前 12 个字符也相同，只在第 13 个字之后分岔。旧口径取的是**截断前缀**，
+    /// 于是这两条解出**同一个 id**；一份响应里出现重复 id 不是"难看"，是列表会
+    /// **丢行或串内容**。修好后两条必须各自成键。
+    func testMessagesDifferingOnlyAfterTheTwelfthCharacterGetDistinctIds() throws {
+        let json = Data(
+            #"""
+            {"messages":[
+              {"role":"user","content":"帮我做一首适合咖啡馆下午的轻爵士纯音乐，第二段甲",
+               "timestamp":"2026-09-24T12:00:00.000Z","attachments":[]},
+              {"role":"user","content":"帮我做一首适合咖啡馆下午的轻爵士纯音乐，第二段乙",
+               "timestamp":"2026-09-24T12:00:00.000Z","attachments":[]}]}
+            """#.utf8
+        )
+        let detail = try JSONDecoder().decode(StudioSessionDetailDto.self, from: json)
+        XCTAssertEqual(detail.messages.map(\.id), [
+            "view:user:2026-09-24T12:00:00.000Z:1d0cb71331d4de04",
+            "view:user:2026-09-24T12:00:00.000Z:49d412205f072b77",
+        ], "正文只在第 13 个字之后不同也是两条不同的消息，不得共用一个列表身份")
+    }
+
+    /// **逐字节相同的重复条目**：后端真给两条一模一样的消息时，合成键天然相同。
+    /// 这一条守的是「同一份响应内 id 不得重复」——按出现顺序给第二、三条起加序号。
+    func testByteIdenticalDuplicateMessagesGetUniqueIdsWithinOneResponse() throws {
+        let json = Data(
+            #"""
+            {"messages":[
+              {"role":"assistant","content":"已按你的描述生成。",
+               "timestamp":"2026-09-24T12:00:00.000Z","attachments":[]},
+              {"role":"assistant","content":"已按你的描述生成。",
+               "timestamp":"2026-09-24T12:00:00.000Z","attachments":[]},
+              {"role":"assistant","content":"已按你的描述生成。",
+               "timestamp":"2026-09-24T12:00:00.000Z","attachments":[]}]}
+            """#.utf8
+        )
+        let detail = try JSONDecoder().decode(StudioSessionDetailDto.self, from: json)
+        let ids = detail.messages.map(\.id)
+        XCTAssertEqual(Set(ids).count, 3, "同一份响应里三条重复正文也要各自有身份")
+        XCTAssertEqual(ids, [
+            "view:assistant:2026-09-24T12:00:00.000Z:e6cba14abc8bf582",
+            "view:assistant:2026-09-24T12:00:00.000Z:e6cba14abc8bf582#2",
+            "view:assistant:2026-09-24T12:00:00.000Z:e6cba14abc8bf582#3",
+        ], "第一条保持原键、其后按出现顺序加序号：去重必须是确定的，不依赖集合的迭代顺序")
+
+        // **真实响应那两条解码路径都要过这一手**：内容套在 `session` 里（2026-09-24 实测形态）
+        // 时同样不许留下重复键 —— 去重发生在清单合并之后，两处都覆盖。
+        let nested = Data(
+            #"""
+            {"session":{"sessionId":"6029c66b-0000-4ba8-841c-3aa4cd2efc0b",
+            "messages":[{"role":"assistant","content":"已按你的描述生成。",
+            "timestamp":"2026-09-24T12:00:00.000Z","attachments":[]},
+            {"role":"assistant","content":"已按你的描述生成。",
+            "timestamp":"2026-09-24T12:00:00.000Z","attachments":[]}],
+            "generationJobs":[]}}
+            """#.utf8
+        )
+        let nestedIds = try JSONDecoder().decode(StudioSessionDetailDto.self, from: nested).messages.map(\.id)
+        XCTAssertEqual(Set(nestedIds).count, 2, "套在 session 里的那份清单同样不得留重复键")
+    }
+
+    /// 合成键里那个指纹是**自己实现的确定性哈希**（FNV-1a/64），不是 `hashValue` ——
+    /// 后者每进程换种子 ⇒ 每次冷启动整屏气泡重排。这里把**字面期望值**钉死：
+    /// 换成 `hashValue` 实现、或换成每次启动重算的任意方案，这条都会红。
+    func testSynthesizedMessageIdIsDeterministicAcrossDecodes() throws {
+        let json = Data(
+            #"""
+            {"messages":[{"role":"user","content":"再来一段雨声",
+            "timestamp":"2026-09-24T12:00:00.000Z","attachments":[]}]}
+            """#.utf8
+        )
+        let first = try JSONDecoder().decode(StudioSessionDetailDto.self, from: json)
+        let second = try JSONDecoder().decode(StudioSessionDetailDto.self, from: json)
+        XCTAssertEqual(first.messages.map(\.id), second.messages.map(\.id), "同一份 JSON 解两次必须同键")
+        XCTAssertEqual(
+            first.messages[0].id, "view:user:2026-09-24T12:00:00.000Z:cf92cf7ff92dc3dc",
+            "跨进程可复现的期望值（钉字面量，否则'确定性'只是自称）"
+        )
+    }
+
+    /// 后端**给了 `id` 就必须原样用它**（`SessionIdAliasKey` 同一口径）：
+    /// 真消息号是身份，客户端不许改它，也不许给同一份响应里的另一条合成键去撞它。
+    func testRealMessageIdIsPreferredAndNeverRewritten() throws {
+        let json = Data(
+            #"""
+            {"messages":[
+              {"id":"m-7","role":"assistant","content":"已按你的描述生成。",
+               "timestamp":"2026-09-24T12:00:00.000Z"},
+              {"role":"assistant","content":"已按你的描述生成。",
+               "timestamp":"2026-09-24T12:00:00.000Z"}]}
+            """#.utf8
+        )
+        let detail = try JSONDecoder().decode(StudioSessionDetailDto.self, from: json)
+        XCTAssertEqual(detail.messages[0].id, "m-7", "后端给过 id ⇒ 原样透传，不套视图键、也不被去重改写")
+        XCTAssertNotEqual(detail.messages[1].id, "m-7")
+        XCTAssertEqual(
+            detail.messages[1].id,
+            "view:assistant:2026-09-24T12:00:00.000Z:e6cba14abc8bf582",
+            "没有 id 的那条仍按合成键，且不因为前一条真 id 的存在而移位"
+        )
+    }
+
     func testCreateSessionAcceptsBothKnownShapes() throws {
         let nested = Data(#"{"session":{"id":"s-9","workflowMode":"one-step"}}"#.utf8)
         XCTAssertEqual(
