@@ -363,7 +363,161 @@ final class AVPlayerEngineTests: XCTestCase {
         await engine.play()
         XCTAssertTrue(engine.currentPlaybackIntent)
         engine.stopAndRelease()
-        XCTAssertFalse(engine.currentPlaybackIntent, "释放后不存在任何在播意图")
+        XCTAssertFalse(engine.currentPlaybackIntent, "释放后不存在任何在播意图（R14-2：同时作废待用速率）")
+    }
+
+    // MARK: - 环 4 · 第 19 批 R14-2：「改速 ≠ 起播」的**正向**半边与待用速率的生命周期
+    //
+    // 第 18 批只钉了负向一半（「暂停时空载改速不得真的改引擎」），正向一半
+    // （「记下的待用速率必须在 `play()` 落地时应用到 player」）**零测试** ——
+    // 而且它在空载夹具下根本测不到：`AVPlayer` 没有条目时不报非零速率，
+    // 于是 `player.rate = Float(pending)` 那一行删掉也不会有任何断言变动（评审实测）。
+    // 这三条都用**真资产**驱动：运行时写一段纯静音 WAV，经生产同一条
+    // `.localized` + `file://` 路径装载（零网络、零第三方依赖、不落进 git）。
+
+    /// 正向半边：未要播时改速 → 只记（`currentRate() == 0`）→ `play()` → 记下的速率真的生效。
+    func testDeferredRateIsAppliedWhenPlaybackStarts() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let engine = AVPlayerEngine()
+        await engine.load(localizedItem(try SilentWAV.write(seconds: 1, stem: "apply", in: directory)))
+
+        await engine.setRate(2)
+        let deferred = await engine.currentRate()
+        XCTAssertEqual(
+            deferred, 0, accuracy: 0.001,
+            "前置：真条目已装载、但引擎不「要播」时改速不得下发（改速 ≠ 起播，R13-1）"
+        )
+
+        await engine.play()
+        let applied = await engine.currentRate()
+        XCTAssertEqual(
+            applied, 2, accuracy: 0.001,
+            "R14-2 正向半边：待用速率必须在 play() 落地时真的写进 player（实测 \(applied)）"
+        )
+        XCTAssertTrue(engine.currentPlaybackIntent)
+        engine.stopAndRelease()
+    }
+
+    /// 泄漏半边（评审实测的形状）：`pendingRate` 不得活过 `stopAndRelease()`。
+    /// 释放之后引擎不再属于任何持有者，下一次 `play()` 必须从**默认速率**起，
+    /// 而不是带着上一个持有者留在待用槽里的速率。
+    ///
+    /// 形状必须是「**先 pause 再改速**」：要播状态下 `setRate` 是当场下发的，槽里根本不留东西 ——
+    /// 第 19 批第一版就写成了 `play() → setRate(2) → stopAndRelease() → play()`，
+    /// m-release（拆掉 `markReleased` 里的清空）在全量 414 条里 **0 失败**，
+    /// 那条断言当时是恒真的（评审实测的复现是 `pause → setRate → stopAndRelease → play`）。
+    func testPendingRateDoesNotOutliveRelease() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let engine = AVPlayerEngine()
+        await engine.load(localizedItem(try SilentWAV.write(seconds: 1, stem: "release", in: directory)))
+        await engine.play()
+        await engine.pause()
+        await engine.setRate(2)
+        let deferred = await engine.currentRate()
+        XCTAssertEqual(
+            deferred, 0, accuracy: 0.001,
+            "前置：暂停中改速只记待用槽（此刻槽里确实是 2.0，泄漏才有主语）"
+        )
+
+        engine.stopAndRelease()
+        let released = await engine.currentRate()
+        XCTAssertEqual(released, 0, accuracy: 0.001, "前置：释放即停声")
+        // 刻意不再 load：结果只由 `stopAndRelease` 那一处的清空决定（换件清空见下一条）。
+        await engine.play()
+        let inherited = await engine.currentRate()
+        XCTAssertLessThan(
+            inherited, 1.5,
+            "R14-2：已释放、无条目的引擎不得被下一个持有者以上一个持有者的速率（2.0）启动；"
+                + "默认侧的读数（0 / 1 视 AVPlayer 就绪状态而定）不是本条的口径（实测 \(inherited)）"
+        )
+        engine.stopAndRelease()
+    }
+
+    /// 契约的第二半（本次定的语义）：**换件即作废**待用速率 —— 它是针对被换掉那一条提的请求。
+    /// 协调器每次起播后自己下 `setRate`（`loadCurrent`），所以清空不丢功能。
+    func testPendingRateDoesNotCrossANewLoadedItem() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let engine = AVPlayerEngine()
+        await engine.setRate(2)   // 空载且未要播 → 只记进待用槽
+        let deferred = await engine.currentRate()
+        XCTAssertEqual(deferred, 0, accuracy: 0.001, "前置：空载改速不下发")
+
+        await engine.load(localizedItem(try SilentWAV.write(seconds: 1, stem: "newitem", in: directory)))
+        await engine.play()
+        let applied = await engine.currentRate()
+        XCTAssertEqual(
+            applied, 1, accuracy: 0.001,
+            "R14-2：新条目不得继承上一个持有者留下的待用速率（2.0），只能以自己的默认速率起播（实测 \(applied)）"
+        )
+        engine.stopAndRelease()
+    }
+
+    /// 被**拒绝**的装载（D7 / MAJ-8）不清待用速率：引擎里仍是上一件在播，那一件才是这条速率的主人。
+    func testRejectedLoadKeepsPendingRateForTheItemStillInEngine() async throws {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let engine = AVPlayerEngine()
+        await engine.load(localizedItem(try SilentWAV.write(seconds: 1, stem: "keep", in: directory)))
+        await engine.pause()
+        await engine.setRate(2)
+        await engine.load(bearerItem())        // 被拒绝：没有换件 ⇒ 待用槽属于仍在引擎里的那一件
+        await engine.play()
+        let applied = await engine.currentRate()
+        XCTAssertEqual(
+            applied, 2, accuracy: 0.001,
+            "被拒装载后仍要应用为这一件记下的待用速率（清空它就是误伤，实测 \(applied)）"
+        )
+        engine.stopAndRelease()
+    }
+}
+
+/// 引擎侧「速率真的落到 player」所需的**真资产**夹具：运行时写一段纯静音 WAV
+/// （PCM 16-bit 单声道 8kHz，`seconds` 秒 → 每秒 16 KB），走生产同一条 `file://` 路径装载。
+///
+/// 为什么必须是真条目：`AVPlayer` 在无条目 / 无效条目下不报任何非零速率，
+/// 「`play()` 落地时应用待用速率」这一半在空载夹具里测不到（删掉那一行也没有断言会动）。
+/// 零网络、零第三方依赖、文件只活在测试沙盒里（`TemporaryDirectory` 收尾删除）。
+private enum SilentWAV {
+    private static let sampleRate = 8_000
+    private static let byteRate = sampleRate * 2     // 单声道 × 16-bit
+
+    static func write(seconds: Int, stem: String, in directory: TemporaryDirectory) throws -> URL {
+        let dataBytes = byteRate * max(1, seconds)
+        var bytes = Data()
+        bytes.append(contentsOf: Array("RIFF".utf8))
+        bytes.append(le32: UInt32(36 + dataBytes))
+        bytes.append(contentsOf: Array("WAVE".utf8))
+        bytes.append(contentsOf: Array("fmt ".utf8))
+        bytes.append(le32: 16)          // fmt 块长度（PCM 规范头）
+        bytes.append(le16: 1)           // 1 = 线性 PCM
+        bytes.append(le16: 1)           // 声道数
+        bytes.append(le32: UInt32(sampleRate))
+        bytes.append(le32: UInt32(byteRate))
+        bytes.append(le16: 2)           // blockAlign = 声道 × 字节宽
+        bytes.append(le16: 16)          // 位深
+        bytes.append(contentsOf: Array("data".utf8))
+        bytes.append(le32: UInt32(dataBytes))
+        bytes.append(Data(count: dataBytes))    // 全零 = 纯静音
+
+        let url = directory.url.appendingPathComponent("cova-silent-\(stem).wav")
+        try Data(bytes).write(to: url, options: .atomic)
+        return url
+    }
+}
+
+private extension Data {
+    mutating func append(le32 value: UInt32) {
+        append(contentsOf: [
+            UInt8(truncatingIfNeeded: value), UInt8(truncatingIfNeeded: value >> 8),
+            UInt8(truncatingIfNeeded: value >> 16), UInt8(truncatingIfNeeded: value >> 24),
+        ])
+    }
+
+    mutating func append(le16 value: UInt16) {
+        append(contentsOf: [UInt8(truncatingIfNeeded: value), UInt8(truncatingIfNeeded: value >> 8)])
     }
 }
 

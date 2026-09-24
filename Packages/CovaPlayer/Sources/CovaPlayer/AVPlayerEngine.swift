@@ -39,7 +39,7 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     /// `readyToPlay` 或 `playbackLikelyToKeepUp`，若一律翻成 `.playing` 就会把暂停悄悄改回播放
     /// 并向锁屏发布 `isPlaying = true`（缺陷 M10）。观测者只在意图为「在播」时才上报播放。
     private var wantsPlayback = false
-    /// 暂停期间收到的目标速率；`play()` 落地时应用（见 `setRate` 的契约注释）。
+    /// 暂停期间收到的目标速率；`play()` 落地时应用（生命周期见 `setRate` 的契约注释）。
     private var pendingRate: Double?
 
     /// 观测者计数（**仅供测试断言 teardown 归零**；生产不使用）。
@@ -93,6 +93,9 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
         case .success(let url):
             let episode = detachObservers()
             let avItem = AVPlayerItem(url: url)
+            // 换件的瞬间，针对**上一件**提的待用速率作废（R14-2 的 `load` 一侧；
+            // 被拒绝的装载走上面的 failure 分支，不清 —— 那时引擎里仍是上一件在播）。
+            discardPendingRateForNewItem()
             setItem(avItem)
             attachObservers(to: avItem, episode: episode)
             player.replaceCurrentItem(with: avItem)
@@ -101,11 +104,11 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     }
 
     public func play() async {
-        setWantsPlayback(true)
+        // 状态转移一次做完（置意图 + 取待用速率），`player.*` 留在锁外（R14-3）。
+        let pending = startPlaybackTakingPendingRate()
         player.play()
-        if let pending = pendingRate {
-            // 暂停期间收到的改速请求在这里生效 —— 那时 `setRate` 只记不下发（见下方注释）。
-            pendingRate = nil
+        if let pending {
+            // 暂停期间收到的改速请求在这里生效 —— 那时 `setRate` 只记不下发（见下方契约）。
             player.rate = Float(pending)
         }
         continuation.yield(.playing)
@@ -125,12 +128,22 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     /// **改速不等于起播**（第 13 轮 R13-1 的根因）：AVPlayer 的 `rate = x` 赋值会顺手起播，
     /// 于是暂停期间一次纯改速会把刚摁停的引擎重新放响。引擎契约因此是：不在「要播」状态时
     /// 只记待用速率，等 `play()` 落地再生效。
+    ///
+    /// **待用槽的生命周期**（第 14 轮 R14-2：每一次清空都为了「上一个持有者的命令不得由
+    /// 下一个持有者执行」；两侧的正反镜像见 `AVPlayerEngineTests`）：
+    ///   · `play()` —— **取走并清空**（与置真意图同一段锁内完成）；
+    ///   · `pause()` —— **保留**：暂停期里改的速就是等下一次起播生效的那一个；
+    ///   · `stopAndRelease()` —— **清空**：引擎已不属于任何持有者，留着它下一次 `play()`
+    ///     就会以上一个持有者的速率起播（评审在真机引擎上实测到的泄漏）；
+    ///   · `load(_:)` 接受新条目 —— **清空**：待用速率是针对**被换掉那一条**提的请求，
+    ///     新条目没有继承它的道理。协调器每次起播后都会自己下 `setRate`
+    ///     （`PlaybackCoordinator.loadCurrent`），所以这里清空不丢功能，
+    ///     只关掉跨持有者泄漏的另一个入口；
+    ///   · 被**拒绝**的装载（D7 / MAJ-8）不清空：引擎里仍是上一件在播，那一件才是这条速率的主人。
     public func setRate(_ rate: Double) async {
         guard rate.isFinite, rate > 0 else { return }
-        guard wantsPlayback else {
-            pendingRate = rate
-            return
-        }
+        // 「判意图」与「记待用」是一份状态的两半，必须落在同一段锁里（R14-3）。
+        guard rateCommandsPlayerNow(rate) else { return }
         player.rate = Float(rate)
     }
 
@@ -148,14 +161,12 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     }
 
     public func stopAndRelease() {
-        setWantsPlayback(false)
+        // 意图 / 待用速率 / 释放计数在同一段锁内一并落定（R14-2 + R14-3）。
+        markReleased()
         player.pause()
         // 释放同样推进代际：在途回调（含通知线程上已排队的 ended）从此不再进入事件流。
         _ = detachObservers()
         player.replaceCurrentItem(with: nil)
-        lock.lock()
-        releasedCount += 1
-        lock.unlock()
     }
 
     // MARK: - 纯映射（可零硬件单测）
@@ -254,6 +265,16 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
 
     /// `NSLock` 只能在**同步**上下文使用（Swift 6 禁止在 async 函数里 lock/unlock）：
     /// 所有加锁段落都收敛在这些非 async 的辅助方法里。
+    ///
+    /// 共享状态的收敛点（第 14 轮 R14-3 之后，这句要能一行一行对上）：
+    /// `item` / `gate` / 观测者记账 / `releasedCount` 走本文件的 `lock`，
+    /// 而**播放意图与待用速率这一对**（`wantsPlayback` + `pendingRate`）只允许出现在
+    /// 下面 `MARK: - 锁内状态转移：意图与速率` 那一区里 —— 它们是一份状态的两半
+    /// （「现在能不能直接下发」与「不能下发时记谁的值」），分两处判必然分叉。
+    /// `play()` / `setRate()` / `pause()` / `stopAndRelease()` 这些 async 或半 async 入口
+    /// 只经**一次**辅助调用完成转移，`player.*` 一律留在锁外（与观测者回调同一口径）。
+    /// 自查方式（本批实测各 1 处，全在那一区 + 声明处）：
+    /// `grep -n "wantsPlayback\b\|pendingRate\b" AVPlayerEngine.swift`。
     private func setItem(_ avItem: AVPlayerItem?) {
         lock.lock()
         item = avItem
@@ -320,11 +341,72 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
         return true
     }
 
-    /// 播放意图记账（`NSLock` 只在同步上下文，故独立成方法）。
+    // MARK: - 锁内状态转移：意图与速率（R14-3）
+    //
+    // 本区之外**不得**出现 `wantsPlayback` / `pendingRate` 的读写（声明与本区除外）。
+    // 每条辅助都是「判定 + 写入」一次做完的非 async 函数；调用方拿到返回值后再决定要不要
+    // 命令 `player`，命令本身一律在锁外发（`NSLock` 不可跨 await，也不可包住可能回调的 API）。
+
+    /// 播放意图置真，并**一次取走**待用速率（`play()` 的唯一状态转移，R14-2/R14-3）。
+    private func startPlaybackTakingPendingRate() -> Double? {
+        lock.lock()
+        defer { lock.unlock() }
+        wantsPlayback = true
+        let pending = pendingRate
+        pendingRate = nil
+        return pending
+    }
+
+    /// 「改速」的状态转移：在要播状态 → 返回真（调用方负责下发 `player.rate`）；
+    /// 不在要播状态 → 把值写进待用槽并返回假（改速 ≠ 起播）。
+    private func rateCommandsPlayerNow(_ rate: Double) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard wantsPlayback else {
+            pendingRate = rate
+            return false
+        }
+        return true
+    }
+
+    /// 作废待用速率（`load(_:)` 接受新条目那一腿，见 `setRate` 的契约注释）。
+    private func discardPendingRate() {
+        lock.lock()
+        defer { lock.unlock() }
+        pendingRate = nil
+    }
+
+    /// 显式暂停 / 起播之外的意图翻转（`pause()` 用；释放走 `markReleased`）。
+    ///
+    /// 刻意**不**清待用速率：暂停期里收到的改速就是要等下一次 `play()` 生效的那一个。
     private func setWantsPlayback(_ value: Bool) {
         lock.lock()
+        defer { lock.unlock() }
         wantsPlayback = value
-        lock.unlock()
+    }
+
+    /// 释放：意图 + 待用速率 + 释放计数一段落定（R14-2 的泄漏点就在这里补的）。
+    private func markReleased() {
+        lock.lock()
+        defer { lock.unlock() }
+        wantsPlayback = false
+        pendingRate = nil
+        releasedCount += 1
+    }
+
+    /// 接受新条目时清空待用速率（锁内；契约见 `setRate` 的生命周期注释）。
+    private func discardPendingRateForNewItem() {
+        lock.lock()
+        defer { lock.unlock() }
+        pendingRate = nil
+    }
+
+    /// KVO 回调的**一次性快照**：「引擎装着谁 / 当代代际 / 用户意图」三者同段取。
+    /// 有了它，`observeValue` 就不必自己碰字段（本区之外不得出现 `wantsPlayback` 的直接读）。
+    private func observerSnapshot() -> (current: AVPlayerItem?, episode: UInt64, playing: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (item, gate.episode, wantsPlayback)
     }
 
     /// 当前播放意图（单测断言 `play()`/`pause()`/释放后的意图翻转）。
@@ -372,20 +454,16 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
         context: UnsafeMutableRawPointer?
     ) {
         guard let keyPath else { return }
-        lock.lock()
-        let current = item
-        let episode = gate.episode
-        let playing = wantsPlayback
-        lock.unlock()
+        let snapshot = observerSnapshot()
         // KVO token 已随换件移除，但仍可能有一条在途回调进来：只认「仍是当前装载的那一件」。
-        guard let current, (object as? AVPlayerItem) === current else { return }
+        guard let current = snapshot.current, (object as? AVPlayerItem) === current else { return }
         for event in Self.observedEvents(
             forKeyPath: keyPath,
             status: current.status,
             duration: current.duration,
-            playing: playing
+            playing: snapshot.playing
         ) {
-            deliverObserved(event, from: episode)
+            deliverObserved(event, from: snapshot.episode)
         }
     }
 
