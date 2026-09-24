@@ -101,7 +101,8 @@ public actor CovaAuthSession: APICredentialProviding {
     /// 测试注入点：会话激活（提交 `authenticated`）前的钩子；生产恒为 `nil`。
     private var beforeSessionActivation: (@Sendable () async -> Void)?
 
-    /// 仅测试使用：设置在 `restoreSession` 提交临界区的注入钩子（F3 确定性覆盖）。
+    /// 两个提交临界区共用它（`restoreSession` 与 `signIn`），因为要钉的是同一件事：
+    /// 最后一道 await 之后到写 `state` 之间，用户的显式会话变化不得被在途结果推翻。
     func setBeforeSessionActivation(_ hook: (@Sendable () async -> Void)?) {
         beforeSessionActivation = hook
     }
@@ -226,8 +227,16 @@ public actor CovaAuthSession: APICredentialProviding {
     ///
     /// 换号清理失败与 `signOut` 一致上报 `SessionCleanupFailure`：状态仍完成迁移为
     /// `authenticated(newOwner)`，以免出现「清理报错但用户实际已登录」的半态（m-1）。
+    ///
+    /// **提交纪律**（R15-1）：`/me` 是在途窗口，所以写 `state` 之前按 `restoreSession` 的口径
+    /// 同步复核 `sessionEpoch`；复核不过就定点收回本次登录自己写的凭证并抛 `.sessionChanged`。
+    /// 不复核会有两类真后果：显式登出被在途登录推翻（状态复活成已登录、凭证留在库里，而那次
+    /// 登出因为取到 nil principal 既没通知服务端也没做本地清理），以及并发登录两个账号时
+    /// 「状态写甲、owner 指针是乙」—— 此后每个请求都不带 Authorization。
     @discardableResult
     public func signIn(email: String, password: SecretString) async throws -> AuthUser {
+        // 基准在**入口**取：本次登录期间任何用户可感知的会话变化都会推进它。
+        let epoch = sessionEpoch
         let body = try encoder.encode(CovaLoginRequestDto(email: email, password: password))
         let request = try APIRequestBuilder.make(method: .post, path: Self.loginPath, jsonBody: body)
         let response: CovaLoginResponseDto = try await sendRaw(request)
@@ -244,8 +253,21 @@ public actor CovaAuthSession: APICredentialProviding {
             await lifecycle.beginSession(owner: principal)
         }
 
-        try secureStore.set(response.token, for: Self.item(principal, .accessToken))
-        try secureStore.set(response.refreshToken, for: Self.item(principal, .refreshToken))
+        do {
+            // **先写 refresh、再写 access**（R15-5）。refresh token 是单次消费的旋转凭证：
+            // 反过来的写序一旦只落一半，库里留下的是「新 access + 已被服务端消费掉的旧 refresh」
+            // ⇒ 刷新永久坏掉，只能重新登录。按现在的顺序失败，留下的是「旧 access + 新 refresh」
+            // ⇒ 旧 access 过期后仍能用新 refresh 续上。两条写不可能原子（`SecureStore` 只有单条写），
+            // 所以让**可恢复的那一侧**去承受半态。
+            try secureStore.set(response.refreshToken, for: Self.item(principal, .refreshToken))
+            try secureStore.set(response.token, for: Self.item(principal, .accessToken))
+        } catch {
+            // 凭证没落全 = 登录没建立：把本次写进去的东西定点收回，别留孤儿凭证。
+            if let discardFailure = await discardOwnSessionArtifacts(principal: principal) {
+                throw discardFailure  // 收回本身失败 ⇒ 抛它：「库里可能还有可用凭证」更要紧
+            }
+            throw error
+        }
         try? activeOwnerStore.saveActiveOwner(principal)
         // **身份以 `GET /api/auth/me` 为准**（对照 web 客户端：`LoginForm` 登录成功后并不使用
         // 登录响应里的 `user`，而是立刻 `refresh(true)` 走 `/me`；`covaId / phone / avatar /
@@ -258,16 +280,36 @@ public actor CovaAuthSession: APICredentialProviding {
         } catch {
             // `/me` 失败 = 登录**没有完成**：留着凭证就得到一个「状态声称已登录、
             // 身份与权益却一无所知」的半态。凭证与本地态一并收回，让调用方看到真实结果。
-            await invalidateSession(owner: principal)
-            throw error
+            try await concludeFailedSignIn(owner: principal, epoch: epoch, primary: error)
         }
         // **两次响应必须是同一个人**。`/me` 是权威身份源，若它回的是另一个 `id`，
         // 拿它覆盖刚登录的 principal 会把会话记到错误的人身上（权益、缓存归属、
         // 播放上报的 owner 全跟着错）；拿 `response.user` 继续又回到"缺身份"的老问题。
         // 所以这里 fail-closed：收回凭证并报错，不猜哪一个是对的。
         guard me.user.id == response.user.id else {
-            await invalidateSession(owner: principal)
-            throw CovaAPIError.decoding(field: Self.identityMismatchDescription)
+            try await concludeFailedSignIn(
+                owner: principal,
+                epoch: epoch,
+                primary: CovaAPIError.decoding(field: Self.identityMismatchDescription)
+            )
+        }
+        // 测试注入点（生产恒为 nil）：在最后一道 await 之后模拟显式登出/切游客/切号。
+        if let hook = beforeSessionActivation {
+            await hook()
+        }
+        // **提交前复核**（R15-1）：`fetchMe` 与上面那道钩子都是 await 点，期间用户的显式动作
+        // （登出 / 选游客）或另一个账号的登录都可能改变会话。不复核就写 `state`，等于把用户
+        // 最后那一下真实操作推翻 —— 这正是 P1/P2 两个探针的形状。
+        //
+        // 判据只取 `sessionEpoch`，**刻意不并 generation**：本 actor 里每一条"用户可感知的会话
+        // 变化"都在同步上下文里推进 epoch，所以同步读它就是终态判定；而 generation 只做
+        // 「作废在途结果」用，`restoreSession` 会推进它却不推进 epoch（被动冷启动恢复不算
+        // 用户动作）。拿它当提交判据的后果是反的：一次迟到的冷启动恢复会把用户**主动**点的
+        // 这次登录判废。`SignInCommitDisciplineTests` 里那条反向用例钉的就是这个取舍。
+        guard sessionEpoch == epoch else {
+            try await concludeFailedSignIn(
+                owner: principal, epoch: epoch, primary: CovaAPIError.sessionChanged
+            )
         }
         state = .authenticated(me.user)
         sessionEpoch &+= 1
@@ -388,8 +430,11 @@ public actor CovaAuthSession: APICredentialProviding {
             let request = try APIRequestBuilder.make(method: .post, path: Self.refreshPath, bearer: refreshSecret)
             let response: CovaRefreshResponseDto = try await sendRaw(request)
             if await isSessionUnchanged(principal: principal, generation: expectedGeneration, epoch: expectedEpoch) {
-                try secureStore.set(response.token, for: Self.item(principal, .accessToken))
+                // 与 `signIn` 同一写序（R15-5）：**先落新 refresh，再落新 access**。服务端已经消费掉
+                // 旧 refresh，所以半态只能落在可恢复的那一侧 —— 反过来写会留下
+                // 「新 access + 已作废的旧 refresh」，access 一过期就再也刷不动，只能重新登录。
                 try secureStore.set(response.refreshToken, for: Self.item(principal, .refreshToken))
+                try secureStore.set(response.token, for: Self.item(principal, .accessToken))
                 result = .success(response.token)
             } else {
                 result = .failure(CovaAPIError.sessionChanged)
@@ -464,12 +509,95 @@ public actor CovaAuthSession: APICredentialProviding {
         sessionEpoch &+= 1
     }
 
-    /// 凭证被吊销/不可恢复：清该 owner 本地状态与 owner 指针并转 `signedOut`（清理失败不阻断）。
-    private func invalidateSession(owner: PrincipalID) async {
+    /// 收尾一次**没完成**的登录（`/me` 失败、两步身份不一致、提交前复核不过）。
+    ///
+    /// 分两种现场，用错一种就是事故：
+    /// - 会话仍归本次登录（`epoch` 没动）→ 走完整失效：状态转 `signedOut` + 生命周期清理。
+    ///   此时不留「状态说已登录、身份一无所知」的半态。
+    /// - 已被别的会话变化接管（用户的显式登出/切游客，或另一个账号先提交）→ **只**定点收回
+    ///   本次自己写进去的凭证与 owner 指针。这里若去动全局状态，就会把接管者（往往是用户
+    ///   最后那一下真实操作）的会话抹掉 —— 那正是 R15-1 反过来要犯的错。
+    ///
+    /// - Throws: 永远抛（`-> Never`）。默认抛 `primary`（登录为什么没成）；但本地收尾本身失败时
+    ///   改抛该清理失败 —— 「库里可能还留着一条可用凭证」比"没登上的原因"更需要调用方知道，
+    ///   这也是 `SessionLifecycle` 自己写的「清理失败必须可观测」（R15-4，不再用 `try?` 吞掉）。
+    private func concludeFailedSignIn(owner: PrincipalID, epoch: UInt64, primary: Error) async throws -> Never {
+        let failure: SessionCleanupFailure?
+        if sessionEpoch == epoch {
+            failure = await invalidateSession(owner: owner)
+        } else {
+            failure = await discardOwnSessionArtifacts(principal: owner)
+        }
+        if let failure { throw failure }
+        throw primary
+    }
+
+    /// 定点回滚：只清「这一次登录自己写进去的东西」，不碰 `state`、不推进 epoch。
+    ///
+    /// 删凭证前先 best-effort 打一次 `/api/auth/logout`：本地删掉 token 不等于服务端会话结束，
+    /// 留着它就是一条「客户端以为已经作废、实际仍可用人」的活凭证。
+    /// owner 指针只在仍指向本次登录时清 —— 指向别人就说明接管已经发生，那不是我们的东西。
+    ///
+    /// - Returns: 清理失败的分量（顺序与 `SessionLifecycle.cleanUp` 一致）；`nil` = 干净。
+    private func discardOwnSessionArtifacts(principal: PrincipalID) async -> SessionCleanupFailure? {
+        if let token = try? readSecret(principal, .accessToken) {
+            await sendLogoutBestEffort(token: token)
+        }
+        var failed: [SessionCleanupFailure.Component] = []
+        do {
+            try secureStore.removeAllSecrets(for: principal)
+        } catch {
+            failed.append(.credentials)
+        }
+        if let current = try? activeOwnerStore.loadActiveOwner(), current == principal {
+            do {
+                try activeOwnerStore.saveActiveOwner(nil)
+            } catch {
+                if !failed.contains(.ownerData) { failed.append(.ownerData) }
+            }
+        }
+        // 第三个归属面：`lifecycle` 的 activeOwner。绑定那一步（`beginSession`/`switchAccount`）
+        // 已经把它指到本次登录身上，而"显式登出发生在在途登录里"这一路取不到 principal ⇒ 没人清它。
+        // 不清就是三个面各说一套（状态 `signedOut`、指针 nil、lifecycle 还指着甲）。
+        // 同样只清确认仍归本次登录的那一份：指着别人说明接管已发生。
+        if await lifecycle.currentOwner() == principal {
+            do {
+                try await lifecycle.signOut(owner: principal)
+            } catch let error as SessionCleanupFailure {
+                for component in error.failedComponents where !failed.contains(component) {
+                    failed.append(component)
+                }
+            } catch {
+                if !failed.contains(.ownerData) { failed.append(.ownerData) }
+            }
+        }
+        return failed.isEmpty ? nil : SessionCleanupFailure(failedComponents: failed)
+    }
+
+    /// 凭证被吊销/不可恢复：清该 owner 本地状态与 owner 指针并转 `signedOut`（清理失败不阻断迁移）。
+    ///
+    /// 清理失败**返回**给调用方而不被吞掉（R15-4）：状态已经转 `signedOut`，若库里的凭证没删掉，
+    /// 用户看不到任何异常，但下一次冷启动可能又"活了回来"。
+    @discardableResult
+    private func invalidateSession(owner: PrincipalID) async -> SessionCleanupFailure? {
         state = .signedOut
         sessionEpoch &+= 1
-        try? activeOwnerStore.saveActiveOwner(nil)
-        try? await lifecycle.signOut(owner: owner)
+        var failed: [SessionCleanupFailure.Component] = []
+        do {
+            try activeOwnerStore.saveActiveOwner(nil)
+        } catch {
+            failed.append(.ownerData)
+        }
+        do {
+            try await lifecycle.signOut(owner: owner)
+        } catch let error as SessionCleanupFailure {
+            for component in error.failedComponents where !failed.contains(component) {
+                failed.append(component)
+            }
+        } catch {
+            if !failed.contains(.credentials) { failed.append(.credentials) }
+        }
+        return failed.isEmpty ? nil : SessionCleanupFailure(failedComponents: failed)
     }
 
     /// best-effort 服务端登出：网络/读取失败不影响本地清理。
