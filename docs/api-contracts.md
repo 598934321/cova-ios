@@ -8,10 +8,10 @@
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/auth/login` | `{email, password}` → 期望 `{user, token, refreshToken, expiresIn}`（**NEEDS-1 阻塞**；2026-09-17 只读核对：token 三项已符合，但 `user` 仅 `{id,email,name,role}`，缺 `covaId/phone/isArtist/isPartner`） |
+| `POST /api/auth/login` | `{email, password}` → `{user, token, refreshToken, expiresIn}`。**入口是两步，不是一步**（2026-09-24 对照 web 客户端源码，见 D21）：登录响应里的 `user` 只有 `{id, email, name, role}`，**这是设计如此、不是后端缺口**（NEEDS-1 已撤销）；web 侧登录成功后不使用这份 `user`，立刻 `GET /api/auth/me` 取权威身份。iOS 的 `principal` 取 `login.user.id`，会话身份与权益取 `/me`，两者 `id` 不一致即 fail-closed 收回凭证 |
 | `POST /api/auth/refresh` | refresh token 旋转（single-flight） |
 | `POST /api/auth/logout` | 登出 |
-| `GET /api/auth/me` | → `{user, entitlements}` |
+| `GET /api/auth/me` | → `{user, entitlements, nameChange}`（**三键**，2026-09-24 对照 web 补齐：`nameChange` iOS 忽略即可）。`user` 在此才含 `covaId / phone / avatar / isArtist`，`/me` 另加 `isPartner / partnerType`。**未登录返回 401 + `{user: null}`** ⇒ 客户端必须按"未认证"处理，不得当成"空用户" |
 
 **AuthUser**：`id / email / name / role / covaId / phone / isArtist / isPartner`
 **Entitlements**：`plan('free'|'creator'|'pro'|'enterprise') / creditsBalance / monthlyCredits / canDownload / canUseCovaAI / canRequestProjects`

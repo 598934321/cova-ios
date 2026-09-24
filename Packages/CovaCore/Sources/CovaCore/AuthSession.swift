@@ -78,6 +78,9 @@ public actor CovaAuthSession: APICredentialProviding {
     static let logoutPath = "/api/auth/logout"
     static let mePath = "/api/auth/me"
 
+    /// 登录两步之间身份不一致时的错误描述键（`CovaAPIError.decoding(field:)` 的 `field`）。
+    static let identityMismatchDescription = "auth-me-user-id"
+
     private let transport: any HTTPTransport
     private let secureStore: any SecureStore
     private let lifecycle: SessionLifecycle
@@ -214,7 +217,12 @@ public actor CovaAuthSession: APICredentialProviding {
         return state
     }
 
-    /// 登录：POST `/api/auth/login` → 写凭证 → 绑定 owner → 转 `authenticated`。
+    /// 登录（两步，与 web 同一入口）：`POST /api/auth/login` 建立凭证 → `GET /api/auth/me`
+    /// 取回权威身份与权益 → 绑定 owner → 转 `authenticated(me.user)`。
+    ///
+    /// - Throws: 第一步的传输/认证错误；或第二步失败 —— 那时**已写入的凭证会被收回**，
+    ///   不留「状态说已登录、身份与权益一无所知」的半态；以及换号清理的 `SessionCleanupFailure`
+    ///   （后者不阻断登录，见 m-1）。
     ///
     /// 换号清理失败与 `signOut` 一致上报 `SessionCleanupFailure`：状态仍完成迁移为
     /// `authenticated(newOwner)`，以免出现「清理报错但用户实际已登录」的半态（m-1）。
@@ -239,10 +247,32 @@ public actor CovaAuthSession: APICredentialProviding {
         try secureStore.set(response.token, for: Self.item(principal, .accessToken))
         try secureStore.set(response.refreshToken, for: Self.item(principal, .refreshToken))
         try? activeOwnerStore.saveActiveOwner(principal)
-        state = .authenticated(response.user)
+        // **身份以 `GET /api/auth/me` 为准**（对照 web 客户端：`LoginForm` 登录成功后并不使用
+        // 登录响应里的 `user`，而是立刻 `refresh(true)` 走 `/me`；`covaId / phone / avatar /
+        // isArtist / isPartner` 与 `entitlements` 只在 `/me` 上给）。所以登录是两步：
+        // 建立凭证 → 取回身份。把 `response.user` 当身份会让「刚登录的那一次会话」
+        // 一直缺身份与权益，直到冷启动走 `/me` 恢复路径才补齐 —— 两处口径不一致。
+        let me: CovaMeResponse
+        do {
+            me = try await fetchMe(principal: principal)
+        } catch {
+            // `/me` 失败 = 登录**没有完成**：留着凭证就得到一个「状态声称已登录、
+            // 身份与权益却一无所知」的半态。凭证与本地态一并收回，让调用方看到真实结果。
+            await invalidateSession(owner: principal)
+            throw error
+        }
+        // **两次响应必须是同一个人**。`/me` 是权威身份源，若它回的是另一个 `id`，
+        // 拿它覆盖刚登录的 principal 会把会话记到错误的人身上（权益、缓存归属、
+        // 播放上报的 owner 全跟着错）；拿 `response.user` 继续又回到"缺身份"的老问题。
+        // 所以这里 fail-closed：收回凭证并报错，不猜哪一个是对的。
+        guard me.user.id == response.user.id else {
+            await invalidateSession(owner: principal)
+            throw CovaAPIError.decoding(field: Self.identityMismatchDescription)
+        }
+        state = .authenticated(me.user)
         sessionEpoch &+= 1
         if let cleanupFailure { throw cleanupFailure }
-        return response.user
+        return me.user
     }
 
     /// 登出：best-effort 通知服务端 → 清该 owner 本地状态（`SessionLifecycle`）→ 转 `signedOut`。
