@@ -22,6 +22,8 @@ public struct AISessionDetailView: View {
     @State private var lines: [TranscriptLine] = []
     @State private var plans: [OneStepPlanCardDto] = []
     @State private var candidates: [GenerationCandidateDto] = []
+    /// 最近一轮生成任务：09 §I 的进度条用它读 6 态（§8「只驱动 I 进度条与 H 终态条」）。
+    @State private var latestJob: GenerationJobDto?
     /// 候选 ♡ 的账：键 = `mediaReferenceId`，**每次详情载荷到达都整本重新播种**
     /// （留下未确认的乐观翻转 = 把本地的谎继续显示成后端的谎）。
     @State private var favorites = CandidateFavoriteLedger()
@@ -78,6 +80,7 @@ public struct AISessionDetailView: View {
                             )
                         }
                         if !candidates.isEmpty { candidateBlock }
+                        if let deliveryProgress { deliveryProgressBar(deliveryProgress) }
                     }
                     .padding(CovaSpace.pageGutter)
                 }
@@ -271,6 +274,67 @@ public struct AISessionDetailView: View {
         return "两个版本制作中"
     }
 
+    // MARK: I 补充制作进度条（09 §3-I / §9 行 8–9）
+
+    /// 本轮**最新那张计划卡**：`cardIndex` 最大者，同值取数组里靠后的（后端按时间正序给列表）。
+    /// 只看一张是有意的 —— 进度条表达的是「这一轮走到哪一格」，把旧卡的状态拿来画就是画历史。
+    private var latestPlan: OneStepPlanCardDto? {
+        plans.reduce(nil) { current, candidate in
+            guard let current else { return candidate }
+            return (candidate.cardIndex ?? 0) >= (current.cardIndex ?? 0) ? candidate : current
+        }
+    }
+
+    /// 出现条件与格数全部由 CovaCore 的纯映射决定（那里有 7 条用例钉住），本屏只负责画。
+    ///
+    /// `jobStatus` 取自**详情载荷里的 `generationJobs.last`**（§8 的「历史与对账」那一行）。
+    /// §8 另给的 `GET …/generation-jobs?id=` 轮询节奏（前 6 次 5s、之后 10s）**本屏尚未接** ——
+    /// 该端点目前全仓零调用点（DTO 有、服务方法没有），所以取消/失败这类只出现在 job 上的
+    /// 事实要等下一次进屏 / 下拉刷新才会被看到。这是**客户端待办**，不是后端缺口，
+    /// 也不拿轮询冒充：见 `docs/log` 当日「没做的（据实）」。
+    private var deliveryProgress: DeliveryProgress? {
+        guard let plan = latestPlan else { return nil }
+        return DeliveryProgressPlanner.progress(
+            planStatus: plan.status, jobStatus: latestJob?.status
+        )
+    }
+
+    /// §3-I 的形态：左文案（`type.subhead` / `color.secondary`）+ 右列（`type.mono` / `color.muted`）
+    /// + 4pt 细轨道（`color.line`）配 `color.accent` 填充。
+    ///
+    /// **右列不是百分比**：契约里没有任何进度字段（计划卡 12 态、job 6 态、候选投影里都没有），
+    /// 所以那一位放的是「第几格 / 共几格」的阶段计数，且填充比**永不**到达 1.0 ——
+    /// 填满等于声称 §3-I 的完成态（`fullMediaReady`）已到，而那件事当前没有来源。
+    /// 数值来源已登记 **NEEDS-25**，拿到真进度后把 `stepText` 换回百分比即可，判定不用改。
+    private func deliveryProgressBar(_ progress: DeliveryProgress) -> some View {
+        VStack(alignment: .leading, spacing: CovaSpace.sm) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(progress.label)
+                    .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                Spacer(minLength: CovaSpace.sm)
+                Text(progress.stepText)
+                    .font(CovaType.mono).foregroundStyle(CovaColor.muted)
+            }
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(CovaColor.line)
+                    Capsule()
+                        .fill(CovaColor.accent)
+                        .frame(width: proxy.size.width * CGFloat(progress.fraction))
+                }
+            }
+            // TG-23：细进度条的厚度档未入库 ⇒ 这里是 spec 点名的那个缺口，不是随手写的数。
+            .frame(height: 4)
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, CovaSpace.pageGutter)
+        .padding(.vertical, CovaSpace.sm)
+        // §7：整条合成**一个**元素，读「补充制作中，第 N 步，共 M 步」；
+        // 值变化不逐帧播报（SwiftUI 只在元素被聚焦时读当前值），轨道本身不再单独念。
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(progress.voiceOverLabel)
+    }
+
     // MARK: 输入框
 
     private var composer: some View {
@@ -327,7 +391,9 @@ public struct AISessionDetailView: View {
                 )
             }
             plans = planList
-            candidates = result.generationJobs.last?.candidates() ?? []
+            let jobs = result.generationJobs
+            latestJob = jobs.last
+            candidates = jobs.last?.candidates() ?? []
             // 服务端为事实源（PRD 4.2）⇒ 载荷一到就以它重播 ♡ 账，不保留上一轮的乐观值。
             favorites.reseed(from: candidates)
             creditsBalance = try? await session.catalog.me().entitlements.creditsBalance
