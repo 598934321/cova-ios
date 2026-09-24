@@ -134,13 +134,6 @@ enum TestAccount: String, CaseIterable, Sendable {
         }
     }
 
-    var refreshToken: String {
-        switch self {
-        case .a: return "REFRESH_TOKEN_PLACEHOLDER"
-        case .b: return "SECOND_REFRESH"
-        }
-    }
-
     /// `POST /api/auth/login` 响应体（`user.id == principal.rawValue`）。
     var loginBody: Data {
         switch self {
@@ -167,11 +160,6 @@ enum TestAccount: String, CaseIterable, Sendable {
 
     var loginResponse: HTTPResponse { HTTPResponse(statusCode: 200, body: loginBody) }
     var meResponse: HTTPResponse { HTTPResponse(statusCode: 200, body: meBody) }
-
-    /// `/me` 给出的权威身份（断言用：登录成功后 `state` 里的 user 必须等于它）。
-    var meUser: AuthUser {
-        get throws { try JSONDecoder().decode(CovaMeResponse.self, from: meBody).user }
-    }
 
     func item(_ kind: CredentialKind) -> SecureStoreItem {
         SecureStoreItem(principalId: principal, kind: kind)
