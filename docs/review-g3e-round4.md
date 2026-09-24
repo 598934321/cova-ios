@@ -917,3 +917,23 @@ Accept-Ranges），**302 只发生在该账号对某一条有 full access 时**�
 该链接 TTL 900 秒 ⇒ 现已过期，且它没进任何提交、文件或门禁日志。
 但这**违反本仓硬边界 3**（签名 URL 禁写日志），事实成立 ⇒ 记在这里，
 并给后续所有并行实例的简报都加了同一条红线（只印状态码/主机/布尔，不印 query、不印 sig）。
+### §R 补充 2：R16-2 闭到"实例内"这一层（`fbdf928`），我按裁决流程复核过它的换形
+
+串行槽落地后我核了三件事，不是看它说什么：
+
+1. **换形是否放松断言**：`git show fbdf928` 里被删的断言 9 行，全部属于**串行化后已不可构造**的那个交错
+   （"乙挤进甲的 `/login` 抢先提交"）；用例文件断言总数 **42 → 74**，
+   且 `testConcurrentLogins…` 换成了 `…NeverShareTheRebindRegion`、
+   原 P3 拆成"游客中途选择"与"重绑前已登出"两条 —— 覆盖面变大不是变小。**判定：合法换形。**
+2. **红是否看得见**：未修复字节上 `EXIT=65`、`10 tests / 17 failures`（并发用例 12 处里就含着
+   症状本身：状态=甲而 accessToken/owner 指针/lifecycle 三处 nil）；修复后同域 `10/0`，另连跑 3 次；
+   全量 CovaCore **476/0，EXIT=0**（基线文件按边界未动）。
+3. **"只在同一实例内成立"这句今天是否真话**：全仓 `CovaAuthSession(` 只有一个构造点
+   （`CovaDependencies.swift:28`），唯一调用方 `AppSession.swift:140` 持有一份 ⇒ **实例内串行 = 当前全局串行**。
+
+**登记的残余（不写成已闭）**：`makeAuthSession()` 每次都新建一份 `SessionLifecycle`，
+所以将来若真出现第二个 `CovaAuthSession`（多窗口 / 预览装配），两个实例各有各的槽、
+却写**同一把 Keychain 与同一个 owner 指针** ⇒ 跨实例抹掉对方凭证仍然可能。
+要彻底关需要把槽上提到 `SessionLifecycle` 或改成注入单一 lifecycle —— 本轮禁改那个契约。
+另一条同族的已存在事实：`SecureStore`/`ActiveOwnerStore` 是全局单例语义，
+这层"跨实例"问题不属于登录，属于**整个凭证域的装配方式**，另案处理。
