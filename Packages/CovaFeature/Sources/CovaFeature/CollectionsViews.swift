@@ -33,17 +33,20 @@ public struct FavoritesView: View {
                 CovaErrorState(kind: Self.kind(failure)) { Task { await load() } }
             case .ready:
                 if tracks.isEmpty {
-                    CovaEmptyState(
-                        symbol: "heart",
-                        title: "还没有收藏",
-                        hint: "听到喜欢的歌点一下 ♡，就会出现在这里",
-                        actionTitle: "去曲库挑歌",
-                        action: { session.tab = .library }
-                    )
-                    .overlay(alignment: .bottom) {
+                    VStack(spacing: CovaSpace.sm) {
+                        CovaEmptyState(
+                            symbol: "heart",
+                            title: "还没有收藏",
+                            hint: "听到喜欢的歌点一下 ♡，就会出现在这里",
+                            actionTitle: "去曲库挑歌",
+                            action: { session.tab = .library }
+                        )
+                        // 12a §触控 要「空态两枚 CTA」，第二枚排在主 CTA **下面**。原先挂在
+                        // `.overlay(alignment: .bottom)` 上，压在「去曲库挑歌」字样里 —— 是登录后的
+                        // 截图实测抓到的重叠，不是猜的。
                         Button("先看看歌单") { session.path.append(.plaza) }
                             .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
-                            .padding(.bottom, CovaSpace.xxl)
+                            .buttonStyle(.plain)
                     }
                 } else {
                     list

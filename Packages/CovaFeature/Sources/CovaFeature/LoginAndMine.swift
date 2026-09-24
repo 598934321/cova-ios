@@ -71,8 +71,21 @@ public struct LoginView: View {
 public struct MineView: View {
     @Environment(AppSession.self) private var session
     @State private var me: CovaMeResponse?
+    /// `/me` 的失败**必须可见**：原先写成 `try?`，把「未登录竞态下的 401」和「真出错」
+    /// 一起吞成 nil ⇒ 已登录却满屏没有权益与余额，而且永不重试（截图实测到的正是这个）。
+    @State private var meFailed = false
 
     public init() {}
+
+    /// 认证阶段的变化键：登录/登出/换号都要重新取一次 `/me`。
+    private var authPhaseKey: String {
+        switch session.authPhase {
+        case .restoring: return "restoring"
+        case .guest: return "guest"
+        case .failed: return "failed"
+        case .signedIn(let user): return "signedIn:\(user.id)"
+        }
+    }
 
     public var body: some View {
         ScrollView {
@@ -83,7 +96,21 @@ public struct MineView: View {
             .padding(.vertical, CovaSpace.xl)
         }
         .covaPage()
-        .task { me = try? await CatalogService(client: session.client).me() }
+        // `task(id:)`：换号 / 登录后自动重取，不靠"恰好在这屏才登录"的运气。
+        .task(id: authPhaseKey) { await loadMe() }
+    }
+
+    @MainActor
+    private func loadMe() async {
+        guard case .signedIn = session.authPhase else { me = nil; meFailed = false; return }
+        meFailed = false
+        do {
+            me = try await CatalogService(client: session.client).me()
+        } catch {
+            // 失败要说出来并给重试，而不是安静地少画两行。
+            me = nil
+            meFailed = true
+        }
     }
 
     @ViewBuilder
@@ -93,12 +120,22 @@ public struct MineView: View {
             CovaCard {
                 VStack(alignment: .leading, spacing: CovaSpace.sm) {
                     Text(user.name).font(CovaType.headline).foregroundStyle(CovaColor.fg)
+                    // 11 §3-B：次行是 covaId（等宽数字）或邮箱。`covaId` 只在 `/me` 上给，
+                    // 登录响应的 `user` 没有 —— 所以这一行同时也是「两步入口是否走通」的可见证据。
+                    Text(user.covaId ?? user.email ?? "")
+                        .font(CovaType.mono).foregroundStyle(CovaColor.secondary)
                     if let me {
                         Text("计划：\(me.entitlements.plan.rawValue)")
                             .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                         // D12：只展示余额，**不放任何购买/充值入口**。
                         Text("剩余 co 币：\(me.entitlements.creditsBalance)")
                             .font(CovaType.callout).foregroundStyle(CovaColor.accentText)
+                    } else if meFailed {
+                        // 取不到就说取不到：少画两行与"这账号没有权益"在两回事。
+                        Text("权益没取到").font(CovaType.subhead).foregroundStyle(CovaColor.error)
+                        Button("重试") { Task { await loadMe() } }
+                            .font(CovaType.subhead).foregroundStyle(CovaColor.accentText)
+                            .buttonStyle(.plain)
                     }
                     CovaButton("登出", style: .secondary) { Task { await session.signOut() } }
                 }
@@ -118,7 +155,9 @@ public struct MineView: View {
 
     private var entries: some View {
         VStack(spacing: 0) {
-            ForEach(["收藏", "我的歌单", "我的创作", "下载管理"], id: \.self) { title in
+            // 11 §1/§3-F/§7：「已下载」行在 D12 合规放行前**整项不渲染**（与 04 §3.D 同一条裁决，
+            // 也不是置灰/禁用）。放行前给它一个只弹 Toast 的入口，等于向用户承诺一个不存在的页面。
+            ForEach(["收藏", "我的歌单", "我的创作"], id: \.self) { title in
                 CovaListRow(title: title, subtitle: nil, artwork: nil) {
                     Image(systemName: "chevron.right").foregroundStyle(CovaColor.muted)
                         .accessibilityHidden(true)

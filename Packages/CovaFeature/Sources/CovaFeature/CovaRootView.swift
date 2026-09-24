@@ -72,6 +72,21 @@ public struct CovaRootView: View {
             ?? UserDefaults.standard.string(forKey: "COVA_PREVIEW_ROUTE")
     }
 
+    /// 走查钩子 5（**只为模拟器逐屏截图存在**）：`COVA_PREVIEW_LOGIN_EMAIL` +
+    /// `COVA_PREVIEW_LOGIN_PASSWORD` 走**真实的两步登录**（`/login` 建凭证 → `/me` 取身份），
+    /// 不是往状态里塞一个假 token。
+    ///
+    /// 与 `COVA_PREVIEW_TAB/SHEET/ROUTE/DRAWER` 的关键差别：**只读进程环境，刻意不接
+    /// `UserDefaults`** —— 口令与凭证不许落进任何持久化索引（AGENTS 硬边界 3），
+    /// `simctl launch --setenv` 的值只活在这一次进程里。任一键缺失 ⇒ 这条路径完全不存在。
+    private static func previewLogin() -> (email: String, password: String)? {
+        guard let email = ProcessInfo.processInfo.environment["COVA_PREVIEW_LOGIN_EMAIL"],
+              let password = ProcessInfo.processInfo.environment["COVA_PREVIEW_LOGIN_PASSWORD"],
+              !email.isEmpty, !password.isEmpty
+        else { return nil }
+        return (email, password)
+    }
+
     public var body: some View {
         Group {
             switch session.authPhase {
@@ -85,6 +100,10 @@ public struct CovaRootView: View {
         .preferredColorScheme(session.themeMode.colorScheme)
         .task {
             await session.bootstrap()
+            // 登录要先于路由：登录后才有 `favorites`/`aiSessions` 这些屏可走查。
+            if let login = Self.previewLogin() {
+                await session.signIn(email: login.email, password: login.password)
+            }
             switch Self.previewSheet() {
             case "login": session.loginPresented = true
             case "player": session.playerSheetOpen = true
