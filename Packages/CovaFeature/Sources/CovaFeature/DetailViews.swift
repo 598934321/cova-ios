@@ -81,7 +81,7 @@ public struct PlaylistDetailView: View {
                         CovaListRow(
                             title: track.titleCn ?? track.title,
                             subtitle: "\(track.artistNameCn ?? track.artist.name) · \(Int(track.audioDuration ?? track.duration))s · BPM \(track.bpm)",
-                            artwork: CovaArtwork(url: URL(string: track.cover), title: track.title)
+                            artwork: CovaArtwork(resolution: PlaylistDetailArtwork.cover(track), title: track.title)
                         ) {
                             heartButton(track.id)
                         } action: {
@@ -104,7 +104,7 @@ public struct PlaylistDetailView: View {
 
     private var hero: some View {
         CovaArtwork(
-            url: URL(string: playlist?.cover ?? playlist?.coverUrl ?? playlist?.coverMedia?.imageUrl ?? ""),
+            resolution: PlaylistDetailArtwork.hero(playlist),
             title: playlist?.titleCn ?? playlist?.title ?? "歌单"
         )
         .frame(maxWidth: .infinity)
@@ -254,7 +254,7 @@ public struct TrackDetailSheet: View {
     /// 拿**真实容器宽**（sheet 里就是 sheet 宽），不写死 point。
     @ViewBuilder
     private func cover(_ track: TrackDto) -> some View {
-        let art = CovaArtwork(url: URL(string: track.cover), title: track.title)
+        let art = CovaArtwork(resolution: TrackDetailArtwork.cover(track), title: track.title)
         if axLayout {
             art.containerRelativeFrame(.horizontal) { length, _ in length * 0.6 }
                 .aspectRatio(1, contentMode: .fit)
@@ -411,7 +411,7 @@ public struct TrackDetailSheet: View {
                         ForEach(similar, id: \.id) { item in
                             Button { session.detailTrackID = item.id } label: {
                                 VStack(alignment: .leading, spacing: CovaSpace.xs) {
-                                    CovaArtwork(url: URL(string: item.cover), title: item.title)
+                                    CovaArtwork(resolution: TrackDetailArtwork.similarCover(item), title: item.title)
                                         .frame(width: 112, height: 112)
                                         .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
                                     Text(item.titleCn ?? item.title)
@@ -450,5 +450,44 @@ public struct TrackDetailSheet: View {
         } catch {
             phase = .failed(CatalogService.classify(error, decodingNeeds: "NEEDS-8/10"))
         }
+    }
+}
+
+// MARK: - 美术腿（R18-2）
+
+/// 06 歌单详情的两条封面腿：头图 + 曲目行。
+///
+/// 判据一律在 `CovaArtworkResolution`（CovaUI 唯一裁决面），这里只回答「哪个字段进哪个槽」。
+enum PlaylistDetailArtwork {
+    /// 头图有三个候选字段，按 `cover` → `coverUrl` → `coverMedia.imageUrl` 取第一个**非空**原文。
+    ///
+    /// 这一腿是全层唯一「站内相对 **且带查询串**」的形态（`docs/decisions.md` §S补充3：
+    /// 第 18 轮以测试账号只读实测 `GET /api/user-playlists` 的 `coverUrl` / `imageUrl`；
+    /// 匿名直接打该端点是 401，本仓复现不了那一行的原文）。查询串逐字节是硬要求：
+    /// 补全若把它重编码或丢掉，拿到的就是另一张图或一张没有 —— 而**画面只是"没图"**，
+    /// 与 R16-1 的相对 `audioUrl` 同一个失效形状。
+    static func hero(_ playlist: PlaylistDto?) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValues: [
+            playlist?.cover,
+            playlist?.coverUrl,
+            playlist?.coverMedia?.imageUrl,
+        ])
+    }
+
+    static func cover(_ track: TrackDto) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValue: track.cover)
+    }
+}
+
+/// 07 曲目详情的两条封面腿：C 区大封面 + 相似曲目横滑。
+enum TrackDetailArtwork {
+    static func cover(_ track: TrackDto) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValue: track.cover)
+    }
+
+    /// `similar` 是**另一套投影**（NEEDS-10/12，见 `LibraryDTOs` 的 `SimilarTrackDto` 注释），
+    /// 字段同名不保证同形态 ⇒ 独立一腿，不借用上面那条。
+    static func similarCover(_ similar: SimilarTrackDto) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValue: similar.cover)
     }
 }

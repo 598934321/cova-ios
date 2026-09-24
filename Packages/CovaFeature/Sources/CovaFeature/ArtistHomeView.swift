@@ -90,7 +90,7 @@ public struct ArtistHomeView: View {
     @ViewBuilder
     private func header(_ artist: ArtistDto) -> some View {
         VStack(spacing: CovaSpace.md) {
-            CovaArtwork(url: URL(string: artist.avatar ?? ""), title: artist.name)
+            CovaArtwork(resolution: ArtistHomeArtwork.avatar(artist), title: artist.name)
                 .frame(width: axLayout ? 88 : 112, height: axLayout ? 88 : 112)
                 .clipShape(Circle())
                 .overlay(Circle().strokeBorder(swash(artist.colorPalette), lineWidth: 2))
@@ -183,7 +183,7 @@ public struct ArtistHomeView: View {
                     CovaListRow(
                         title: track.titleCn ?? track.title,
                         subtitle: "\(track.artistNameCn ?? track.artist.name) · \(Int(track.audioDuration ?? track.duration))s · BPM \(track.bpm)",
-                        artwork: CovaArtwork(url: URL(string: track.cover), title: track.title)
+                        artwork: CovaArtwork(resolution: ArtistHomeArtwork.cover(track), title: track.title)
                     ) {
                         let on = session.favoriteIDs.contains(track.id)
                         Button {
@@ -263,6 +263,28 @@ public struct ArtistHomeView: View {
         } catch {
             session.showToast("加载更多失败，可重试", isError: true)
         }
+    }
+}
+
+// MARK: - 美术腿（R18-2）
+
+/// 16 屏的两条封面腿：`artist.avatar`（头区圆像）与 `track.cover`（曲目行）。
+///
+/// 这里**只有「哪个字段进哪个槽」**这一件事，出口判据一律在 `CovaArtworkResolution`
+/// （CovaUI 的唯一裁决面）：本屏不许长出第二条补全规则，也不许把原文直接喂 `URL(string:)`。
+///
+/// 为什么把腿单独抽出来（而不是在视图体里内联）：线上 `GET /api/artists` 的 `artist.avatar`
+/// 实测 **13 行里 12 行是站内相对路径**（2026-09-25 只读核对，见 D23 的名单补充），
+/// 而相对串直接 `URL(string:)` 没有 scheme ⇒ 出口判定为假 ⇒ **一次请求都不发**、只剩占位
+/// （R16-1 同族、同一种看不见的失效）。抽成可命名、可 `@testable` 调用的腿，
+/// 是让这一条**能在测试里红**的最低成本做法 —— 不是给 UI 造快照框架。
+enum ArtistHomeArtwork {
+    static func avatar(_ artist: ArtistDto) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValue: artist.avatar)
+    }
+
+    static func cover(_ track: TrackDto) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValue: track.cover)
     }
 }
 

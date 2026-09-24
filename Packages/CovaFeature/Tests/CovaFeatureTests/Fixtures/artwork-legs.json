@@ -1,0 +1,203 @@
+{
+  "_comment": [
+    "R18-2 美术腿夹具：只取 2026-09-25 只读核对到的**形态**（站内相对 / 站内相对带查询 /",
+    "绝对 https / 缺字段 / 空串 / 非名单 host / 近似 host / userinfo 逃逸 / 无 host 的裸相对路径），",
+    "不含任何线上原文、真实签名参数或凭证。",
+    "两个标记量在测试期展开，夹具里不写死生产主机名：<origin> = CovaEnvironment.apiBaseURL 的 host，",
+    "<covers> = CovaEnvironment.sanctionedStorageHosts 的第一台（名单唯一事实源在 CovaCore）。",
+    "非生产 host 一律 .invalid / .evil.test（硬规则：不发真实网络请求）。"
+  ],
+  "artists": [
+    { "id": "ar-relative", "name": "relative-avatar", "nameCn": "站内相对头像", "avatar": "/uploads/avatars/relative.png" },
+    { "id": "ar-absolute", "name": "absolute-avatar", "nameCn": "名单内绝对头像", "avatar": "https://<covers>/avatars/absolute.png" },
+    { "id": "ar-nil", "name": "nil-avatar", "nameCn": "没有头像这一列" },
+    { "id": "ar-empty", "name": "empty-avatar", "nameCn": "空串头像", "avatar": "" },
+    { "id": "ar-unsanctioned", "name": "unsanctioned-avatar", "nameCn": "名单外主机", "avatar": "https://art-cdn.invalid/avatars/a.png" },
+    { "id": "ar-nearmiss", "name": "nearmiss-avatar", "nameCn": "近似生产 host", "avatar": "https://covalink.cn.evil.test/avatars/a.png" },
+    { "id": "ar-userinfo", "name": "userinfo-avatar", "nameCn": "userinfo 逃逸", "avatar": "https://covalink.cn@evil.test/avatars/a.png" },
+    { "id": "ar-bare-relative", "name": "bare-relative-avatar", "nameCn": "无前导斜杠的裸相对路径", "avatar": "uploads/avatars/a.png?sig=a%2Bb" }
+  ],
+  "tracks": [
+    {
+      "id": "tk-relative-query",
+      "title": "relative-cover-with-query",
+      "titleCn": "站内相对且带查询的封面",
+      "cover": "/api/covers/track-1.png?width=640&height=640&sig=9f%2Bab&format=webp",
+      "duration": 183.4,
+      "audioDuration": 183.4,
+      "bpm": 96,
+      "audioUrl": "/api/tracks/tk-relative-query/preview-stream",
+      "artist": { "id": "ar-relative", "name": "relative-avatar", "avatar": "/uploads/avatars/relative.png" },
+      "scenes": ["focus"],
+      "moods": ["calm"],
+      "tags": [{ "dimension": "scene", "value": "focus" }],
+      "displayLabels": ["专注"],
+      "waveformPeaks": [0.1, 0.4, 0.2],
+      "previewStart": 0,
+      "previewEnd": 30,
+      "highlightStart": 40,
+      "highlightEnd": 70,
+      "favoriteCount": 3,
+      "vocalType": "instrumental",
+      "energy": "low"
+    },
+    {
+      "id": "tk-abs-sanctioned",
+      "title": "absolute-sanctioned-cover",
+      "titleCn": "名单内绝对封面",
+      "cover": "https://<covers>/covers/track-2.png",
+      "duration": 201,
+      "bpm": 104,
+      "audioUrl": "/api/tracks/tk-abs-sanctioned/preview-stream",
+      "artist": { "id": "ar-absolute", "name": "absolute-avatar", "avatar": "https://<covers>/avatars/absolute.png" },
+      "scenes": ["commute"],
+      "moods": ["bright"],
+      "tags": [],
+      "displayLabels": [],
+      "waveformPeaks": [0.2],
+      "previewStart": 0,
+      "previewEnd": 20,
+      "highlightStart": 10,
+      "highlightEnd": 40,
+      "favoriteCount": 0,
+      "vocalType": "vocal",
+      "energy": "mid"
+    },
+    {
+      "id": "tk-unsanctioned",
+      "title": "unsanctioned-cover",
+      "titleCn": "名单外主机的封面",
+      "cover": "https://covers.evil.test/covers/track-3.png?sig=a%2Bb",
+      "duration": 120,
+      "bpm": 88,
+      "audioUrl": "/api/tracks/tk-unsanctioned/preview-stream",
+      "artist": { "id": "ar-nil", "name": "nil-avatar" },
+      "scenes": [],
+      "moods": [],
+      "tags": [],
+      "displayLabels": [],
+      "waveformPeaks": [],
+      "previewStart": 0,
+      "previewEnd": 10,
+      "highlightStart": 0,
+      "highlightEnd": 10,
+      "favoriteCount": 0,
+      "vocalType": "instrumental",
+      "energy": "low"
+    }
+  ],
+  "similarTracks": [
+    {
+      "id": "sm-relative-query",
+      "title": "relative-similar-cover",
+      "titleCn": "相似曲目：站内相对且带查询",
+      "cover": "/api/covers/similar-1.png?width=320&sig=7c%2Bd",
+      "duration": 154,
+      "bpm": 92,
+      "audioUrl": "/api/tracks/sm-relative-query/preview-stream",
+      "artist": { "id": "ar-relative", "name": "relative-avatar", "avatar": "/uploads/avatars/relative.png" },
+      "scenes": ["sleep"],
+      "moods": ["soft"],
+      "tags": [],
+      "displayLabels": [],
+      "waveformPeaks": [],
+      "preview_start": 0,
+      "preview_end": 15,
+      "highlightStart": 5,
+      "highlightEnd": 25,
+      "favoriteCount": 1,
+      "vocalType": "instrumental",
+      "energy": "low",
+      "featured": 0,
+      "similarityScore": 108
+    },
+    {
+      "id": "sm-protocol-relative",
+      "title": "protocol-relative-similar-cover",
+      "titleCn": "相似曲目：协议相对逃逸",
+      "cover": "//covers.evil.test/similar-2.png",
+      "duration": 160,
+      "bpm": 100,
+      "audioUrl": "/api/tracks/sm-protocol-relative/preview-stream",
+      "artist": { "id": "ar-nil", "name": "nil-avatar" },
+      "scenes": [],
+      "moods": [],
+      "tags": [],
+      "displayLabels": [],
+      "waveformPeaks": [],
+      "preview_start": 0,
+      "preview_end": 15,
+      "highlightStart": 5,
+      "highlightEnd": 25,
+      "favoriteCount": 0,
+      "vocalType": "vocal",
+      "energy": "mid",
+      "featured": 1
+    }
+  ],
+  "playlists": [
+    {
+      "id": "pl-cover-url",
+      "title": "coverUrl-relative-query",
+      "titleCn": "coverUrl：站内相对且带查询（user-playlists 实测形态）",
+      "coverUrl": "/api/covers/playlist-1.png?width=640&height=640&sig=9f%2Bab&format=webp",
+      "trackCount": 12
+    },
+    {
+      "id": "pl-image-url",
+      "title": "imageUrl-relative-query",
+      "titleCn": "coverMedia.imageUrl：站内相对且带查询",
+      "cover": "",
+      "coverUrl": "",
+      "coverMedia": { "imageUrl": "/api/covers/playlist-2.png?width=640&sig=11%2B22", "alt": "封面" },
+      "trackCount": 8
+    },
+    {
+      "id": "pl-cover-first",
+      "title": "cover-absolute",
+      "titleCn": "cover：名单内绝对地址（优先于后两个候选）",
+      "cover": "https://<covers>/covers/playlist-3.png",
+      "coverUrl": "/api/covers/playlist-3-ignored.png?sig=a%2Bb",
+      "coverMedia": { "imageUrl": "/api/covers/playlist-3-ignored-2.png" },
+      "trackCount": 4
+    },
+    {
+      "id": "pl-unsanctioned",
+      "title": "cover-unsanctioned",
+      "titleCn": "cover：非名单 host",
+      "cover": "https://covers.evil.test/covers/playlist-4.png",
+      "trackCount": 0
+    },
+    {
+      "id": "pl-none",
+      "title": "no-cover-at-all",
+      "titleCn": "三个候选字段都没给",
+      "trackCount": 0
+    }
+  ],
+  "recentTracks": [
+    {
+      "id": "rc-absolute",
+      "title": "absolute-recent-cover",
+      "artist": "relative-avatar",
+      "coverURLString": "https://<covers>/covers/recent-1.png"
+    },
+    {
+      "id": "rc-relative",
+      "title": "relative-recent-cover",
+      "artist": "relative-avatar",
+      "coverURLString": "/api/covers/recent-2.png?width=320&sig=aa%2Bbb"
+    },
+    {
+      "id": "rc-none",
+      "title": "missing-recent-cover",
+      "artist": "nil-avatar"
+    },
+    {
+      "id": "rc-nearmiss",
+      "title": "nearmiss-recent-cover",
+      "artist": "nil-avatar",
+      "coverURLString": "https://covalink.cn.evil.test/covers/recent-3.png"
+    }
+  ]
+}

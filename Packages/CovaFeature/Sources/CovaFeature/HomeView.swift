@@ -86,7 +86,7 @@ public struct HomeView: View {
                             CovaListRow(
                                 title: track.titleCn ?? track.title,
                                 subtitle: "\(track.artistNameCn ?? track.artist.name) · \(track.scenes.joined(separator: "/"))",
-                                artwork: CovaArtwork(url: URL(string: track.cover), title: track.title)
+                                artwork: CovaArtwork(resolution: HomeArtwork.cover(track), title: track.title)
                             ) {
                                 Text(track.vocalType).font(CovaType.caption).foregroundStyle(CovaColor.muted)
                             } action: {
@@ -182,7 +182,7 @@ public struct HomeView: View {
                     CovaListRow(
                         title: track.title,
                         subtitle: track.artist,
-                        artwork: CovaArtwork(url: URL(string: track.coverURLString ?? ""), title: track.title)
+                        artwork: CovaArtwork(resolution: HomeArtwork.recentCover(track), title: track.title)
                     ) {
                         Image(systemName: "play.circle").foregroundStyle(CovaColor.muted)
                             .accessibilityHidden(true)
@@ -235,7 +235,7 @@ public struct PlaylistCard: View {
     public var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: CovaSpace.sm) {
-                CovaArtwork(url: URL(string: playlist.cover ?? playlist.coverUrl ?? ""), title: playlist.title)
+                CovaArtwork(resolution: HomeArtwork.playlistCover(playlist), title: playlist.title)
                     .frame(width: 148, height: 148)
                     .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
                 Text(playlist.titleCn ?? playlist.title).font(CovaType.headline).foregroundStyle(CovaColor.fg).lineLimit(1)
@@ -244,5 +244,34 @@ public struct PlaylistCard: View {
             .frame(width: 148)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - 美术腿（R18-2）
+
+/// 01 屏的三条封面腿：场景精选 `track.cover`、继续聆听 `recent.coverURLString`、
+/// 推荐歌单 `playlist.cover`/`coverUrl`。
+///
+/// 判据一律在 `CovaArtworkResolution`（CovaUI 唯一裁决面）：本屏只回答「哪个字段进哪个槽」。
+/// 线上事实（2026-09-25 只读核对，见 D23 名单补充）：`GET /api/tracks` 内嵌的 `artist.avatar`
+/// 是**站内相对**（20 行里 11 行相对 / 9 行没有），`GET /api/user-playlists` 的 `coverUrl` /
+/// `imageUrl` 是**站内相对 + 带查询串** —— 相对串没有 scheme，直接 `URL(string:)` 交给
+/// `CovaArtworkCache.fetch` 就是出口判定为假 ⇒ 一次请求都不发、只剩占位（R16-1 同族）。
+/// 三条腿因此一律先裁决再交图。
+enum HomeArtwork {
+    static func cover(_ track: TrackDto) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValue: track.cover)
+    }
+
+    /// 继续聆听：账里存的是 `item.coverURL?.value.absoluteString`（`AppSession` 写入时已过
+    /// `resolveMediaURL`，见 `AppSession.swift:473`），形态是**绝对 + 可能带查询** ⇒
+    /// 这条腿同样先裁决再交图，不因"是本机自己写的"而免检。
+    static func recentCover(_ track: RecentTrack) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValue: track.coverURLString)
+    }
+
+    /// 歌单图有两个候选字段：`cover` 与 `coverUrl`（先到的**非空**值赢）。
+    static func playlistCover(_ playlist: PlaylistDto) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValues: [playlist.cover, playlist.coverUrl])
     }
 }

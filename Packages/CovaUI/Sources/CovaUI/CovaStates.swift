@@ -37,6 +37,108 @@ private final class CovaArtworkEgressGuard: NSObject, URLSessionTaskDelegate, @u
     }
 }
 
+// MARK: - 美术腿的唯一裁决面（D23 / R18-2）
+
+/// 服务端**美术原文**（`artist.avatar` / `track.cover` / `playlist.coverUrl` /
+/// `coverMedia.imageUrl` / 本机 `recent.coverURLString`…）→ 三件**互相可分辨**的事实之一。
+///
+/// 为什么这一层必须有它（这是 R16-1 家族在这一层的**第二条** live 缺陷，R18-2）：
+/// 2026-09-25 本仓只读复核 `GET /api/artists` —— 13 行里 **12 行的 `artist.avatar` 是站内相对路径**
+/// （剩下 1 行是封面桶绝对地址）；`GET /api/tracks` 20 行里 `cover` 20/20 是封面桶绝对地址，
+/// 而**内嵌**的 `artist.avatar` 是 11 行站内相对 + 9 行没有。另按 `docs/decisions.md` §S补充3
+/// 的第 18 轮实测（测试账号，匿名打同一端点是 401，本仓复现不了原文）：
+/// `GET /api/user-playlists` 的 `coverUrl` / `imageUrl` 是**站内相对且带查询串**。
+/// 而各条美术腿原先直接 `URL(string: 服务端原文)` 交给 `CovaArtwork`：相对串没有 scheme ⇒
+/// `CovaArtworkCache.fetch` 的出口判定为假 ⇒ **一次请求都不发**，只留下一张音符占位 ——
+/// 没 error、没日志，用户唯一能看到的是"图没出来"。
+///
+/// 本类型**不新增任何判据**，只把 CovaCore 已有的三道按顺序接起来，UI 层因此不可能写歪：
+/// · `CovaEnvironment.resolveMediaURL`：站内相对补成生产 origin，查询串**逐字节**带走（R17-6）；
+/// · `CovaEnvironment.isSanctionedMediaURL`：生产出口 ∪ 许可名单存储主机
+///   （名单只在 `CovaEnvironment.sanctionedStorageBuckets` 一处定义）；
+/// · `CovaEnvironment.egressHostLabel`：拒绝时点名的那台 host（D23③，与音频腿/跳转腿同一口径，
+///   取不出 host 时同样是 `unnameableHostLabel` 而不是整串地址）。
+///
+/// 拒绝必须**看得见是哪一台 host**（D23③）：桶名或存储区一变，这里的文案就是那条故障的
+/// 唯一可定位线索 —— 而不是又一张悄悄出现的占位图。
+public enum CovaArtworkResolution: Equatable, Sendable {
+    /// 服务端这一行**没给**美术（nil / 空串）⇒ 占位是**正确**行为，不是故障。
+    case absent
+    /// 有可出站的地址：站内相对已补成生产 origin、查询串原样保留、host 在名单内。
+    case resolved(URL)
+    /// 服务端**给了**一个不可出站的地址：非名单 host、`http://`、协议相对 `//host/x`、
+    /// userinfo 逃逸 `https://covalink.cn@evil.test/`（host 如实报 `evil.test`）——
+    /// 点名那一台 host（只有 host：path / query / userinfo 一概不带，硬边界 3）。
+    case refused(host: String)
+
+    /// 美术腿的正路：服务端原文 → 裁决结果。
+    /// nil 与空串都是「这一行没给图」⇒ `.absent`（占位是正确答案，不是故障）。
+    public init(serverValue raw: String?) {
+        guard let raw, raw.isEmpty == false else {
+            self = .absent
+            return
+        }
+        // 第一道：形状与补全（相对→生产 origin，查询逐字节；非法形态一律 nil）。
+        guard let url = CovaEnvironment.resolveMediaURL(raw) else {
+            self = .refused(host: Self.hostLabel(of: raw))
+            return
+        }
+        // 第二道：出口名单（与 `CovaArtworkCache.fetch` 同一函数，这里只是把它提前到
+        // **发起之前**并给出可读结论；`fetch` 里那道兜底原样保留，不拆）。
+        guard CovaEnvironment.isSanctionedMediaURL(url) else {
+            self = .refused(host: Self.hostLabel(of: url.absoluteString))
+            return
+        }
+        self = .resolved(url)
+    }
+
+    /// 同一张图的**多个候选字段**按顺序裁决（歌单图在线上被写在 `cover` / `coverUrl` /
+    /// `coverMedia.imageUrl` 三处，同一行未必三处都有）。
+    ///
+    /// 取第一个**非空**原文再判一次：空串在这里当"没给"处理，好让后面那个真值有机会出现 ——
+    /// 这是原 `??` 链的一个真实失效面（`cover == ""` 会把 `coverUrl` 挡掉，图就此空白且无声）。
+    public init(serverValues raws: [String?]) {
+        guard let raw = raws.first(where: { $0?.isEmpty == false }) else {
+            self = .absent
+            return
+        }
+        self.init(serverValue: raw)
+    }
+
+    /// 上游已经解析好的地址（播放器 `item.coverURL?.value` 那一类腿）：**同一条名单判据**，
+    /// 不因"已经是个 URL"就免检 —— 否则第二条静默占位通道就从这里长回来。
+    public init(resolvedURL url: URL?) {
+        guard let url else {
+            self = .absent
+            return
+        }
+        self = CovaEnvironment.isSanctionedMediaURL(url)
+            ? .resolved(url)
+            : .refused(host: Self.hostLabel(of: url.absoluteString))
+    }
+
+    /// 可直接取图的地址；`.absent` / `.refused` 为 nil（调用方不得拿它去发请求）。
+    public var url: URL? {
+        if case .resolved(let url) = self { return url }
+        return nil
+    }
+
+    /// 拒绝时给人读的那一句：分支 + host，**只有**这些。
+    /// 没有 path、没有查询串、没有 userinfo —— 签名可能住在其中任何一处（硬边界 3）。
+    public var refusalMessage: String? {
+        guard case .refused(let host) = self else { return nil }
+        return "美术地址不可出站：\(host) 不是生产出口也不在许可名单的存储主机内（该次请求未发出）"
+    }
+
+    /// 拒绝时要点名的那一台主机：一律交回 `CovaEnvironment.egressHostLabel`（D23③ 的唯一口径 ——
+    /// 只有小写 host，path / query / userinfo 一概不带；取不出 host 即 `unnameableHostLabel`）。
+    /// **绝不**回退成整串地址：签名就住在查询里（硬边界 3）。
+    private static func hostLabel(of raw: String) -> String {
+        guard let url = URL(string: raw) else { return CovaEnvironment.unnameableHostLabel }
+        return CovaEnvironment.egressHostLabel(of: url)
+    }
+}
+
 /// 封面位图的**内存缓存**（PLAN M3：首屏与滚动 60fps）。
 ///
 /// 原实现没有缓存：`CovaArtwork` 每次在列表里重新出现就重跑一次 `.task` ⇒
@@ -94,9 +196,12 @@ enum CovaArtworkCache {
 
     /// 下载 + 解码都在**非主 actor** 上做；主 actor 只碰缓存与最终位图。
     ///
-    /// 名单之外的地址返回 nil（UI 回退到音符占位），**不发一次请求** —— 不是红屏：
+    /// 名单之外的地址返回 nil，**不发一次请求** —— 不是红屏：
     /// 封面今天就是跨源在 COS 上，把「唯一出口」照字面执行成「只准 covalink.cn」
     /// 会让每一张封花都失败（那是把守卫写错，不是把策略写对；见 D23 的理由列）。
+    ///
+    /// 这一道是**第二层**：发起之前该拒的 host 由 `CovaArtworkResolution` 裁决并让 UI 说得出口
+    /// （R18-2），这里只保证「绕过裁决面的那条腿」（`init(url:)` 直接喂地址）同样出不了网。
     @MainActor static func fetch(_ url: URL) async -> UIImage? {
         if let hit = image(for: url) { return hit }
         guard isSanctioned(url) else { return nil }
@@ -126,16 +231,39 @@ enum CovaArtworkCache {
 }
 
 /// 封面图（异步加载 + 占位 + 失败回退）。**签名 URL 不回显**：日志与无障碍标签只含曲目名。
+///
+/// 两条入口，同一个裁决面（R18-2）：
+/// · `init(resolution:title:)` —— 服务端**原文**腿（封面 / 头像 / 歌单图）走这里，
+///   进位前已由 `CovaArtworkResolution` 补全 + 名单裁决（各屏的腿在 `CovaFeature`）；
+/// · `init(url:title:)` —— 上游已解析成 `URL` 的腿（播放器封面）走这里，
+///   但**同样过一遍名单判据**（`CovaArtworkResolution.init(resolvedURL:)`），不免检。
+///
+/// 「没给图」与「给了但不可出站」是**两种不同**的占位：前者是正确行为（音符），
+/// 后者是一次看得见的出口拒绝（警示三角 + 无障碍标签点名 host）。
 public struct CovaArtwork: View {
-    private let url: URL?
+    private let resolution: CovaArtworkResolution
     private let title: String
-    @State private var phase: Phase = .loading
+    @State private var phase: Phase
 
-    private enum Phase { case loading, loaded(Image), failed }
+    /// `.placeholder` = 「这一行没有可显示的封面」（服务端没给，或给了但取不到）；
+    /// `.refused` = 「给了一个不可出站的地址」—— 两类占位分家就是 R18-2 要的可见性。
+    private enum Phase { case loading, loaded(Image), placeholder, refused }
 
-    public init(url: URL?, title: String) {
-        self.url = url
+    public init(resolution: CovaArtworkResolution, title: String) {
+        self.resolution = resolution
         self.title = title
+        // 只有「还要去取」的那一档才进 `.loading`：缺图与拒绝在构造时就已定案，
+        // 让它们先闪一下转圈再变占位，读起来像"在取但很慢"。
+        switch resolution {
+        case .resolved: _phase = State(initialValue: .loading)
+        case .absent: _phase = State(initialValue: .placeholder)
+        case .refused: _phase = State(initialValue: .refused)
+        }
+    }
+
+    /// 上游已解析成 `URL` 的腿（播放器 `coverURL`）：**同一条名单判据**，不免检。
+    public init(url: URL?, title: String) {
+        self.init(resolution: CovaArtworkResolution(resolvedURL: url), title: title)
     }
 
     public var body: some View {
@@ -147,29 +275,48 @@ public struct CovaArtwork: View {
                 ProgressView().controlSize(.small)
             case .loaded(let image):
                 image.resizable().scaledToFill()
-            case .failed:
+            case .placeholder:
                 Image(systemName: "music.note")
+                    .foregroundStyle(CovaColor.muted)
+            case .refused:
+                // 与 `.placeholder` 分家的唯一理由：出口拒绝是**故障**，
+                // 不该长得像"这首本来就没封面"。
+                Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(CovaColor.muted)
             }
         }
-        .accessibilityLabel(title)
-        .task(id: url) { await load() }
+        .accessibilityLabel(accessibilityText)
+        .task(id: resolution) { await load() }
+    }
+
+    /// 拒绝时把「是哪一台 host」并进无障碍标签（VoiceOver 与人工走查都读得到）；
+    /// 其余只报曲名 —— 地址本身（含查询里的签名）一次都不回显。
+    private var accessibilityText: String {
+        guard case .refused = phase, let message = resolution.refusalMessage else { return title }
+        return "\(title)：\(message)"
     }
 
     private func load() async {
-        guard let url else { phase = .failed; return }
-        if let cached = CovaArtworkCache.image(for: url) {
-            phase = .loaded(Image(uiImage: cached))
-            return
+        switch resolution {
+        case .absent:
+            phase = .placeholder
+        case .refused:
+            // 出口拒绝不重试：重放只会把同一条裁决再判一次，且**一次请求都不该发**。
+            phase = .refused
+        case .resolved(let url):
+            if let cached = CovaArtworkCache.image(for: url) {
+                phase = .loaded(Image(uiImage: cached))
+                return
+            }
+            phase = .loading
+            let image = await CovaArtworkCache.fetch(url)
+            // 被取消**不是失败**（`.task(id: resolution)` 换封面时就会取消上一轮）：
+            // 这里若把取消写成占位，列表换绑的瞬间会闪一下音符。
+            guard !Task.isCancelled else { return }
+            guard let image else { phase = .placeholder; return }
+            CovaArtworkCache.insert(image, for: url)
+            phase = .loaded(Image(uiImage: image))
         }
-        phase = .loading
-        let image = await CovaArtworkCache.fetch(url)
-        // 被取消**不是失败**（`.task(id: url)` 换封面时就会取消上一轮）：
-        // 这里若把取消写成 `.failed`，列表换绑的瞬间会闪一下音符占位。
-        guard !Task.isCancelled else { return }
-        guard let image else { phase = .failed; return }
-        CovaArtworkCache.insert(image, for: url)
-        phase = .loaded(Image(uiImage: image))
     }
 }
 

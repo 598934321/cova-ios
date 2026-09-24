@@ -122,7 +122,7 @@ public struct LibraryView: View {
                         CovaListRow(
                             title: track.titleCn ?? track.title,
                             subtitle: "\(track.artistNameCn ?? track.artist.name) · \(Int(track.duration))s · BPM \(track.bpm)",
-                            artwork: CovaArtwork(url: URL(string: track.cover), title: track.title)
+                            artwork: CovaArtwork(resolution: LibraryArtwork.cover(track), title: track.title)
                         ) {
                             let on = session.favoriteIDs.contains(track.id)
                             Button {
@@ -199,5 +199,20 @@ public struct LibraryView: View {
             phase = .ready   // 追加分页失败不清空已有列表
             session.showToast("加载更多失败，可重试", isError: true)
         }
+    }
+}
+
+// MARK: - 美术腿（R18-2）
+
+/// 03 屏曲库行的封面腿（`track.cover`）。
+///
+/// 判据在 `CovaArtworkResolution`（CovaUI 唯一裁决面），这里只回答「哪个字段进哪个槽」。
+/// 线上实测（2026-09-25 只读核对，见 D23 的名单补充）：`GET /api/tracks` 的 `cover` 是
+/// **绝对地址且 20/20 落在封面桶**，而同一份响应里**内嵌**的 `artist.avatar` 是 11 行站内相对
+/// + 9 行没有 —— 同一屏两种形态并存，所以每一腿都得先裁决再交图，不能按"这张一直是绝对"押注。
+/// 押错的代价落在**分页列表**上：一屏封面全空，而画面读起来只是"没图"（R16-1 同族）。
+enum LibraryArtwork {
+    static func cover(_ track: TrackDto) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValue: track.cover)
     }
 }
