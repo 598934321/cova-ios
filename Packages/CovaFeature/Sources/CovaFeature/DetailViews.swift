@@ -14,6 +14,8 @@ struct TrackSheetID: Identifiable, Equatable { let id: String }
 /// 「中性未选态」而不是「未收藏」。
 public struct PlaylistDetailView: View {
     @Environment(AppSession.self) private var session
+    /// 06 §Dynamic Type：AX 档下简介折叠行数由 3 放宽到 5（放大后 3 行装不下原来 3 行的信息）。
+    @Environment(\.covaAXLayout) private var axLayout
     private let playlistID: String
     @State private var phase: Phase = .loading
     @State private var playlist: PlaylistDto?
@@ -55,7 +57,7 @@ public struct PlaylistDetailView: View {
                 VStack(alignment: .leading, spacing: CovaSpace.xs) {
                     Text(description)
                         .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
-                        .lineLimit(descriptionExpanded ? nil : 3)
+                        .lineLimit(descriptionExpanded ? nil : (axLayout ? 5 : 3))
                     Button(descriptionExpanded ? "收起" : "展开") {
                         descriptionExpanded.toggle()
                     }
