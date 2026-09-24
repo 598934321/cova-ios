@@ -185,8 +185,26 @@ public struct CovaRootView: View {
     private var drawer: some View {
         if session.drawerOpen {
             VStack(alignment: .leading, spacing: CovaSpace.lg) {
-                Text("Cova").font(CovaType.title).foregroundStyle(CovaColor.accent)
-                ForEach(["收藏", "我的歌单", "我的创作", "下载管理", "会员", "设置"], id: \.self) { item in
+                HStack {
+                    Text("Cova").font(CovaType.title).foregroundStyle(CovaColor.accent)
+                    Spacer()
+                    // 04 §3.A：关闭按钮，触控区 ≥44pt（17pt 的图标本身不配当热区）。
+                    Button { session.drawerOpen = false } label: {
+                        Image(systemName: "xmark")
+                            .font(CovaType.headline)
+                            .foregroundStyle(CovaColor.secondary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("关闭抽屉")
+                }
+                .padding(.bottom, CovaSpace.md)
+                .overlay(alignment: .bottom) { Rectangle().fill(CovaColor.line).frame(height: 1) }
+                // 04 §3.D：「已下载」项在 D12 合规放行前**整项不渲染**（不是置灰、不是禁用）。
+                // 此前抽屉里留着它、而 15 设置里同一行按 D12 不渲染 —— 两处口径打架（HANDOVER D′#10），
+                // 按 spec 收敛成"都不出现"。
+                ForEach(["收藏", "我的歌单", "我的创作", "会员", "设置"], id: \.self) { item in
                     Button {
                         session.drawerOpen = false
                         switch item {
