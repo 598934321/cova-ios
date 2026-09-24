@@ -2163,10 +2163,20 @@ final class PlaybackCoordinatorTests: XCTestCase {
         )
     }
 
-    /// 第 13 轮 R13-3（**Major，证据完整性**）：m8（把「并入出声后复核」的归属那一半拆掉）
-    /// 在全量 405 条里 0 失败 ⇒ 主张 4 的闭合没有永久用例背书。本条就是那条背书：
-    /// 归属在 `engine.play()` 的挂起里被换掉时，重播腿既不能出声、
+    /// 第 13 轮 R13-3（**Major，证据完整性**）：m8（把**重播腿**出声后那条合并复核里的「归属」
+    /// 一半拆掉，`apply(.repeated)` 的 `engineCommandGeneration == ownedGeneration`）在全量
+    /// 405 条里 0 失败 ⇒ 主张 4 的闭合没有永久用例背书。本条就是那条背书：
+    /// 归属在 `engine.play()` 的挂起里被换掉时，重播腿既不能声称 `.playing`、
     /// 也不能去 `closeEpisode` + 再报一次（那正是 R11-6 的集次拆分）。
+    ///
+    /// **本条钉的是重播腿那一道，不是装载腿的 `loadCurrent`**（第 19 轮 R14-1 把两者分清）：
+    /// 这里断言的靶子是**上报次数**，装载腿里那道同名归属闸（`guard engineCommandGeneration
+    /// == generation`，在 `engine.play()` 与 `engine.setRate` 之间）拆掉后本条照旧全绿 ——
+    /// 装载腿那一寸由 `testSupersededLoadLegMustNotIssueRateCommandAfterItsPlayLands` 钉。
+    /// 单元素队列 + `start()` 重装同一件时，台账腿 (a)/(b)/(c) 全部仍然成立
+    /// （引擎确实装着被宣称的那一项、意图为真），所以「归属」这一半**不可被台账替代**；
+    /// 而在装载腿那里台账与归属同值同写（`inFlightLoad` 与 `engineCommandGeneration` 一起落），
+    /// 台账腿确实蕴含归属 —— 两处不是一道闸的两个名字。
     func testPlayLandingAfterOwnershipChangeMustNotReportSecondEpisode() async {
         let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 0, gatedPlayFromTurn: 2)
         let submitter = StubPlayReportSubmitter()
@@ -2185,6 +2195,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
         let restarted = Task { await subject.start() }
         _ = await restarted.value
         let submissionsBefore = await submitter.callCount
+        let callsBeforeRelease = engine.calls.count
         engine.releasePlay()
         _ = await replay.value
 
@@ -2193,8 +2204,51 @@ final class PlaybackCoordinatorTests: XCTestCase {
             submissionsAfter, submissionsBefore,
             "m8 的对手测试：归属已换的重播腿不得 closeEpisode + 再起播上报（R11-6）"
         )
-        let tail = Array(engine.calls.dropFirst(engine.calls.count))
+        // 第 19 轮 R14-1 顺手补的正经断言：旧写法 `dropFirst(engine.calls.count)` 拿的是
+        // **当下**的长度，恒等于空数组 —— 那是一行永远不做事的假覆盖（盲区 #21）。
+        let tail = Array(engine.calls.dropFirst(callsBeforeRelease))
         XCTAssertTrue(tail.isEmpty, "本腿恢复之后对引擎零操作；tail=\(tail)")
+    }
+
+    /// R14-1（第 14 轮，第 19 批）：`loadCurrent` 里那道归属闸（`await engine.play()` 与
+    /// `await engine.setRate(playbackRate)` **之间**的 `guard engineCommandGeneration == generation`）
+    /// 此前**零对手测试** —— 全量 409 条里拆掉它 0 失败（本批实测，见 `test-count-baseline.env`）。
+    /// 它挡的事实台账与 `continuationIsCurrent` 都覆盖不到：**出声命令已落地、速率命令还没发出**
+    /// 的那一寸，此时引擎已归新一代持有。放任陈旧腿继续 ⇒ 在第 18 批的新引擎契约下
+    /// `setRate` 会往**新代际的待用槽**里写上一个代际的速率（正是 R14-2 那类跨持有者泄漏的
+    /// 另一个入口）。断言靶子因此是**引擎命令计数**（上一条那类的上报靶子在这道闸上恒为真）。
+    func testSupersededLoadLegMustNotIssueRateCommandAfterItsPlayLands() async {
+        // 第 2 次 `play` 真挂起 = b 那一代装载的出声命令（第 1 次是 a 的正常起播）。
+        let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 0, gatedPlayFromTurn: 2)
+        let subject = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: nowPlaying)
+        _ = await subject.start(items: TestItems.makeMany(["a", "b", "c"]), at: 0)
+
+        let loadingB = Task { await subject.start(at: 1) }
+        await assertSignalReached(
+            target: 1, counter: engine.enteredPlay, what: "b 那一代装载的 play 已进到引擎并挂起"
+        )
+        // 挂起窗口里用户再换一件：c 那一代认领引擎命令权（整队替换先作废，再重新认领）。
+        let loadingC = Task { await subject.start(at: 2) }
+        _ = await loadingC.value
+        let ratesAfterNewOwner = engine.count(of: "setRate")
+        let callsBeforeRelease = engine.calls.count
+
+        engine.releasePlay()
+        _ = await loadingB.value
+
+        XCTAssertEqual(
+            ratesAfterNewOwner, 2,
+            "前置：a 与 c 各自起播时真的下过一次速率命令（靶子是活的，不是零命令下的恒真）；calls=\(engine.calls)"
+        )
+        XCTAssertEqual(
+            engine.count(of: "setRate"), ratesAfterNewOwner,
+            "R14-1：归属已换的装载腿不得再对别人的引擎命令速率；calls=\(engine.calls)"
+        )
+        let tail = Array(engine.calls.dropFirst(callsBeforeRelease))
+        XCTAssertTrue(tail.isEmpty, "被取代的那条装载腿在 play 落地之后对引擎零操作；tail=\(tail)")
+        let snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.item?.id, "c", "收尾：引擎与账本都归新一代")
+        XCTAssertEqual(snap.state, .playing)
     }
 
     /// R13-1 的第二条腿：`resume()` 在 `engine.play()` 挂起里被换件装载取代 ⇒
