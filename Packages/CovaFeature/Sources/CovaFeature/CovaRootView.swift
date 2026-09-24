@@ -85,6 +85,9 @@ public struct CovaRootView: View {
             if let trackID = Self.previewTrackID() { session.detailTrackID = trackID }
         }
         .overlay(alignment: .top) { toastOverlay }
+        .onReceive(NotificationCenter.default.publisher(for: StudioNotifier.didTap)) { tap in
+            session.handleNotificationTap(userInfo: tap.userInfo ?? [:])
+        }
     }
 
     private var mainShell: some View {

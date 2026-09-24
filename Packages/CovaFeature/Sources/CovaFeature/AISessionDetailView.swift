@@ -387,8 +387,17 @@ public struct AISessionDetailView: View {
         do {
             // 用户主动点的这一次 = 一次新的逻辑操作 ⇒ 由服务侧生成新 token；
             // 本屏**不做自动重放**（design 09：hash 失配后不得自动重发写操作）。
-            _ = try await session.studio.startPlan(sessionID: sessionID, plan: plan)
+            let response = try await session.studio.startPlan(sessionID: sessionID, plan: plan)
             append(.system("已提交，正在排产"))
+            // 授权时机：spec 明令**只在开始制作成功之后**索权；被拒不再反复索。
+            if await StudioNotifier.requestPermissionAfterPlanStart() {
+                await StudioNotifier.scheduleFallback(
+                    sessionID: sessionID,
+                    jobID: response.job.id,
+                    planCardID: plan.planCardId,
+                    afterMinutes: 30
+                )
+            }
             if let cards = try? await session.studio.planCards(sessionID: sessionID) { plans = cards }
             degradeLabel = "仍在处理刚才那句"
         } catch {

@@ -108,7 +108,20 @@ public final class AppSession {
         }
     }
 
+    /// 点通知进来：只信 `sessionId`；缺失/不合法 ⇒ 回落首页，**不**猜一条会话路由。
+    public func handleNotificationTap(userInfo: [AnyHashable: Any]) {
+        path = []
+        guard let sessionID = StudioNotificationPlanner.route(from: userInfo) else {
+            tab = .home
+            return
+        }
+        tab = .home
+        path.append(.aiSession(sessionID))
+    }
+
     public func signOut() async {
+        // 登出先把 18 的待发/已发通知与角标一并撤掉，再清本机账（spec 明令）。
+        await StudioNotifier.revokeAll()
         try? await auth.signOut()
         await player.bindSession(PlaybackSessionContext(owner: nil, generation: .initial))
         authPhase = .guest
