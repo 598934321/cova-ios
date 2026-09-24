@@ -103,18 +103,40 @@ final class PrivateAudioFetcherTests: XCTestCase {
         XCTAssertTrue(PrivateAudioPath.isInside(directory: root, url: URL(fileURLWithPath: "/tmp/cova/root/x")))
     }
 
-    func testFileNameCarriesOnlyItemIDAndGeneration() {
+    func testFileNameCarriesItemIDGenerationAndContentKindOnly() {
         let name = PrivateAudioPath.fileName(itemID: "track42", generation: SessionGeneration(value: 7))
-        XCTAssertEqual(name, "track42@g7.covaud")
+        // R16-1b：形态段进文件名 —— 旧的 `track42@g7.covaud` 没有形态，换键之后
+        // 那些对象再也命中不了（正是「购买后仍播旧预览段」的那一步），由代次扫描负责清掉。
+        XCTAssertEqual(name, "track42#full@g7.covaud")
         XCTAssertFalse(name.contains("covalink"))
         XCTAssertFalse(name.contains("sig"))
         XCTAssertEqual(PrivateAudioPath.generation(infileName: name), SessionGeneration(value: 7))
+
+        // 三种形态 = 三个对象名（同一 itemID / 同一代次也不共用条目）。
+        let names = PrivateAudioContentKind.allCases.map {
+            PrivateAudioPath.fileName(itemID: "track42", generation: SessionGeneration(value: 7), kind: $0)
+        }
+        XCTAssertEqual(Set(names).count, PrivateAudioContentKind.allCases.count, "形态必须进身份：\(names)")
+        XCTAssertEqual(
+            PrivateAudioPath.fileName(itemID: "t", generation: SessionGeneration(value: 1), kind: .preview),
+            "t#preview@g1.covaud"
+        )
+        // 代次解析不许被形态段干扰：解析不出来 = `purgeStale` 扫不到 = 盘上留孤儿音频。
+        for kind in PrivateAudioContentKind.allCases {
+            let generated = PrivateAudioPath.fileName(
+                itemID: "t", generation: SessionGeneration(value: 9), kind: kind
+            )
+            XCTAssertEqual(PrivateAudioPath.generation(infileName: generated), SessionGeneration(value: 9))
+        }
     }
 
     func testGenerationParsingFailsClosedOnForeignNames() {
         XCTAssertNil(PrivateAudioPath.generation(infileName: "random.bin"))
         XCTAssertNil(PrivateAudioPath.generation(infileName: "one@g.covaud"))
         XCTAssertNil(PrivateAudioPath.generation(infileName: "one@gX.covaud"))
+        // 换键（R16-1b）之前命名的旧对象照样要能被解析出来，否则代次清理扫不到它们，
+        // 「形态段之前的旧缓存」就永久留在沙盒里。
+        XCTAssertEqual(PrivateAudioPath.generation(infileName: "one@g3.covaud"), SessionGeneration(value: 3))
     }
 
     func testFileURLRejectsUnsafeIdentifiersAndOwners() {
@@ -453,6 +475,100 @@ final class PrivateAudioFetcherTests: XCTestCase {
     }
 
     // MARK: - 源准备器（协调器装载前的 D7 关口）
+
+    /// R16-1b（Defect B）：库曲 `audioUrl` 线上指向**同一个**出口
+    /// `/api/tracks/<id>/preview-stream`（`web` 仓 `src/lib/api-dto.ts:135-137` +
+    /// `preview-stream/route.ts:47-55`，只读核对于 2026-09-24）：未授权 → 200 裁剪字节段，
+    /// 已授权 → 302 到别家 host。曲目 DTO 里**没有任何**字段说明本次字节是预览段还是整曲
+    /// （实测：`duration` 178.84s、缓存对象却是 19.56s 的预览段），也没有长度。
+    /// ⇒ 调用方无法判别内容形态时，缓存在类型上就不能被静默复用 ——
+    /// 否则「买完之后永远在听买之前那段预览」，且这条路径连一次失败都不报。
+    func testLibraryItemWithUndistinguishableContentNeverReusesCachedFile() async {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let transport = StubPrivateAudioTransport()
+        let fetcher = makeFetcher(in: directory, transport: transport)
+        let item = TestItems.make(
+            "lib",
+            kind: .libraryTrack,
+            source: .bearerRequired(TestItems.productionAudioURL("/api/tracks/lib/preview-stream"))
+        )
+        _ = await fetcher.prepareSource(for: item, session: Self.authenticatedContext())
+        let callsAfterFirst = await transport.callCount
+        _ = await fetcher.prepareSource(for: item, session: Self.authenticatedContext())
+        let callsAfterSecond = await transport.callCount
+        XCTAssertEqual(callsAfterFirst, 1, "首次装载必须真实取回")
+        XCTAssertEqual(
+            callsAfterSecond, 2,
+            "内容形态不可判别 ⇒ 每次装载都重新取回，旧预览段不得被当作可用缓存交付（R16-1b）"
+        )
+    }
+
+    /// 对照（不许把修法扩成「缓存全废」）：调用方能声明「这就是完整资产」的条目
+    /// （生成候选 / 笔记音频）照旧复用同一份缓存字节。
+    func testDeclaredFullItemStillReusesCachedFileAcrossLoads() async {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let transport = StubPrivateAudioTransport()
+        let fetcher = makeFetcher(in: directory, transport: transport)
+        let item = TestItems.make(
+            "cand",
+            kind: .privateCandidate,
+            source: .bearerRequired(TestItems.productionAudioURL("/api/media/private/cand.m4a?sig=aa"))
+        )
+        _ = await fetcher.prepareSource(for: item, session: Self.authenticatedContext())
+        _ = await fetcher.prepareSource(for: item, session: Self.authenticatedContext())
+        let calls = await transport.callCount
+        XCTAssertEqual(calls, 1, "内容形态已声明的条目必须继续复用缓存")
+    }
+
+    /// 裁决面本身（纯函数）：形态由**条目性质**决定，不由地址决定 ——
+    /// 地址里根本没有这个信息（同一端点两种形态），把它当地址属性就是又一次猜 host。
+    func testContentKindIsDecidedByItemKind() throws {
+        let library = TestItems.make("lib", kind: .libraryTrack)
+        let candidate = TestItems.make("cand", kind: .privateCandidate)
+        XCTAssertEqual(PrivateAudioFetcher.contentKind(for: library), .unspecified)
+        XCTAssertEqual(PrivateAudioFetcher.contentKind(for: candidate), .full)
+        // 只有「已声明形态」才允许复用缓存。
+        XCTAssertTrue(PrivateAudioContentKind.full.allowsCacheReuse)
+        XCTAssertTrue(PrivateAudioContentKind.preview.allowsCacheReuse)
+        XCTAssertFalse(
+            PrivateAudioContentKind.unspecified.allowsCacheReuse,
+            "不可判别 = 不可复用（这条是整个缺陷 B 的落点）"
+        )
+    }
+
+    /// 缓存身份必须按形态分件：同一 itemID、同一代次、同一来源地址，`.preview` 与 `.full`
+    /// 拿到的是**两次真实取回、两份对象** —— 旧形态下第二次请求会把第一次的预览段直接交出。
+    func testPreviewAndFullContentKindsNeverShareCacheEntry() async {
+        let directory = TemporaryDirectory()
+        defer { directory.remove() }
+        let transport = StubPrivateAudioTransport()
+        let fetcher = makeFetcher(in: directory, transport: transport)
+        let source = try! Self.privateSource("/api/media/private/one.m4a?sig=aa")
+        let context = Self.authenticatedContext()
+
+        let preview = await fetcher.localizedURL(
+            for: PrivateAudioRequest(itemID: "one", source: source, session: context, contentKind: .preview)
+        )
+        guard case .success = preview else { return XCTFail("预览段应取回成功：\(preview)") }
+        let callsAfterPreview = await transport.callCount
+
+        let full = await fetcher.localizedURL(
+            for: PrivateAudioRequest(itemID: "one", source: source, session: context, contentKind: .full)
+        )
+        guard case .success(let fullURL) = full else { return XCTFail("整曲应取回成功：\(full)") }
+        let callsAfterFull = await transport.callCount
+
+        XCTAssertEqual(callsAfterPreview, 1)
+        XCTAssertEqual(callsAfterFull, 2, "形态换了就必须重新取回：两种形态不得共用一条缓存条目")
+        XCTAssertNotEqual(
+            fullURL.value.lastPathComponent, "one#preview@g1.covaud",
+            "整曲请求交付的对象不能是预览段那一份"
+        )
+        let count = await fetcher.cachedFileCount()
+        XCTAssertEqual(count, 2, "两条形态各自一份对象")
+    }
 
     func testPrepareSourcePassesThroughPlayableItemsAndLocalizesBearerOnes() async {
         let directory = TemporaryDirectory()

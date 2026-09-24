@@ -1,6 +1,40 @@
 import CovaCore
 import Foundation
 
+/// 缓存对象的**内容形态**（R16-1b：同一条目的「预览段」与「整曲」不是同一份字节）。
+///
+/// 为什么需要一个由调用方声明的形态，而不是从地址里读出来（2026-09-24 只读核对
+/// `web` 仓 `src/lib/api-dto.ts:131-137`、`src/app/api/tracks/[id]/preview-stream/route.ts:47-98`
+/// 与 `src/lib/catalog-audio-url.ts`）：
+/// · 库曲 `audioUrl` 一律是**同一个**站内端点 `/api/tracks/<id>/preview-stream`；
+/// · 未授权 → 200 只发预览时间窗裁剪出的那段字节；已授权 → 302 到整曲桶；
+/// · 曲目 DTO 里**没有**任何长度 / 字节数 / 「预览还是整曲」字段（实测 `duration` 178.84s，
+///   而缓存对象是 19.56s 的预览段）。
+/// ⇒ 客户端手上没有可判别的信息，那就**不许**把「同一条目、同一代次」当成同一份内容：
+/// 形态由调用方显式声明，未声明（`.unspecified`）时缓存复用整条腿关闭。
+/// 旧形态下购买发生后旧预览段会被无限复用，且一次失败都不报 —— 用户听到的永远是试听片段。
+public enum PrivateAudioContentKind: String, Hashable, Sendable, CaseIterable {
+    /// 调用方声明「这就是该条目的完整音频」（生成候选、笔记音频）。可复用缓存。
+    case full
+    /// 服务端裁剪过的预览段（有明确的「这一份只是片段」的来源）。可复用缓存，但与 `.full` 不同件。
+    case preview
+    /// 调用方**无法判别**手里是哪一份（库曲：预览与整曲共用一个端点，且没有长度字段）。
+    /// ⇒ 每次装载都重新取回：宁可多打一次出口，也不把旧预览段当作整曲交付。
+    case unspecified
+
+    /// 参与缓存文件名的形态段（不含地址、host、query、token —— 见 `PrivateAudioPath.fileName`）。
+    var pathToken: String {
+        switch self {
+        case .full: return "full"
+        case .preview: return "preview"
+        case .unspecified: return "unknown"
+        }
+    }
+
+    /// 该形态下缓存对象可否被复用（`.unspecified` = 不可，这是本类型唯一的裁决面）。
+    var allowsCacheReuse: Bool { self != .unspecified }
+}
+
 /// 私有音频取回请求（D7 硬规则的唯一入口形态）。
 ///
 /// 安全：`source` 是 `AudioURL`（不回显 query），`session` 决定 owner 目录与在途作废；
@@ -12,17 +46,21 @@ public struct PrivateAudioRequest: Equatable, Sendable {
     public let session: PlaybackSessionContext
     /// 响应若声明长度，则以此校验完成性（拒绝截断）。
     public let expectedBytes: Int?
+    /// 内容形态：进入缓存身份（同一 itemID / 同一代次下，形态不同 = 不同的两份字节）。
+    public let contentKind: PrivateAudioContentKind
 
     public init(
         itemID: String,
         source: AudioURL,
         session: PlaybackSessionContext,
-        expectedBytes: Int? = nil
+        expectedBytes: Int? = nil,
+        contentKind: PrivateAudioContentKind = .full
     ) {
         self.itemID = itemID
         self.source = source
         self.session = session
         self.expectedBytes = expectedBytes.map { max(0, $0) }
+        self.contentKind = contentKind
     }
 }
 
@@ -79,8 +117,10 @@ public enum PrivateAudioPath {
     public static let temporaryDirectoryName = ".inflight"
     /// 本地文件扩展名（不含任何地址信息）。
     public static let fileExtension = "covaud"
-    /// 代次分隔符：`<itemID>@g<generation>`。
+    /// 代次分隔符：`<itemID>#<形态>@g<generation>`。
     static let generationSeparator = "@g"
+    /// 形态分隔符（R16-1b）：`#` 不在 `PlaybackItem` 的 id 白名单里，因此不可能与 itemID 相撞。
+    static let kindSeparator = "#"
     /// 落盘文件权限位（m12）：只有 owner 可读写 —— 缓存里装的是「仅本人可见」的音频字节，
     /// 组/其它可读位一个都不给。传输层建文件与准备器提交时共用这一个口径。
     public static let fileMode = 0o600
@@ -91,8 +131,9 @@ public enum PrivateAudioPath {
     /// 目录权限位（min-1）：与文件位同口径收紧到「仅 owner 可进入」。
     ///
     /// 旧实现只收了文件位（0600），目录仍是 0755 —— 于是别的进程虽然读不到音频字节，
-    /// 却能 `ls` 出「哪个账号（hex 命名空间）缓存过哪些曲目、在第几代」（文件名本身就是
-    /// `<itemID>@g<generation>`）。元数据泄漏也是泄漏，D7/AGENTS 硬边界 3 不区分这两件事。
+    /// 却能 `ls` 出「哪个账号（hex 命名空间）缓存过哪些曲目、在第几代、是哪一种形态」
+    /// （文件名本身就是 `<itemID>#<形态>@g<generation>`）。元数据泄漏也是泄漏，
+    /// D7/AGENTS 硬边界 3 不区分这两件事。
     public static let directoryMode = 0o700
     /// `directoryMode` 的 `FileAttributeKey` 形态。
     public static var directoryAttributes: [FileAttributeKey: Any] {
@@ -116,12 +157,24 @@ public enum PrivateAudioPath {
         rootDirectory(base: base).appendingPathComponent(temporaryDirectoryName, isDirectory: true)
     }
 
-    /// 文件名：只由 `itemID` 与 generation 构成 —— **不含** host、path、query、token。
-    public static func fileName(itemID: String, generation: SessionGeneration) -> String {
-        itemID + generationSeparator + String(generation.value) + "." + fileExtension
+    /// 文件名：只由 `itemID`、**内容形态** 与 generation 构成 —— 不含 host、path、query、token。
+    ///
+    /// 形态段（R16-1b）是缓存身份的一部分：`<itemID>#full@g3` 与 `<itemID>#preview@g3`
+    /// 是两条不同的字节，永远不可能互相顶替。
+    public static func fileName(
+        itemID: String,
+        generation: SessionGeneration,
+        kind: PrivateAudioContentKind = .full
+    ) -> String {
+        itemID + kindSeparator + kind.pathToken
+            + generationSeparator + String(generation.value) + "." + fileExtension
     }
 
     /// 从文件名解析 generation（解析失败视为「不属于任何在册代次」）。
+    ///
+    /// 形态段住在 `#` 与 `@g` **之间**，所以这里取的尾段仍以代次数字开头 —— 旧命名
+    /// （`<itemID>@g<N>`，R16-1b 之前）照样能解析出来，于是 `purgeStale` 会把换命名前
+    /// 留下的孤儿对象一并扫掉（它们再也无法被任何请求命中，留着就是死字节）。
     public static func generation(infileName name: String) -> SessionGeneration? {
         guard let range = name.range(of: generationSeparator) else { return nil }
         let tail = name[range.upperBound...]
@@ -134,14 +187,16 @@ public enum PrivateAudioPath {
         base: URL,
         owner: PrincipalID,
         itemID: String,
-        generation: SessionGeneration
+        generation: SessionGeneration,
+        kind: PrivateAudioContentKind = .full
     ) throws -> URL {
         try OwnerIdentifier.requireValid(owner)
         try PlaybackItem.validateIdentifier(itemID)
         let root = rootDirectory(base: base).standardizedFileURL
         let directory = ownerDirectory(base: base, owner: owner).standardizedFileURL
         guard isInside(directory: root, url: directory) else { throw PlayerError.pathEscape }
-        let file = directory.appendingPathComponent(fileName(itemID: itemID, generation: generation))
+        let file = directory
+            .appendingPathComponent(fileName(itemID: itemID, generation: generation, kind: kind))
             .standardizedFileURL
         guard isInside(directory: root, url: file) else { throw PlayerError.pathEscape }
         return file

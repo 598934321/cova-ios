@@ -16,11 +16,15 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
     private let baseDirectory: URL
     private let fileManager: FileManager
 
-    /// 在途传输的身份（M7 去重键）：目标路径由这三元组唯一决定，因此它也是「同一份内容」的判据。
+    /// 在途传输的身份（M7 去重键）：目标路径由这**四元组**唯一决定，因此它也是「同一份内容」的判据。
+    ///
+    /// R16-1b：`contentKind` 必须在这一条腿上出现 —— 否则「同一 itemID 的预览段」与
+    /// 「同一 itemID 的整曲」会合流到同一次传输，先发起者的那一份字节被当成另一份交付。
     private struct TransferKey: Hashable {
         let ownerNamespace: String
         let itemID: String
         let generation: UInt64
+        let contentKind: PrivateAudioContentKind
     }
 
     /// 一条在途传输。`token` 用于「只摘掉自己那一条」的收尾 —— 清理会作废整张表，
@@ -108,7 +112,8 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
                 base: baseDirectory,
                 owner: owner,
                 itemID: request.itemID,
-                generation: request.session.generation
+                generation: request.session.generation,
+                kind: request.contentKind
             )
         } catch let error as PlayerError {
             return .failure(error)
@@ -116,7 +121,11 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             return .failure(.pathEscape)
         }
 
-        if let cached = existingValidFile(at: target, expectedBytes: request.expectedBytes) {
+        // R16-1b：形态不可判别 ⇒ 这一条腿整个关掉。不是「保守起见少一次网络」，而是
+        // 「这里没有任何东西能证明盘上那一份就是本次要的那一份」：库曲的预览段与整曲
+        // 住同一个端点、同一个 itemID、同一代次，而 DTO 既不给长度也不给形态标记。
+        if request.contentKind.allowsCacheReuse,
+           let cached = existingValidFile(at: target, expectedBytes: request.expectedBytes) {
             return .success(cached)
         }
 
@@ -126,7 +135,8 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
         let key = TransferKey(
             ownerNamespace: PrivateAudioPath.namespace(for: owner),
             itemID: request.itemID,
-            generation: request.session.generation.value
+            generation: request.session.generation.value,
+            contentKind: request.contentKind
         )
         if let entry = inflightTransfers[key] {
             let shared = await awaitTransfer(entry.task)
@@ -272,6 +282,20 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
         }
     }
 
+    /// 条目 → 缓存内容形态（R16-1b 的唯一裁决点，纯函数好断言）。
+    ///
+    /// · `.libraryTrack`：线上只有 `/api/tracks/<id>/preview-stream` 这一个出口，
+    ///   未授权发预览段字节、已授权 302 走整曲桶，而曲目 DTO **既不给字节长度也不给形态标记**
+    ///   （实测 `duration` 178.84s 与缓存里 19.56s 的预览段并存）⇒ 调用方无法判别，`.unspecified`；
+    /// · `.privateCandidate`：生成候选与笔记音频的地址就是「这一条资产本身」，
+    ///   不存在同一地址的第二种形态 ⇒ 声明 `.full`，缓存复用照旧。
+    static func contentKind(for item: PlaybackItem) -> PrivateAudioContentKind {
+        switch item.kind {
+        case .libraryTrack: return .unspecified
+        case .privateCandidate: return .full
+        }
+    }
+
     /// 播放源准备：已可播的原样放行，需 Bearer 的必须先本地化。
     public func prepareSource(
         for item: PlaybackItem,
@@ -284,7 +308,8 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
         switch await localizedURL(for: PrivateAudioRequest(
             itemID: item.id,
             source: url,
-            session: session
+            session: session,
+            contentKind: Self.contentKind(for: item)
         )) {
         case .success(let localized):
             return .success(item.localized(to: localized))
