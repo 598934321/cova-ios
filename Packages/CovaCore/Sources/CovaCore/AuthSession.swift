@@ -52,6 +52,15 @@ private struct RefreshBucket {
     var waiters: [CheckedContinuation<SecretString, Error>] = []
 }
 
+/// `signIn` 串行槽的排队者。
+///
+/// 带 `token` 才能「定点摘自己」：槽的转交与本次 `Task` 的取消可能同时发生，
+/// 按凭据删除既不会误唤醒别人的等待者，也不会在队列里留下一条永不被唤醒的续作（= 挂死）。
+private struct SignInWaiter {
+    let token: UInt64
+    let continuation: CheckedContinuation<Void, Error>
+}
+
 /// API client 视角的凭证来源（由认证状态机 `CovaAuthSession` 实现）。
 public protocol APICredentialProviding: Sendable {
     /// 当前会话快照；无凭证返回 `nil`（请求不带授权头）。
@@ -68,6 +77,8 @@ public protocol APICredentialProviding: Sendable {
 /// - token 存 `SecureStore`（生产 = Keychain `ThisDeviceOnly`），按 principalId 绑定（D5）。
 /// - 登录/换号/登出对接 G3-b `SessionLifecycle`（推进 generation、清凭证/owner 数据/队列/播放器）。
 /// - **single-flight refresh**：并发刷新只触发一次网络调用，其余等待同一结果。
+/// - **登录在本实例上串行**（R16-3）：两次点击不会交错穿过「换号重绑 → 写凭证 → 提交」，
+///   后来者排队等前者结束再照常执行；提交前仍复核 `sessionEpoch`（两层机制，见 `signIn`）。
 /// - M-4：仅**确定性认证失败**（401/403、缺 refresh token）才清理凭证转 `signedOut`；
 ///   传输类失败（超时/断连/取消）保留会话并抛出可重试错误。
 ///
@@ -97,6 +108,15 @@ public actor CovaAuthSession: APICredentialProviding {
     /// 会话代次：任何用户可感知的会话变化（登录/登出/游客/凭证吊销）都会推进。
     /// generation 管 owner 绑定，epoch 额外覆盖「显式选择 guest」这类不推进 generation 的变化。
     private var sessionEpoch: UInt64 = 0
+
+    /// 登录串行槽（R16-3）：`true` = 本实例上有一次 `signIn` 正穿过「换号重绑 → 写凭证 → 提交」。
+    private var signInSlotHeld = false
+
+    /// 等槽的登录，FIFO（`removeFirst()` 转交槽）：先点的那次先落地，用户最后一次的点击仍然是终态。
+    private var signInWaiters: [SignInWaiter] = []
+
+    /// `signInWaiters` 的凭据分配器（只为「定点摘自己」服务，不表示顺序）。
+    private var signInWaiterTokens: UInt64 = 0
 
     /// 测试注入点：会话激活（提交 `authenticated`）前的钩子；生产恒为 `nil`。
     private var beforeSessionActivation: (@Sendable () async -> Void)?
@@ -237,9 +257,27 @@ public actor CovaAuthSession: APICredentialProviding {
     /// **同一判据还要卡在破坏性重绑之前**（R16-2）：换号清理删的是**上一个 owner** 的凭证，
     /// 只复核"我自己能不能提交"不够 —— 输家会在提交闸把自己拦下的**同时**把赢家抹干净
     /// （状态说已登录、`accessToken()` 却是 nil，且 owner 指针与 lifecycle 归属一起变 nil，
-    /// 只有冷启动才自愈）。基线在**入口**取，`/login` 一跳回来后先复核再动 `lifecycle`。
+    /// 只有冷启动才自愈）。基线在**入口**取（R16-3 之后：入口 = 拿到串行槽之后，见下），
+    /// `/login` 一跳回来后先复核再动 `lifecycle`。
+    ///
+    /// **两次登录在本实例上串行**（R16-3）：上面两道复核都是**同步**判据，只能看见"到我复核那一刻
+    /// 会话变了没有"；而 `switchAccount` 自己内部还有 await（推进 generation 之后才清凭证），
+    /// `epoch` 又只在**提交时**推进 —— 于是两次并发登录可以**都**通过自己的闸，后跑完清理的那个
+    /// 会把前一个刚写好的凭证删掉。窗口被前面的复核收窄了，但没有关闭。
+    /// 关闭它靠互斥：同一实例上任意时刻只有一次 `signIn` 能待在这个区域里，第二次的点击
+    /// **排队等第一次结束**（成功或失败都算结束），然后照常执行 —— 用户最后一次点的账号仍然落地，
+    /// 不是把他拒掉。`signOut` / `restoreSession` / `continueAsGuest` 与刷新机制**不取槽**，
+    /// 所以它们不会被登录挡住，也仍然是那两道复核要保护的对象。
     @discardableResult
     public func signIn(email: String, password: SecretString) async throws -> AuthUser {
+        // **串行槽**与 **`sessionEpoch` 复核**是两层，各管一件事，缺一层就留一个洞：
+        // · 槽管"谁可以待在这个区域里"—— 消掉两次登录之间的交错；
+        // · 复核管"我在区域里的时候，用户可感知的会话有没有变"—— 显式登出/选游客不取槽，
+        //   照样可能在 `/login` 或 `/me` 的窗口里落进来；未来新增的会话变更方同理。
+        // epoch 基准在**拿到槽之后**才取：排队期间别人的提交不算"我被取代"，
+        // 否则一次排队就会把用户自己后一次的点击判废。
+        try await acquireSignInSlot()
+        defer { releaseSignInSlot() }
         // 基准在**入口**取：本次登录期间任何用户可感知的会话变化都会推进它。
         let epoch = sessionEpoch
         let body = try encoder.encode(CovaLoginRequestDto(email: email, password: password))
@@ -257,6 +295,9 @@ public actor CovaAuthSession: APICredentialProviding {
         // 复核与换号调用之间**不再插入任何 await**（插进去就等于把这道闸要堵的重入窗口重新打开），
         // 上面那次读也只读 owner，不改任何归属面。
         // 判据仍只取 `sessionEpoch`，不并 generation（D22①，与提交闸同一口径）。
+        //
+        // R16-3 之后"另一个账号的登录恰好挤进这一段"已经由串行槽消掉；这里留着的理由是
+        // 不取槽的那两条路径（显式登出 / 选游客）仍然落在同一个窗口里，判定一模一样。
         guard sessionEpoch == epoch else {
             // 本地一个字节都还没写（凭证、owner 指针、lifecycle 归属都没碰），所以既不能清别人的
             // 状态，也没有自己的状态可清；只有服务端那次 `/login` 真建起了一条会话族 ——
@@ -389,6 +430,80 @@ public actor CovaAuthSession: APICredentialProviding {
     }
 
     // MARK: - 私有
+
+    /// 取得 `signIn` 的串行槽（R16-3）：空则立即接管，已被占用就**排队**（不轮询、不 sleep）。
+    ///
+    /// 槽的转交全部发生在 actor 的**同步**上下文里（`acquire`/`release`/`cancelSignInWaiter` 都是
+    /// actor 方法内的同步代码段），所以「有人持有槽」与「队列里有等待者」这两件事不会互相插队：
+    /// - 不会 double-take：只有 `!signInSlotHeld` 那一条分支能直接接管；
+    /// - 不会悬挂：`release` 有等待者时把 `signInSlotHeld` **保持为 true** 并连同槽一起交出，
+    ///   不存在"槽已释放、下一个却还没被唤醒"的间隙；
+    /// - 不会重入自锁：`signIn` 体内调用的都是 `SessionLifecycle` / `SecureStore` / 传输层，
+    ///   没有任何一条路径再次取槽（`signOut` / `restoreSession` / `continueAsGuest` / 刷新
+    ///   都不取槽，所以它们既不会被登录挡住，也不会等一个被登录挡住的参与者）。
+    ///
+    /// - Throws: `CovaAPIError.cancelled` —— 排队期间本次 `Task` 被取消，或拿到槽后才发现已被取消。
+    ///   两种情况都不留下已占用的槽：前者从未拥有，后者在本方法内自行归还
+    ///   （调用方的 `defer` 是在本方法成功返回之后才登记的）。
+    private func acquireSignInSlot() async throws {
+        if signInSlotHeld {
+            signInWaiterTokens &+= 1
+            let token = signInWaiterTokens
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    // 入队前同步复核两件事，否则会留下一条永不被唤醒的续作：
+                    // · 槽刚好在前一次登录结束时腾空（此时已无持有者 ⇒ 直接接管，不必再等转交）；
+                    // · 取消处理器可能已经跑完（它发现队列里没有自己就什么也不做），
+                    //   所以这里必须自己看见取消，否则会在槽上挂到下一次有人登录为止。
+                    if Task.isCancelled {
+                        continuation.resume(throwing: CovaAPIError.cancelled)
+                        return
+                    }
+                    if !signInSlotHeld {
+                        signInSlotHeld = true
+                        continuation.resume()
+                        return
+                    }
+                    signInWaiters.append(SignInWaiter(token: token, continuation: continuation))
+                }
+            } onCancel: {
+                // `onCancel` 是同步上下文，只能把「摘掉自己」排回 actor。
+                // 用**非结构化** Task：它不继承父任务的取消，所以这次清理一定执行得到。
+                Task { await self.cancelSignInWaiter(token) }
+            }
+        } else {
+            signInSlotHeld = true
+        }
+        // 拿到槽之后再复核一次取消：转交与取消可能同时发生（`release` 已把槽交给我，
+        // 取消处理器再来时队列里已经没有我了）。带着一个已取消的任务往下走 = 用户明明取消了
+        // 却仍然换号、抹掉上一个 owner 的凭证。此刻本地一个字节都还没写，归还槽即可原样退出。
+        guard !Task.isCancelled else {
+            releaseSignInSlot()
+            throw CovaAPIError.cancelled
+        }
+    }
+
+    /// 归还串行槽：有等待者就把槽**连同等待者一起**交出去（保持 `signInSlotHeld == true`），
+    /// 队列空了才真正把槽放开。只能由持有者调用 —— `signIn` 用 `defer` 保证每条退出路径
+    /// （含 `throw`）都归还一次，且失败路径不会走到这里（那种情况根本没拿到槽）。
+    private func releaseSignInSlot() {
+        guard !signInWaiters.isEmpty else {
+            signInSlotHeld = false
+            return
+        }
+        let waiter = signInWaiters.removeFirst()
+        waiter.continuation.resume()
+    }
+
+    /// 排队中的登录被取消：按凭据把自己从队列里摘掉并抛错。
+    ///
+    /// 找不到自己 = 槽已经转交出去了（那种情况由持有者自己的 `defer` 归还，这里若去动
+    /// `signInSlotHeld` 就是放掉**别人**的槽）。
+    private func cancelSignInWaiter(_ token: UInt64) {
+        guard let index = signInWaiters.firstIndex(where: { $0.token == token }) else { return }
+        let waiter = signInWaiters.remove(at: index)
+        waiter.continuation.resume(throwing: CovaAPIError.cancelled)
+    }
 
     /// 刷新失败后的 `me` 恢复；确定性认证失败 → 刷新路径已清理并返回 `nil`。
     ///
