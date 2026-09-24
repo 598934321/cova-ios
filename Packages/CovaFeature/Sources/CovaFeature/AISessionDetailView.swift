@@ -10,7 +10,8 @@ import SwiftUI
 /// · **不做本地余额预检**（缺钱由服务端说，UI 只回显它给的）；
 /// · 不出现「充值 / 购买 / 价格 / 客服」任何字样，也不显示英文状态名；
 /// · `audioUrl` / `audioDownloadStatus` 的签名地址**不显示、不写日志、不落盘**（`SecretString` 三面脱敏）；
-/// · 双 Demo 只渲染**前两个**候选，两个都 settled 才算终态（硬边界 6）；
+/// · 双 Demo 只渲染**前两个**候选，两个都 settled 才算终态（硬边界 6）—— 判定不在本屏写，
+///   一律走 `DoubleDemoRule`（CovaCore，18 的本地通知读同一本账）；
 /// · 「开始制作」必须同时满足：状态 `ready` + 归因（`sourceMessage.messageId == 本次客户端消息号`）
 ///   + 带 `snapshotHash`，三者缺一律置灰，不放宽；
 /// · 未知 `run_*` 事件**隐藏且不算坏事件**；未知计划卡状态渲染只读卡 + 「状态更新中」。
@@ -34,6 +35,8 @@ public struct AISessionDetailView: View {
     @State private var deepThinking = false
     @State private var busy = false
     @State private var thinkingSteps = 0
+    /// 本轮是否**已经问过要挑哪一版**（09 §5 终态行：主钮按下去之后，已就绪的卡上才出「选这版继续制作」）。
+    @State private var choosingVersion = false
     @State private var lineCounter = 0
     @State private var agentBuffer = ""
 
@@ -141,23 +144,34 @@ public struct AISessionDetailView: View {
 
     @ViewBuilder
     private var candidateBlock: some View {
-        let pair = Array(candidates.prefix(2))
+        // 「只取前两个」也归 `DoubleDemoRule` 管（§5 行 7：后端给 3+ 时界面只见 2）。
+        let pair = DoubleDemoRule.pair(candidates)
         VStack(alignment: .leading, spacing: CovaSpace.sm) {
-            Text(terminalText(pair)).font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: CovaSpace.sm) {
+                Text(terminalText(pair))
+                    .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                // 主钮只在**终态且至少有一版可挑**时出现（§5 行 4「ready+ready 终态」/ 行 5
+                // 「可用（唯一可选）」；行 6 两版全失败没得挑 ⇒ 不放一个点了没反应的钮）。
+                if DoubleDemoRule.canChooseVersion(pair) {
+                    Button("选一版继续制作") { choosingVersion = true }
+                        .font(CovaType.callout).foregroundStyle(CovaColor.accentText)
+                        .accessibilityHint("选择后要挑一个版本")
+                }
+            }
             ForEach(pair.indices, id: \.self) { index in
-                candidateRow(pair[index], index: index)
+                candidateRow(pair[index], index: index, terminal: DoubleDemoRule.isTerminal(pair))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func candidateRow(_ candidate: GenerationCandidateDto, index: Int) -> some View {
-        let settled: Bool
-        if let status = candidate.audioDownloadStatus {
-            settled = status == .ready || status == .failed
-        } else {
-            settled = candidate.audioUrl?.rawValue.isEmpty == false
-        }
+    private func candidateRow(
+        _ candidate: GenerationCandidateDto, index: Int, terminal: Bool
+    ) -> some View {
+        // 「settled」只有一处定义（`DoubleDemoRule`，D7），终态条 / 主钮 / 这一行读同一本账；
+        // 是否**可选**另说：占位卡与失败卡在操作条上不出选择钮（见 `versionChoice`）。
+        let settled = DoubleDemoRule.isSettled(candidate)
         return VStack(alignment: .leading, spacing: CovaSpace.xs) {
             CovaListRow(
                 title: candidate.title ?? "版本 \(index + 1)",
@@ -173,7 +187,9 @@ public struct AISessionDetailView: View {
                 }
                 Task { await session.play(items: [item], at: 0) }
             }
-            candidateActionBar(candidate)
+            candidateActionBar(
+                candidate, index: index, ready: DoubleDemoRule.isReady(candidate), terminal: terminal
+            )
         }
     }
 
@@ -190,15 +206,48 @@ public struct AISessionDetailView: View {
     ///   把它交给系统分享面板等于把凭证送出设备（硬边界 3 / D7 / TD-23 三面禁止）。
     ///   ⇒ 少一个钮，不编一个分享目标。后端补上公开页或分享端点后，在这里接 `ShareLink`。
     @ViewBuilder
-    private func candidateActionBar(_ candidate: GenerationCandidateDto) -> some View {
+    private func candidateActionBar(
+        _ candidate: GenerationCandidateDto, index: Int, ready: Bool, terminal: Bool
+    ) -> some View {
         HStack(spacing: CovaSpace.sm) {
             // 「无 mediaReferenceId 时整钮不渲染」（09 §5 / §8）：不是 disabled，是不进视图树。
             if CandidateFavoriteLedger.canFavorite(candidate) {
                 favoriteButton(candidate)
             }
+            versionChoice(candidate, index: index, ready: ready, terminal: terminal)
             Spacer(minLength: 0)
         }
         .padding(.leading, CovaSpace.pageGutter)
+    }
+
+    /// 「选这版继续制作」（§5 行 2/4/5）。**只对已就绪的那一版渲染** ——
+    /// 占位卡与失败卡上没有可交付的音频，指着一团像素问「要这版吗」是造坏路径。
+    ///
+    /// · 未到终态（`ready + pending`）：钮照 §5 摆着但**不放宽**，点击给规格那句
+    ///   「两个版本都完成后可以继续」。这里刻意不用 SwiftUI 的 `.disabled(true)` ——
+    ///   spec 要的是「点了要说原因」，而真禁用会把点击整个吞掉，用户只得到一个没反应的灰钮。
+    /// · 已到终态但还没按主钮：不渲染（先让用户走「选一版继续制作」这一步，避免误触直接改本轮方向）。
+    /// · 已到终态且已按主钮：渲染主动作，点击 = 把这一版的选择发出去。
+    @ViewBuilder
+    private func versionChoice(
+        _ candidate: GenerationCandidateDto, index: Int, ready: Bool, terminal: Bool
+    ) -> some View {
+        if ready {
+            if terminal, choosingVersion {
+                Button("选这版继续制作") {
+                    choosingVersion = false
+                    Task { await chooseVersion(candidate, index: index) }
+                }
+                .font(CovaType.callout).foregroundStyle(CovaColor.accentText)
+                .frame(minHeight: 44)   // §7 触控目标
+            } else if !terminal {
+                Button("选这版继续制作") {
+                    session.showToast("两个版本都完成后可以继续")
+                }
+                .font(CovaType.callout).foregroundStyle(CovaColor.muted)
+                .frame(minHeight: 44)
+            }
+        }
     }
 
     private func favoriteButton(_ candidate: GenerationCandidateDto) -> some View {
@@ -254,24 +303,37 @@ public struct AISessionDetailView: View {
         )
     }
 
-    /// 终态文案（design 09 §H）。**两个都 settled 才算终态**。
+    /// 终态文案（design 09 §H 的六句固定串）。**「哪一版算就绪 / 算不算终态」不在本屏判定** ——
+    /// 那是 `DoubleDemoRule`（D7）的活，18 的本地通知读的是同一本账（用例在 CovaCore）。
     private func terminalText(_ pair: [GenerationCandidateDto]) -> String {
-        func settled(_ candidate: GenerationCandidateDto) -> Bool {
-            if let status = candidate.audioDownloadStatus { return status == .ready }
-            return candidate.audioUrl?.rawValue.isEmpty == false
-        }
-        func failed(_ candidate: GenerationCandidateDto) -> Bool {
-            candidate.audioDownloadStatus == .failed
-        }
         guard pair.count == 2 else { return "两个版本制作中" }
-        let readyCount = pair.filter { settled($0) }.count
-        let failedCount = pair.filter { failed($0) }.count
+        let readyCount = DoubleDemoRule.readyCount(pair)
+        let failedCount = DoubleDemoRule.failedCount(pair)
         if readyCount == 2 { return "两个版本都好了，挑一版继续" }
         if failedCount == 2 { return "两个版本都没能完成" }
         if failedCount == 1, readyCount == 1 { return "一版完成，另一版失败" }
         if readyCount == 1 { return "就绪 1/2 · 等另一个版本完成" }
         if failedCount == 1 { return "1/2 遇到问题 · 等另一个版本完成" }
         return "两个版本制作中"
+    }
+
+    /// 「选这版继续制作」的落地方式 = **把选择当成一句话发给 agent**，不是发明字段。
+    ///
+    /// 依据（逐条核对过契约，见 `docs/api-contracts.md` §4）：
+    /// · `POST /api/studio/agent` 的请求体我们只发 `sessionId / message / deepThinking` 三件，
+    ///   其 schema 本身就未文档化（NEEDS-13）；
+    /// · `plans/start` 只带 `{sessionId, planCardId, revision, snapshotHash, idempotencyKey}` ——
+    ///   它启动的是一张**计划卡**，没有任何候选/引用位；
+    /// · `retention` 只有 `{favorite}`。
+    /// ⇒ 契约里**不存在**能携带「哪一版」的结构化字段。所以选择以自然语言进同一句话的通道：
+    ///   这与本屏其余部分的工作方式一致（用户想说的话都是这么发的），也不新增任何键。
+    ///   「候选选择需要机器可读载体」记在 **NEEDS-13** 那条补充里（它登记的正是
+    ///   agent 请求体 schema 未文档化）；后端补上之前，这里不猜字段名。
+    private func chooseVersion(_ candidate: GenerationCandidateDto, index: Int) async {
+        // 标题为空回落「未命名版本」：§5 的回落口径是「版本 1 / 版本 2」，这里同一族说法，
+        // 不把空字符串印进发给 agent 的话里（那是一句读不通的话）。
+        let title = candidate.title.flatMap { $0.isEmpty ? nil : $0 } ?? "未命名版本"
+        await submit("就选版本 \(index + 1)（\(title)）继续制作，按这一版补齐完整音频。")
     }
 
     // MARK: I 补充制作进度条（09 §3-I / §9 行 8–9）
@@ -396,6 +458,9 @@ public struct AISessionDetailView: View {
             candidates = jobs.last?.candidates() ?? []
             // 服务端为事实源（PRD 4.2）⇒ 载荷一到就以它重播 ♡ 账，不保留上一轮的乐观值。
             favorites.reseed(from: candidates)
+            // 「已经问过要挑哪一版」是**本轮界面**的临时态：重新对账后不得继续亮着选择钮，
+            // 否则用户可能按着一份已经被后端改掉的候选清单往下选。
+            choosingVersion = false
             creditsBalance = try? await session.catalog.me().entitlements.creditsBalance
             phase = .ready
             // 首页输入卡带过来的一句话：进屏后自动发一次（01 §2「提交后跳转创作会话详情」）。
@@ -414,6 +479,13 @@ public struct AISessionDetailView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
+        await submit(text)
+    }
+
+    /// 把**一句话**送进 agent 并消费回流帧。输入框那句话与「选这版继续制作」走同一条腿 ——
+    /// 契约里只有这一个能携带本轮意图的通道（见 `chooseVersion` 的逐条核对），
+    /// 所以两条路径共用同一套流处理，不各写一份。
+    private func submit(_ text: String) async {
         busy = true
         defer { busy = false }
         append(.user(text))

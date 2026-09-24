@@ -49,32 +49,25 @@ public enum StudioNotificationPlanner {
     /// 「一个 job 只登记一次」的标识（spec：按 `jobId` 去重；同轮多个 job 合并成一条）。
     public static func identifier(jobID: String) -> String { "cova-generation-\(jobID)" }
 
-    /// 由 job 状态与前两个候选算出该发什么。
+    /// 由前两个候选算出该发什么。判定不在这里重写一份 —— 它与 09 的终态条、
+    /// 与「选一版继续制作」读同一本账，唯一来源是 `DoubleDemoRule`（D7）。
+    ///
+    /// **没有 `jobStatus` 形参**是有意的：旧签名带着它，而三条分支没有一条读它
+    /// （`switch (readyCount, status)` 的两个 case 都用 `_` 吞掉）—— 留一个不进任何判断的
+    /// 参数，等于给后来人"发不发要看 job 态"的假线索。发与不发**只由候选清单决定**。
     public static func outcome(
-        status: GenerationJobStatus,
         candidates: [GenerationCandidateDto]
     ) -> StudioNotificationOutcome {
-        let pair = Array(candidates.prefix(2))
-        func ready(_ candidate: GenerationCandidateDto) -> Bool {
-            if let state = candidate.audioDownloadStatus { return state == .ready }
-            return candidate.audioUrl?.rawValue.isEmpty == false
-        }
-        func failed(_ candidate: GenerationCandidateDto) -> Bool {
-            candidate.audioDownloadStatus == .failed
-        }
-        // 双 Demo 硬规则：不足两个候选，或前两个里有任何一个既没就绪也没失败 ⇒ 不算终态。
-        guard pair.count == 2 else { return .notSettled }
-        let settled = pair.allSatisfy { ready($0) || failed($0) }
-        guard settled else { return .notSettled }
-        let readyCount = pair.filter(ready).count
-        switch (readyCount, status) {
-        case (2, _):
+        let pair = DoubleDemoRule.pair(candidates)
+        guard DoubleDemoRule.isTerminal(candidates) else { return .notSettled }
+        switch DoubleDemoRule.readyCount(candidates) {
+        case 2:
             return .bothReady(
                 firstTitle: pair[0].title?.isEmpty == false ? pair[0].title : nil,
                 secondTitle: pair[1].title?.isEmpty == false ? pair[1].title : nil
             )
-        case (1, _):
-            let winner = pair.first(where: ready)
+        case 1:
+            let winner = pair.first(where: DoubleDemoRule.isReady)
             return .oneReady(title: winner?.title?.isEmpty == false ? winner?.title : nil)
         default:
             // 两个都失败：照发（spec 明令），且不带任何情绪符号。
@@ -107,7 +100,7 @@ public enum StudioNotificationPlanner {
         guard let jobID = nonEmpty(job.id) else { return nil }
         // 路由契约：sessionId 缺失/不合法 ⇒ 不可路由。仍然发通知（spec 的兜底是
         // 「点进去回落首页」），但绝不拿一个猜出来的 id 去拼路由。
-        guard let body = body(for: outcome(status: job.status, candidates: job.candidates())) else {
+        guard let body = body(for: outcome(candidates: job.candidates())) else {
             return nil
         }
         var userInfo: [String: String] = [
