@@ -13,6 +13,9 @@ public protocol SSEStreamingTransport: Sendable {
 /// 生产 SSE 传输：`URLSession` 字节流。
 ///
 /// - 与 `URLSessionTransport` 共用无缓存会话与 15s 超时配置，复用其 URLRequest 构造；
+/// - **D23①**：这是一条带 `Authorization: Bearer …` 的腿 ⇒ 会话挂
+///   `CredentialedRedirectGuard`（一律不自动跟随），3xx 由 `CredentialedEgressHop`
+///   在**发起下一次出站之前**裁决 —— 与普通 API 腿同一判据、同一拒绝类型、同一个界；
 /// - 非 2xx 直接以 `CovaAPIError` 失败（不把错误页当事件流解析）；
 /// - 按到达节奏产出 `Data` 块；迭代被取消时同步取消底层任务。
 public struct URLSessionSSETransport: SSEStreamingTransport {
@@ -35,22 +38,37 @@ public struct URLSessionSSETransport: SSEStreamingTransport {
 
     private let session: URLSession
 
+    /// 无状态守卫：SSE 会话与普通 API 会话各挂各的实例，但同一个类、同一判据。
+    private static let redirectGuard = CredentialedRedirectGuard()
+
     public init() {
         session = Self.makeDefaultSession()
     }
 
+    /// 测试注入口。
+    ///
+    /// ⚠ 与 `URLSessionTransport.init(session:)` 同样的限制：注入的会话带不上 delegate，
+    /// 走这条腿的用例测不到「出站之前拒」那一半，只测得到投递面的第二道兜底
+    /// （`CredentialedEgressHop` 的权威核对）；生产装配一个都不走。
     init(session: URLSession) {
         self.session = session
     }
 
     /// SSE 专用会话：空闲 60s、资源 ≈无限（与普通请求的 15s/15s 明确区分）。
+    ///
+    /// D23①：会话**必须**带跳转守卫创建 —— 长连接一旦被服务端一次 302 领到别家主机，
+    /// 那条带 Bearer 的流就在任何人裁决之前出站了。
     static func makeDefaultSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = idleTimeout
         configuration.timeoutIntervalForResource = resourceTimeout
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
-        return URLSession(configuration: configuration)
+        return URLSession(
+            configuration: configuration,
+            delegate: redirectGuard,
+            delegateQueue: nil
+        )
     }
 
     public func stream(_ request: HTTPRequest) async throws -> AsyncThrowingStream<Data, Error> {
@@ -65,7 +83,11 @@ public struct URLSessionSSETransport: SSEStreamingTransport {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let (bytes, response) = try await session.bytes(for: urlRequest)
+                    let (bytes, response) = try await Self.openedStream(
+                        from: session,
+                        startingAt: urlRequest,
+                        hopsRemaining: URLSessionTransport.maximumRedirectHops
+                    )
                     guard let http = response as? HTTPURLResponse,
                           (200...299).contains(http.statusCode) else {
                         continuation.finish(throwing: CovaAPIError.invalidResponse)
@@ -82,11 +104,44 @@ public struct URLSessionSSETransport: SSEStreamingTransport {
                     }
                     if !buffer.isEmpty { continuation.yield(buffer) }
                     continuation.finish()
+                } catch let refusal as CovaEgressRefusal {
+                    // 出口裁决**原样**上抛（点名的 host 是给调用方看的）：归一成
+                    // `.transport(code:)` 就等于把「落地不是生产出口」说成「网络抖了一下」。
+                    continuation.finish(throwing: refusal)
                 } catch {
                     continuation.finish(throwing: CovaAPIError.normalize(error))
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// 建连并把 3xx 按 **D23①** 自己裁决要不要追（会话那一层已无条件不自动跟随）。
+    ///
+    /// 返回的一定是**可以当作流来读**的那一条响应；被拒时一次多出的出站都没有。
+    /// 超出 `URLSessionTransport.maximumRedirectHops` ⇒ 不追了，把 3xx 原样交回，
+    /// 由上面的非 2xx 分支收尾成 `.invalidResponse`（自指 `Location` 不许变成出站风暴）。
+    private static func openedStream(
+        from session: URLSession,
+        startingAt initial: URLRequest,
+        hopsRemaining: Int
+    ) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        var current = initial
+        var budget = hopsRemaining
+        while true {
+            // 每一次迭代都是一次真实出站：任务已取消时不许再打（D16②）。
+            try Task.checkCancellation()
+            let (bytes, response) = try await session.bytes(for: current)
+            if let next = try CredentialedEgressHop.request(
+                after: response,
+                following: current,
+                hopsRemaining: budget
+            ) {
+                current = next
+                budget -= 1
+                continue
+            }
+            return (bytes, response)
         }
     }
 }

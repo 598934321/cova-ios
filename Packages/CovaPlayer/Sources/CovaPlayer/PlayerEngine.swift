@@ -1,3 +1,4 @@
+import CovaCore
 import Foundation
 
 /// 引擎上报的播放事件（`PlaybackCoordinator` 的唯一外部事实来源）。
@@ -74,6 +75,47 @@ public struct PlayerFailure: Error, Equatable, Sendable, CustomStringConvertible
     /// 上屏串一律走 `Kind.userLabel`（中文标签的定义为什么在 `Kind` 里、不在这里）。
     public var description: String {
         message.isEmpty ? kind.userLabel : "\(kind.userLabel)：\(message)"
+    }
+}
+
+/// D23① / MAJ-8：一条地址**交给 `AVPlayer` 之前**的出口裁决（纯函数，零 AVFoundation）。
+///
+/// 为什么这一道必须写在代码里而不是指望配置：`AVPlayer` 自己起网络栈，而本层**拿不到**它的
+/// `URLSession` delegate ⇒ 地址一交出去，「这一跳跟不跟」就不再由我们说了算。
+/// 于是能被交出去的只有「发起之前就已经判死」的那一台主机：生产出口。
+///
+/// D23② 的存储桶名单这一条腿**刻意不适用**（不是漏了）：名单放行的前提是
+/// 「链上每一跳都由本层裁决」（`CovaEnvironment.mediaRedirectAllowed`），而播放器那一层
+/// 裁决不了 —— 把 `covalink-audio-…` 直接喂给 `AVPlayer` 等于让它的默认跟随行为
+/// 替我们决定第二次出站，那正是 R17-3 要根除的形状。整曲要出桶只能走 D7 的本地化那一条腿
+/// （`URLSessionPrivateAudioTransport`，那里逐跳有守卫），或等 NEEDS-29 的同源服务端代理。
+public enum PlayerEgress {
+    /// 公开直链能否交给播放器。两重都必须成立（口径与 `AVPlayerEngine.isAllowedEgress` 一致）：
+    /// ① `CovaEnvironment.isProductionOrigin` —— 与私有音频准备器**同一判据、同一实现**（D10）；
+    /// ② 权威仍是门面声明的那台出口（scheme + host + 规范端口折叠同源，见 `AudioAuthorityMatch`）。
+    /// 注入别的 origin **不会**放宽任何判定：①先拦，非法出口只会「一律拒绝」（fail-closed）。
+    public static func isPlayable(_ url: URL, origin: URL) -> Bool {
+        guard CovaEnvironment.isProductionOrigin(url) else { return false }
+        return AudioAuthorityMatch.origin(of: url) == AudioAuthorityMatch.origin(of: origin)
+    }
+
+    /// 裁决：可以就交出地址，不可以就给出一条**点名 host** 的失败（R17-3b 的可用性要求 ——
+    /// 30 个样本里每一台媒体主机都在名单上，但样本不是穷举：桶名或存储区一变，
+    /// 失败必须是「看得见的 host」，而不是一个静默的占位）。
+    ///
+    /// 文本里只有 host：path / query / fragment 一概不带（签名地址住在 query，
+    /// 错误对象会进日志，AGENTS 硬边界 3）。
+    public static func decide(direct url: URL, origin: URL) -> Result<URL, PlayerFailure> {
+        guard isPlayable(url, origin: origin) else { return .failure(rejection(for: url)) }
+        return .success(url)
+    }
+
+    /// 拒绝理由（只出 host，两个 host 都点名：被拒的落地与本机承认的出口）。
+    public static func rejection(for url: URL) -> PlayerFailure {
+        PlayerFailure(
+            kind: .invalidSourceURL,
+            message: "公开直链的落地 \(CovaEnvironment.egressHostLabel(of: url)) 不是许可出口（只认 \(CovaEnvironment.egressHostLabel(of: CovaEnvironment.apiBaseURL))）"
+        )
     }
 }
 

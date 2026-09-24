@@ -17,6 +17,60 @@ public struct CovaAPIErrorEnvelope: Codable, Equatable, Sendable {
     }
 }
 
+/// D23①/② 的**出口拒绝**事实：某一条跳转的落地不在这一类请求允许的出口内，
+/// 于是那一次出站**根本没有发生**（裁决在出站之前，不是投递之后再后悔）。
+///
+/// 为什么它不是 `CovaAPIError` 的一个新 case（跨模块加 case 会把
+/// `Packages/CovaPlayer/Sources/CovaPlayer/PlayReportCoordinator.swift:66-77` 那道
+/// **无 default 的穷举 switch** 直接编不过 —— 那是本批不许改的文件），而是一件独立错误：
+/// 独立类型既能带上「点名 host」这个新载荷，又逼着每个归一化点显式表态它落在哪一档。
+/// 表态已由 `CovaAPIError.normalize(_:)` 完成：`.invalidRequestURL`
+/// （`isRetryable == false`、`httpStatusCode == nil`）—— **绝不落进 `.transport(code:)`**，
+/// 那一档是可重试的，出口裁决被读成「网络抖了一下」就是一次刷新/重放环
+/// （落地主机不会因为你换了 token 就变成生产出口）。
+///
+/// **安全（AGENTS 硬边界 3）**：载荷只有 host 一个字符串，类型层面不存在
+/// URL / query / header / token 字段；被拒地址上的签名查询串在这里无处可放。
+public struct CovaEgressRefusal: Error, Equatable, Hashable, Sendable,
+    CustomStringConvertible, LocalizedError
+{
+    /// 哪一类请求的边界被拒（D23 的两类各一条，与 `mediaRedirectAllowed` 同轴）。
+    public enum Rule: String, Equatable, Sendable, CaseIterable {
+        /// 带凭证的一类：落地必须仍是同一权威的生产出口（名单不构成放行理由）。
+        case credentialLeg
+        /// 不带凭证的一类：落地必须在许可名单的存储主机之内。
+        case publicMediaLeg
+    }
+
+    /// 被拒的落地主机（`CovaEnvironment.egressHostLabel` 的口径：只有 host，取不出则占位）。
+    public let host: String
+    /// 触发拒绝的那一条类别规则（决定上屏那句话怎么说）。
+    public let rule: Rule
+
+    public init(host: String, rule: Rule = .credentialLeg) {
+        self.host = host
+        self.rule = rule
+    }
+
+    /// 出口裁决**不是**传输故障：重试不会改变结果（重放只会把同一条拒绝再判一次）。
+    public var isRetryable: Bool { false }
+
+    /// 归一进 `CovaAPIError` 世界的那一档（不可重试、也不是 401 ⇒ 不触发刷新重放）。
+    public var asCovaAPIError: CovaAPIError { .invalidRequestURL }
+
+    /// 上屏/日志文本：分支 + 主机名，**没有** scheme 之外的任何地址片段。
+    public var description: String {
+        switch rule {
+        case .credentialLeg:
+            return "跳转被拒绝：落地 \(host) 不是生产出口（凭证不出出口，该次请求未发出）"
+        case .publicMediaLeg:
+            return "跳转被拒绝：落地 \(host) 不在许可名单的存储主机内（该次请求未发出）"
+        }
+    }
+
+    public var errorDescription: String? { description }
+}
+
 /// 统一的 API 错误模型。
 ///
 /// 设计约束：
@@ -117,10 +171,15 @@ public enum CovaAPIError: Error, Equatable, Sendable {
 
     /// 任意底层错误 → 统一的 `CovaAPIError`（传输层与认证层共用）。
     ///
-    /// 已是 `CovaAPIError` 的原样返回；`CancellationError` → `.cancelled`；
-    /// `NSURLErrorDomain` → 整数映射；其余 → `.transport(code:)`（失败路径，不携带明文）。
+    /// 已是 `CovaAPIError` 的原样返回；**出口拒绝**（`CovaEgressRefusal`）→ `.invalidRequestURL`
+    /// （不可重试，且不是 401）—— 这一支必须在 `NSURLErrorDomain` 之前显式判：
+    /// 漏掉它并不会崩，而是会掉进末尾的 `.transport(code:)` 那一档，把「主机不对」
+    /// 伪装成「网络抖了一下」⇒ 上层按可重试处理 = 刷新/重放环（R17-3b 的错分面）。
+    /// `CancellationError` → `.cancelled`；`NSURLErrorDomain` → 整数映射；
+    /// 其余 → `.transport(code:)`（失败路径，不携带明文）。
     public static func normalize(_ error: Error) -> CovaAPIError {
         if let api = error as? CovaAPIError { return api }
+        if let refusal = error as? CovaEgressRefusal { return refusal.asCovaAPIError }
         if error is CancellationError { return .cancelled }
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain {

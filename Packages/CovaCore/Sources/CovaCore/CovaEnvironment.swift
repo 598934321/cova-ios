@@ -112,6 +112,65 @@ public enum CovaEnvironment {
         return isSanctionedMediaURL(original) && isSanctionedMediaURL(landing)
     }
 
+    /// 取不出主机时的**占位标签**（拒绝信息里宁可点名"没有主机"，也不许回退成整串地址 ——
+    /// 签名就住在 query 里，整串一旦进错误对象就可能进日志；AGENTS 硬边界 3）。
+    public static let unnameableHostLabel = "<无主机名>"
+
+    /// 拒绝时要点名的那一台主机：**只有 host**（小写），path / query / fragment 一概不带。
+    ///
+    /// D23③ 的可用性要求：桶名或存储区一变，失败必须是「看得见的 host」，
+    /// 而不是一句"请求地址非法"让人去猜是哪台。userinfo 形态（`https://covalink.cn@evil.test/`）
+    /// 在这里被如实报成 `evil.test` —— 那才是真正收到请求的那一台。
+    public static func egressHostLabel(of url: URL) -> String {
+        guard let host = url.host()?.lowercased(), host.isEmpty == false else {
+            return unnameableHostLabel
+        }
+        return host
+    }
+
+    /// 3xx 的 `Location` → 绝对落地地址；拿不出来（空头/空值/形状可疑）→ nil。
+    ///
+    /// 相对 `Location` 是 RFC 9110 §10.2.2 允许的形态，必须**相对发起那一条请求**解析
+    /// （不是相对生产根，更不是字符串拼接）。D23 之后这一条从 CovaPlayer 的 `MediaEgressHop`
+    /// 上收到本文件：音频腿、普通 API 腿、SSE 腿用的是同一个解析器，不再各写一遍。
+    public static func redirectLanding(of response: HTTPURLResponse, requesting url: URL) -> URL? {
+        guard let header = response.value(forHTTPHeaderField: "Location") else { return nil }
+        let target = header.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard target.isEmpty == false else { return nil }
+        // 片段从不外发、反斜杠部分解析器视同 `/` —— 与 `resolveMediaURL` 同口径。
+        guard target.contains("#") == false, target.contains("\\") == false else { return nil }
+        if let absolute = URL(string: target), absolute.scheme != nil { return absolute }
+        return URL(string: target, relativeTo: url)?.absoluteURL
+    }
+
+    /// 凭证类跳转的裁决结果（**只处理 3xx**：非跳转由调用方按状态码交付）。
+    public enum CredentialedRedirect: Equatable, Sendable {
+        /// 落地仍是同一权威的生产出口 ⇒ 允许**调用方自己**重建请求再发一次。
+        case follow(URL)
+        /// 落地不是生产出口（或形态不合格）⇒ 那一次出站**绝不发生**，并把 host 如实交出去。
+        case refused(CovaEgressRefusal)
+        /// 3xx 但没有可用的 `Location` ⇒ 服务端故障，不是出口决定（交付状态码，别伪装成拒绝）。
+        case unresolvable
+    }
+
+    /// **D23① 的唯一跳转裁决面**：一条带凭证的 3xx 能不能追，以及追到哪里。
+    ///
+    /// 判据本身仍是 `mediaRedirectAllowed`（音频腿、封面腿、这两条凭证腿共用同一个函数），
+    /// 本函数只多做两件它做不到的事：把相对 `Location` 解析出来、把拒绝点名到 host。
+    /// 「许可名单」在这里**不构成**放行理由 —— 凭证永不出生产出口（硬边界 2/3、D5、D7、D10）。
+    public static func decideCredentialedRedirect(
+        response: HTTPURLResponse,
+        original: URL
+    ) -> CredentialedRedirect {
+        guard let landing = redirectLanding(of: response, requesting: original) else {
+            return .unresolvable
+        }
+        guard mediaRedirectAllowed(from: original, to: landing, carriesCredentials: true) else {
+            return .refused(CovaEgressRefusal(host: egressHostLabel(of: landing), rule: .credentialLeg))
+        }
+        return .follow(landing)
+    }
+
     /// 相对路径 + 查询项 → 生产 origin 下的绝对 URL。
     ///
     /// 拒绝一切可能造成 authority 逃逸的路径形态：不以 `/` 开头、以 `//` 开头（协议相对）、

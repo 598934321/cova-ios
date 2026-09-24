@@ -478,4 +478,127 @@ final class CovaEnvironmentTests: XCTestCase {
             carriesCredentials: false
         ))
     }
+
+    // MARK: - D23① 上收的三条共用件（解析 `Location` / 点名 host / 凭证类裁决）
+
+    /// 相对 `Location` 是 RFC 9110 §10.2.2 允许的形态：必须**相对发起那一条请求**解析。
+    /// 这一条解析器今天被音频腿、普通 API 腿、SSE 腿**共用**（旧形状是三处各写一遍）。
+    func testRedirectLandingResolvesAgainstTheRequestingURL() throws {
+        func response(_ location: String?, status: Int = 302) -> HTTPURLResponse {
+            HTTPURLResponse(
+                url: URL(string: "https://covalink.cn/api/studio/one-step/plans")!,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: location.map { ["Location": $0] } ?? [:]
+            )!
+        }
+        let requesting = URL(string: "https://covalink.cn/api/tracks/one/deep/preview-stream")!
+        XCTAssertEqual(
+            CovaEnvironment.redirectLanding(of: response("/api/tracks/two"), requesting: requesting)?.absoluteString,
+            "https://covalink.cn/api/tracks/two",
+            "根相对：基准是发起那一条的 scheme://authority"
+        )
+        XCTAssertEqual(
+            CovaEnvironment.redirectLanding(of: response("moved.m4a"), requesting: requesting)?.absoluteString,
+            "https://covalink.cn/api/tracks/one/deep/moved.m4a",
+            "纯相对：换掉最后一段，不是拼到根上"
+        )
+        XCTAssertEqual(
+            CovaEnvironment.redirectLanding(
+                of: response("https://covalink.cn/api/studio/agent?slot=2"),
+                requesting: requesting
+            )?.absoluteString,
+            "https://covalink.cn/api/studio/agent?slot=2",
+            "绝对形态原样交出"
+        )
+        XCTAssertNil(CovaEnvironment.redirectLanding(of: response(nil), requesting: requesting), "无 Location 头")
+        XCTAssertNil(CovaEnvironment.redirectLanding(of: response(""), requesting: requesting), "空 Location")
+        XCTAssertNil(CovaEnvironment.redirectLanding(of: response("   "), requesting: requesting), "只有空白")
+        XCTAssertNil(
+            CovaEnvironment.redirectLanding(of: response("/api/x#frag"), requesting: requesting),
+            "片段从不外发"
+        )
+        XCTAssertNil(
+            CovaEnvironment.redirectLanding(of: response("..\\evil"), requesting: requesting),
+            "反斜杠部分解析器视同 /"
+        )
+    }
+
+    /// 凭证类裁决的三种结局：跟（同源）/ 拒（点名 host）/ 交回状态码（3xx 无 Location）。
+    func testCredentialedRedirectDecisionCoversAllThreeOutcomes() throws {
+        func response(_ location: String?, status: Int = 302) -> HTTPURLResponse {
+            HTTPURLResponse(
+                url: URL(string: "https://covalink.cn/api/studio/agent")!,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: location.map { ["Location": $0] } ?? [:]
+            )!
+        }
+        let original = URL(string: "https://covalink.cn/api/studio/agent")!
+        // 同源（含规范端口写法）⇒ 跟。
+        XCTAssertEqual(
+            CovaEnvironment.decideCredentialedRedirect(
+                response: response("https://covalink.cn/api/studio/agent?slot=2"),
+                original: original
+            ),
+            .follow(URL(string: "https://covalink.cn/api/studio/agent?slot=2")!)
+        )
+        XCTAssertEqual(
+            CovaEnvironment.decideCredentialedRedirect(
+                response: response("https://covalink.cn:443/api/studio/agent?slot=2"),
+                original: original
+            ),
+            .follow(URL(string: "https://covalink.cn:443/api/studio/agent?slot=2")!),
+            "min-2：规范端口是同一台主机，不许被误杀"
+        )
+        // 别家 ⇒ 拒，点名到真收请求的那台。
+        for (landing, named) in [
+            ("https://evil.invalid/x", "evil.invalid"),
+            ("https://covalink.cn.evil.invalid/x", "covalink.cn.evil.invalid"),
+            ("https://covalink.cn@evil.invalid/x", "evil.invalid"),
+            ("https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/x",
+             "covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com"),
+            ("http://covalink.cn/x", "covalink.cn"),
+            ("https://covalink.cn:8443/x", "covalink.cn"),
+        ] {
+            let decision = CovaEnvironment.decideCredentialedRedirect(
+                response: response(landing), original: original
+            )
+            guard case .refused(let refusal) = decision else {
+                return XCTFail("落地 \(landing) 必须被拒，实得 \(decision)")
+            }
+            XCTAssertEqual(refusal.host, named)
+            XCTAssertEqual(refusal.rule, .credentialLeg)
+        }
+        // 3xx 但拿不出 Location ⇒ 服务端故障，不是出口决定。
+        XCTAssertEqual(
+            CovaEnvironment.decideCredentialedRedirect(response: response(nil), original: original),
+            .unresolvable
+        )
+    }
+
+    /// 点名口径：**只有 host**（小写），path / query / fragment 一概不带（硬边界 3）。
+    func testEgressHostLabelKeepsOnlyTheHost() {
+        XCTAssertEqual(
+            CovaEnvironment.egressHostLabel(
+                of: URL(string: "https://COVALINK-Covers-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3?sig=LEAK#a")!
+            ),
+            "covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com"
+        )
+        XCTAssertEqual(
+            CovaEnvironment.egressHostLabel(of: URL(string: "https://covalink.cn@evil.invalid/x?sig=LEAK")!),
+            "evil.invalid",
+            "userinfo 挂甲：真正收到请求的是 @ 之后那一台"
+        )
+        XCTAssertEqual(
+            CovaEnvironment.egressHostLabel(of: URL(string: "https://covalink.cn:8443/x")!),
+            "covalink.cn",
+            "端口不对也是同一台主机被点名（拒绝理由由判据给，不靠标签暗示）"
+        )
+        XCTAssertEqual(
+            CovaEnvironment.egressHostLabel(of: URL(string: "file:///tmp/pawned.mp3")!),
+            CovaEnvironment.unnameableHostLabel
+        )
+        XCTAssertFalse(CovaEnvironment.unnameableHostLabel.contains("LEAK"))
+    }
 }

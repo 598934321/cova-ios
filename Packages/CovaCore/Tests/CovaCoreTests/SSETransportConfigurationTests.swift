@@ -290,4 +290,114 @@ final class SSETransportConfigurationTests: XCTestCase {
         }
         XCTAssertTrue(StubURLProtocol.captured().isEmpty)
     }
+
+    // MARK: - D23①：SSE 这条腿也带 Bearer ⇒ 跳转同样在**出站之前**裁决
+
+    /// 生产装配的接线：SSE 会话必须挂上跳转守卫（与普通 API 腿同一个类、同一条判据）。
+    /// 少了它，长连接被服务端一次 302 领到别家主机时，那一条带 Bearer 的请求
+    /// 在任何人裁决之前就已经出站了（R17-3 的根因）。
+    func testSSEDefaultSessionCarriesTheRedirectGuard() {
+        let session = URLSessionSSETransport.makeDefaultSession()
+        XCTAssertTrue(
+            session.delegate is CredentialedRedirectGuard,
+            "凭证类 SSE 腿必须自带「一律不自动跟随」的守卫"
+        )
+        XCTAssertEqual(session.configuration.timeoutIntervalForRequest, URLSessionSSETransport.idleTimeout)
+        XCTAssertNil(session.configuration.urlCache)
+    }
+
+    /// 跨源 302 ⇒ 拒绝并点名 host，且落地那台一次都不许多。
+    func testSSECrossOriginRedirectIsRefusedWithoutAnyEgress() async throws {
+        let landing = "https://evil.invalid/api/studio/agent"
+        EgressStubURLProtocol.configure(.init(
+            statusCode: 302,
+            location: landing,
+            responses: [landing: .init(statusCode: 200, body: Data("event: done\ndata: {}\n\n".utf8))]
+        ))
+        let transport = URLSessionSSETransport(session: makeEgressStubSession(withGuard: true))
+        let stream = try await transport.stream(agentRequest())
+        do {
+            for try await _ in stream {}
+            XCTFail("跨源跳转必须被拒")
+        } catch let refusal as CovaEgressRefusal {
+            XCTAssertEqual(refusal, CovaEgressRefusal(host: "evil.invalid", rule: .credentialLeg))
+            XCTAssertTrue(refusal.description.contains("evil.invalid"), "拒绝必须点名 host：\(refusal)")
+            // 不许被归一成「可重试的传输故障」：那是刷新/重放环的入口。
+            XCTAssertFalse(refusal.isRetryable)
+            XCTAssertEqual(CovaAPIError.normalize(refusal), .invalidRequestURL)
+            XCTAssertFalse(CovaAPIError.normalize(refusal).isRetryable)
+            XCTAssertNil(CovaAPIError.normalize(refusal).httpStatusCode, "不得被读成 401 ⇒ 不触发刷新重放")
+        }
+        XCTAssertEqual(EgressStubURLProtocol.capturedHosts(), ["covalink.cn"], "落地那台一次都不许多")
+    }
+
+    /// 许可名单主机同样**不构成**放行理由（凭证永不出生产出口，SSE 也不例外）。
+    func testSSERedirectOntoTheMediaAllowListIsRefused() async throws {
+        let bucket = "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/stream"
+        EgressStubURLProtocol.configure(.init(
+            statusCode: 302,
+            location: bucket,
+            responses: [bucket: .init(statusCode: 200, body: Data("event: done\ndata: {}\n\n".utf8))]
+        ))
+        let transport = URLSessionSSETransport(session: makeEgressStubSession(withGuard: true))
+        let stream = try await transport.stream(agentRequest())
+        do {
+            for try await _ in stream {}
+            XCTFail("带 Bearer 的流不得跟到存储桶")
+        } catch let refusal as CovaEgressRefusal {
+            XCTAssertEqual(refusal.host, "covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com")
+        }
+        XCTAssertEqual(EgressStubURLProtocol.capturedHosts(), ["covalink.cn"])
+    }
+
+    /// 同权威跳转必须由本层追出去并照常交付字节（TD-9 的反面：合法工程不得误红）。
+    func testSSESameOriginRedirectIsFollowedByTheTransportItself() async throws {
+        let landing = "https://covalink.cn/api/studio/agent?slot=2"
+        EgressStubURLProtocol.configure(.init(
+            statusCode: 302,
+            location: landing,
+            responses: [landing: .init(statusCode: 200, body: Data("event: done\ndata: {}\n\n".utf8))]
+        ))
+        let transport = URLSessionSSETransport(session: makeEgressStubSession(withGuard: true))
+        let stream = try await transport.stream(agentRequest())
+        var received = Data()
+        for try await chunk in stream { received.append(chunk) }
+        XCTAssertEqual(received, Data("event: done\ndata: {}\n\n".utf8), "同权威跳转的字节必须照常交付")
+        let captured = EgressStubURLProtocol.captured()
+        XCTAssertEqual(captured.count, 2)
+        XCTAssertEqual(captured.last?.url?.absoluteString, landing)
+        XCTAssertEqual(captured.last?.timeoutInterval, URLSessionSSETransport.idleTimeout, "跳转不许把 60s 折回契约 15s")
+    }
+
+    /// 3xx 无 `Location`：不是出口决定，按既有口径收尾成 `.invalidResponse`（两类错误不许混）。
+    func testSSERedirectWithoutLocationStaysAnInvalidResponse() async throws {
+        EgressStubURLProtocol.configure(.init(statusCode: 302, location: nil))
+        let transport = URLSessionSSETransport(session: makeEgressStubSession(withGuard: true))
+        let stream = try await transport.stream(agentRequest())
+        do {
+            for try await _ in stream {}
+            XCTFail("无 Location 的 302 必须失败")
+        } catch let error as CovaAPIError {
+            XCTAssertEqual(error, .invalidResponse)
+            XCTAssertFalse(error.isRetryable)
+        }
+        XCTAssertEqual(EgressStubURLProtocol.captured().count, 1)
+    }
+
+    /// 投递面的第二道：注入式会话挂不上守卫时，「落地权威已换人」也只能在这里拦。
+    func testSSELandedResponseFromAnotherAuthorityIsRefused() async throws {
+        EgressStubURLProtocol.configure(.init(
+            statusCode: 200,
+            body: Data("event: done\ndata: {}\n\n".utf8),
+            landedURLString: "https://evil.invalid/api/studio/agent"
+        ))
+        let transport = URLSessionSSETransport(session: makeEgressStubSession(withGuard: false))
+        let stream = try await transport.stream(agentRequest())
+        do {
+            for try await _ in stream {}
+            XCTFail("落地权威换人必须被拒")
+        } catch let refusal as CovaEgressRefusal {
+            XCTAssertEqual(refusal.host, "evil.invalid")
+        }
+    }
 }

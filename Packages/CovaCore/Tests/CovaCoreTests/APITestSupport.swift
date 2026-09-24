@@ -287,3 +287,128 @@ enum TestTransportData {
 }
 
 struct EmptyDTO: Decodable, Equatable {}
+
+// MARK: - D23① 出口裁决用例共用的 URLSession 桩
+
+/// 跳转回调的答案盒（`completionHandler` 是 escaping 的，局部 var 捕获在 Swift 6
+/// 严格并发下不成立；锁内一次性记账，断言在回调之后读）。形状照音频层同名夹具。
+final class RedirectAnswer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didRecord = false
+    private var recorded: URLRequest?
+
+    func record(_ request: URLRequest?) {
+        lock.lock()
+        defer { lock.unlock() }
+        didRecord = true
+        recorded = request
+    }
+
+    var didAnswer: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didRecord
+    }
+
+    var request: URLRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+}
+
+/// 记录**每一次出站**并按脚本交回响应（含 `Location`）的 `URLProtocol` 桩（零真实网络）。
+///
+/// 形状照 `PrivateAudioTransportTests.StubAudioURLProtocol`（那边已验证：`URLProtocol` 桩
+/// **不驱动** URLSession 的自动跟随机器，3xx 会原样交回调用方 ⇒ 「追不追」这一判完全落在
+/// 我们自己的代码里，于是「被拒 ⇒ 一次出站都没有」是**可断言**的，而不是叙事。
+///
+/// host 一律用保留 TLD `.invalid`：桩万一没接管，结果是测试变红而不是真的出网。
+final class EgressStubURLProtocol: URLProtocol {
+    struct Script {
+        var statusCode = 200
+        var body = Data()
+        /// 3xx 的 `Location`（nil = 这一条响应不带跳转）。
+        var location: String?
+        /// 额外响应头（默认只给 Content-Type）。
+        var headers: [String: String] = [:]
+        /// 按**请求绝对地址**覆写的脚本：传输自己追出去的那一跳用它单独脚本化。
+        var responses: [String: Script] = [:]
+        /// 响应的**最终权威**（投递面兜底用例：模拟「已经被跟到别家」的形态）。
+        var landedURLString: String?
+        var failure: Error?
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var script = Script()
+    nonisolated(unsafe) private static var capturedRequests: [URLRequest] = []
+
+    static func configure(_ update: Script) {
+        lock.lock()
+        defer { lock.unlock() }
+        script = update
+        capturedRequests = []
+    }
+
+    static func captured() -> [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturedRequests
+    }
+
+    /// 已出站的地址（断言「落地那台一次都没被访问」用）。
+    static func capturedHosts() -> [String] {
+        captured().compactMap(\.url?.host)
+    }
+
+    /// 锁内「记录请求 + 取脚本快照」，避免 `startLoading`（后台线程）裸读静态可变状态。
+    private static func snapshot(for request: URLRequest) -> Script {
+        lock.lock()
+        defer { lock.unlock() }
+        capturedRequests.append(request)
+        return script
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let scripted = Self.snapshot(for: request)
+        let key = request.url?.absoluteString ?? ""
+        let current = scripted.responses[key] ?? scripted
+        if let failure = current.failure {
+            client?.urlProtocol(self, didFailWithError: failure)
+            return
+        }
+        var headers = ["Content-Type": "application/json"]
+        for (field, value) in current.headers { headers[field] = value }
+        if let location = current.location { headers["Location"] = location }
+        let target = current.landedURLString.flatMap(URL.init(string:)) ?? request.url!
+        let response = HTTPURLResponse(
+            url: target,
+            statusCode: current.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: headers
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !current.body.isEmpty { client?.urlProtocol(self, didLoad: current.body) }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// 装好 `EgressStubURLProtocol` 的会话配置。
+///
+/// - Parameter withGuard: 是否按**生产装配**那样把 D23① 的跳转守卫挂成 delegate。
+///   true = 与生产同一条建会话的腿（测「出站之前拒」）；false = 注入式会话（只能测投递面兜底）。
+func makeEgressStubSession(withGuard: Bool) -> URLSession {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [EgressStubURLProtocol.self]
+    guard withGuard else { return URLSession(configuration: configuration) }
+    return URLSession(
+        configuration: configuration,
+        delegate: CredentialedRedirectGuard(),
+        delegateQueue: nil
+    )
+}

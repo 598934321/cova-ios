@@ -106,16 +106,12 @@ enum AudioAuthorityMatch {
 enum MediaEgressHop {
     /// 3xx 的 `Location` → 绝对落地地址；拿不出来（空头/空值/形状可疑）→ nil。
     ///
+    /// D23 之后解析器本身**上收到 CovaCore**（`CovaEnvironment.redirectLanding`）：
     /// 相对 `Location` 是 RFC 9110 §10.2.2 允许的形态，必须**相对发起那一条请求**解析
-    /// （不是相对生产根，更不是字符串拼接）。
+    /// （不是相对生产根，更不是字符串拼接）—— 音频腿、普通 API 腿、SSE 腿三条共用一个解析器，
+    /// 不再各写一遍（min-2 的教训就是同一个规则在两处各写一遍、其中一处漏改）。
     static func landing(of response: HTTPURLResponse, requesting url: URL) -> URL? {
-        guard let header = response.value(forHTTPHeaderField: "Location") else { return nil }
-        let target = header.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard target.isEmpty == false else { return nil }
-        // 片段从不外发、反斜杠部分解析器视同 `/` —— 与 `CovaEnvironment.resolveMediaURL` 同口径。
-        guard target.contains("#") == false, target.contains("\\") == false else { return nil }
-        if let absolute = URL(string: target), absolute.scheme != nil { return absolute }
-        return URL(string: target, relativeTo: url)?.absoluteURL
+        CovaEnvironment.redirectLanding(of: response, requesting: url)
     }
 
     /// 追一跳：先按类别裁决，再决定**这一条新请求长什么样**。

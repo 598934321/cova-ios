@@ -168,4 +168,73 @@ final class CovaAPIErrorTests: XCTestCase {
         XCTAssertNil(minimal.error)
         XCTAssertNil(minimal.code)
     }
+
+    // MARK: - D23①：出口拒绝的**分类**（错分就等于重试环）
+
+    /// 归一化必须显式认得 `CovaEgressRefusal`。
+    ///
+    /// 旧口径（本次改动之前）里根本没有这一支 ⇒ 任何出口拒绝都会掉进末尾的
+    /// `.transport(code:)`，而 `.transport` 是 `isRetryable == true` ⇒
+    /// 「落地主机不对」被上层读成「网络抖了一下」= 刷新/重放环（reviewer 点名的错分面）。
+    /// 这一条断的是**归一之后**仍然不可重试、不是 401（401 会触发 single-flight 刷新再重放）。
+    func testEgressRefusalNormalizesToANonRetryableBranch() {
+        let refusal = CovaEgressRefusal(host: "evil.invalid", rule: .credentialLeg)
+        let normalized = CovaAPIError.normalize(refusal)
+        XCTAssertEqual(normalized, .invalidRequestURL)
+        XCTAssertFalse(normalized.isRetryable, "出口裁决不是传输故障：重试不会改变结果")
+        XCTAssertNil(normalized.httpStatusCode, "不得被读成 401 ⇒ 不触发刷新重放")
+        XCTAssertFalse(normalized.redactedDescription.isEmpty)
+        // 反面对照（判据不许过宽）：真正的传输故障仍然可重试，本次没顺手收紧别处。
+        XCTAssertTrue(CovaAPIError.normalize(URLError(.timedOut)).isRetryable)
+        XCTAssertTrue(CovaAPIError.normalize(NSError(domain: "probe.domain", code: 4321)).isRetryable)
+        XCTAssertFalse(refusal.isRetryable)
+        XCTAssertEqual(refusal.asCovaAPIError, .invalidRequestURL)
+    }
+
+    /// 拒绝必须**点名 host**（桶名/存储区一变要看得见），且一个签名字符都不许带。
+    func testEgressRefusalNamesTheOffendingHostAndNothingElse() throws {
+        let signed = URL(string: "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3?sig=LEAK-SIGNATURE&a-key=LEAK-KEY")!
+        let refusal = CovaEgressRefusal(
+            host: CovaEnvironment.egressHostLabel(of: signed),
+            rule: .publicMediaLeg
+        )
+        XCTAssertTrue(refusal.host == "covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com")
+        XCTAssertTrue(refusal.description.contains(refusal.host), "拒绝信息必须看得见是哪台：\(refusal)")
+        for secret in ["LEAK-SIGNATURE", "LEAK-KEY", "full.mp3", "sig=", "?"] {
+            XCTAssertFalse(refusal.description.contains(secret), "拒绝信息泄漏：\(secret)")
+        }
+        // 全部描述/反射面（含 `dump` / 数组 / Optional 包裹）都不许带出签名地址的任何片段。
+        let rendered = renderAllSurfaces(refusal)
+        XCTAssertFalse(rendered.contains("LEAK"), "反射面泄漏签名：\(rendered)")
+        XCTAssertFalse(rendered.contains("tracks"), "反射面泄漏路径：\(rendered)")
+        XCTAssertEqual(refusal.errorDescription, refusal.description)
+        XCTAssertEqual(refusal.rule, .publicMediaLeg)
+    }
+
+    /// 取不出 host 时的占位也必须**诚实**：宁可以说「没有主机」，也不能回退成整串地址。
+    func testEgressHostLabelFailsClosedToAPlaceholder() {
+        XCTAssertEqual(
+            CovaEnvironment.egressHostLabel(of: URL(string: "file:///tmp/pawned.mp3?sig=LEAK")!),
+            CovaEnvironment.unnameableHostLabel
+        )
+        let refusal = CovaEgressRefusal(host: CovaEnvironment.unnameableHostLabel)
+        XCTAssertTrue(refusal.description.contains(CovaEnvironment.unnameableHostLabel))
+        XCTAssertFalse(refusal.description.contains("LEAK"))
+        XCTAssertFalse(refusal.description.contains("pawned"))
+    }
+
+    /// 两类规则各有各的一句话（D23 的分型在错误面上也要留痕），且都不可重试。
+    func testEgressRefusalRulesAreDistinguishable() {
+        for rule in CovaEgressRefusal.Rule.allCases {
+            let refusal = CovaEgressRefusal(host: "somewhere.invalid", rule: rule)
+            XCTAssertFalse(refusal.isRetryable)
+            XCTAssertTrue(refusal.description.contains("somewhere.invalid"))
+            XCTAssertNotEqual(
+                refusal.description,
+                CovaEgressRefusal(host: "somewhere.invalid", rule: rule == .credentialLeg ? .publicMediaLeg : .credentialLeg).description,
+                "两类拒绝必须说不同的话（名单问题 ≠ 出口问题）"
+            )
+        }
+        XCTAssertEqual(CovaEgressRefusal.Rule.allCases.count, 2)
+    }
 }
