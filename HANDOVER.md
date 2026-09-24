@@ -974,3 +974,37 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
    （TD-44，**凭证侧仍是缺口**）。
 4. **门面层等价复现腿**（TD-45）：私有音频取消族只在协调器层有测试。
 5. `stash@{0}`：**用户裁决保留不动**，既非交付物也非待办。
+
+## 15. 逐屏可见性矩阵（2026-09-24 07:39，按磁盘与截图实测，不按记忆）
+
+用途：回答「我现在到底能看到什么」。三列分别是**有没有代码**、**有没有可看证据**、
+**看不到的话卡在哪**。视图类型名取自 `Packages/CovaFeature/Sources/CovaFeature/`，
+截图路径相对 `docs/acceptance/`。
+
+| 屏 | 代码（视图类型） | 可看证据 | 卡点 |
+|---|---|---|---|
+| 01 首页 | `HomeView` | `m1-20260922/01-home.png`、`09-home-prompt-card.png` | 「继续聆听」段需登录 |
+| 02 全屏播放器 + MiniPlayer | `PlayerView` / `MiniPlayerView` | `03-player.png`（游客空态） | **有内容的一屏要登录**（未登录不播放是红线）；歌词面板与候选徽标只能在登录后看到 |
+| 03 曲库 | `LibraryView` | `02-library.png`（搜索 + chips + 时长/BPM/♡） | 收藏心需登录 |
+| 04 抽屉 | `CovaRootView` 内 | **无截图** | 走查钩子只有 `TAB/SHEET/ROUTE` 三个，**没有开抽屉的键**；`simctl` 不能点击（引入 idb/appium 违反零依赖）⇒ 要么加 `COVA_PREVIEW_DRAWER`，要么你手动开一下 |
+| 05 歌单广场 | `PlaylistsPlazaView` | `06-plaza.png` + **AX 对照** `m3-20260924/01↔02`（双列→单列） | — |
+| 06 歌单详情 | `PlaylistDetailView` | `04-playlist-detail.png` | 收藏角标是 NEEDS-9 的「未知」形态，不是缺陷 |
+| 07 曲目详情 | `DetailViews` 内半屏 | `05-track-detail.png` | — |
+| 08 创作会话列表 | `AISessionsView` | `08-ai-sessions-guest.png`（游客门控） | **真会话需登录** |
+| 09 会话详情 | `AISessionDetailView` | **无截图** | 需要登录 + 一个真实 sessionId ⇒ SSE、计划卡 12 态、双 Demo、进度条、终态主钮**代码在、画面没证过** |
+| 10 登录 | `LoginView` | `03-login.png` | 缺账号 ⇒ 登录后的链路一次都没跑过 |
+| 11 我的 | `MineView` | `02-mine.png`（游客） | 权益/余额需登录 |
+| 12a 我的收藏 | `FavoritesView` | **无截图** | 需登录 |
+| 12b 我的歌单 | `MyPlaylistsView` | **无截图** | 需登录 |
+| 12c 我的创作 | `MyCreationsView` | **无截图** | 需登录 |
+| 12d 下载管理 | **无代码** | n/a | D12 合规未放行 ⇒ 按裁决不渲染（不是遗漏） |
+| 13 会员 | `MembershipView` | `10-membership.png` + **AX 证据** `m3-20260924/03`（四列表→逐套餐卡） | 只展示余额，无购买入口（D12） |
+| 14 企业 | `EnterpriseView` | `10-enterprise.png` | — |
+| 15 设置 | `SettingsView` | `07-settings.png` | 通知授权行已接真状态；下载行按 D12 不渲染 |
+| 16 AI 音乐人 | `ArtistHomeView` | `11-artist-home.png` + **AX 对照** `m3-20260924/04↔05`（头像 112→88） | 人设取首条曲目内嵌 `artist`（契约无艺人端点） |
+| 17 状态画廊 | **无代码** | n/a | 设计内部屏，未排期；各屏的空/错/骨架**已分别落地**（`CovaEmptyState`/`CovaErrorState`/`CovaSkeleton`，见 TD-49 的族缺口） |
+| 18 本地通知 | 无自有屏（符合 spec） | 行为面在 `CovaCore` 用例里 | 深链载体待裁决（改 Info.plist 需批准） |
+
+**一句话结论**：**游客能看到 11 屏**（01/03/05/06/07/10/11/13/14/15/16，含 3 组 AX 对照）；
+**看不到的全部卡在同一个地方 —— 没有账号**（02 的有内容态、08/09/12a/12b/12c），
+外加 04 抽屉缺一个走查键。12d 与 17 是**按裁决不做**，不是漏。
