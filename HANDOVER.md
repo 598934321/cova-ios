@@ -293,6 +293,15 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
   一支（约 220–260s / 千轮）。再加基态列时按 §17.5 第 4 条**拆成独立用例**，不要继续乘进去
   —— 成本本身不是问题，「跑不完 → 有人偷降迭代数」才是。
 
+**UI 层（2026-09-24 M3 批次登记）**
+- TD-48：**`CovaUI` / `CovaFeature` 没有测试目标** ⇒ 这一层的改动（字阶映射到 Apple textStyle、
+  AX 档版式、封面缓存与降采样解码、VoiceOver 标签）**只能靠"构建通过 + 模拟器截图"自证**，
+  门禁的计数与覆盖判据对它零可见性（`check.sh` 只认 `CovaTests`/`CovaCoreTests`/`CovaPlayerTests`
+  三个 target）。要补第 4 个 test target 就得同时改门禁的计数与归因判据 —— 那是**门禁改动**，
+  需要与 G3 的门禁口径一起定，不在 M3 里顺手做。⇒ 现状下 `CovaType` 的映射表、`covaAXLayout`
+  阈值、`CovaArtworkCache` 的淘汰行为**没有一条机器断言**，改它们时请用手测证据说话。
+  逐屏 AX 版式的剩余项登记在 **§14 C⁗**（不在这里重复列，避免两处账打架）。
+
 **持续 / 工具链**
 - TD-47（第 11 批 B 期间的自查，协调者登记，M1 前处理）：**生产代码的 `@unchecked Sendable`
   没有逐处论证义务**。实测普查：生产侧 9 处（`SecureStore.swift:92`、
@@ -820,7 +829,7 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 | 后端缺口登记 | ✅ 22 条在册（本轮新增 #14–#22） | `docs/NEEDS.md`；M1 的硬阻塞项：#1 登录 DTO、#2 上报 allowlist、#3 entitlements 形态、#15 私有音频主机形态；G4 侧：#4 账号删除、#5 Apple 登录（仅当引入第三方登录） |
 | 锁定决策 | ✅ D1–D20 | `docs/decisions.md`；本轮新增 **D19**（用户授权「先看效果再提意见」，UI 验收次序扩档）、**D20**（登录解码容忍后端缺字段：布尔缺席读 false 的保守方向，`id/name/role` 仍严格必需）|
 | 隔离评审留痕 | ✅ 第 4/5/6 轮全部存档 | `docs/review-g3e-round4.md` §A–§F（含协调者两次自纠：撤回「5 种绕过全部命中」、撤回「评审式会留过期回显」）|
-| 技术债 | ✅ TD-1…TD-47 在册 | §7；本轮关闭 TD-1/TD-38，新增 TD-45（门面层复现腿缺，M1 补）/ TD-46（矩阵成本）|
+| 技术债 | ✅ TD-1…TD-48 在册 | §7；本轮关闭 TD-1/TD-38，新增 TD-45（门面层复现腿缺，M1 补）/ TD-46（矩阵成本）/ **TD-48（UI 层无测试目标 ⇒ M3 的样式与缓存改动没有机器断言）** |
 
 ### C′. 模拟器验收位（2026-09-22 01:55，`iPhone 17` iOS 26.5 模拟器实机安装并启动）
 
