@@ -8,8 +8,9 @@ import XCTest
 /// 本份钉的是「**什么时候允许把 `state` 写成已登录**」—— 登录是在途操作，
 /// 期间用户的显式动作与另一个账号的登录都可能改变会话，此时无脑提交就是把真实结果推翻。
 ///
-/// 全部零网络：注入 `FakeHTTPTransport` + 内存凭证存储；两条探针都是确定性的
-/// （用 `setBeforeSessionActivation` 把 `signIn` 卡在最后一道 await 之后），不靠时序运气。
+/// 全部零网络：注入 `FakeHTTPTransport` + 内存凭证存储；探针都是确定性的
+/// （用 `setBeforeSessionActivation` 把 `signIn` 卡在最后一道 await 之后；
+/// 用假传输层的 `/login` 把它卡在**换号之前**），不靠时序运气。
 final class SignInCommitDisciplineTests: XCTestCase {
 
     // MARK: - R15-1 探针 P1：显式登出不得被在途登录推翻
@@ -118,6 +119,129 @@ final class SignInCommitDisciplineTests: XCTestCase {
         XCTAssertEqual(snapshot?.principal, TestAccount.b.principal, "并发登录后不得出现「状态说已登录、凭证却一无所知」")
         let loginCount = await transport.requestCount(path: CovaAuthSession.loginPath)
         XCTAssertEqual(loginCount, 2, "两次登录各发一次 `/login`（探针不得靠重放凑数）")
+    }
+
+    // MARK: - R16-2 探针 P3：赢家**先**提交 ⇒ 输家的破坏性换号必须整体跳过
+
+    /// 现场：甲停在 `/login` 的在途网络窗口里，乙在这期间完整跑完**并提交**；甲随后才醒来去做换号。
+    ///
+    /// 与 P2 的差别只有顺序：P2 里甲的换号排在乙开始之前，所以它只能证明"状态不被盖写"，
+    /// 证明不了"输家不去动别人的账户状态"。而换号（`switchAccount(from: 乙, to: 甲)`）的清理
+    /// 删的是 `previous` 的凭证 —— 排在乙提交之后就是在删**乙**的东西，甲自己在后面才被提交闸拦下：
+    /// 拦下的是甲，毁掉的却是乙。终态三处齐红（第 16 轮实测）：状态 `authenticated(乙)` 但
+    /// `accessToken()` 是 nil、owner 指针 nil、lifecycle 归属 nil ⇒ 此后每个请求都不带
+    /// Authorization，且只能等冷启动自愈。
+    ///
+    /// 探针形态：把"卡住"放进假传输层的 `/login`，并在同一次调用里把乙跑到完成再返回甲的响应。
+    /// 刻意不用"park 住等测试放行"——实现一旦没走到复核就是挂死而不是红（见文件头）。
+    func testLoserSkipsTheDestructiveRebindWhenAnotherAccountAlreadyCommitted() async throws {
+        let stack = makeTestStack()
+        let script = AuthFlowScript(accounts: [.a, .b])
+        let box = InFlightLoginBox()
+        let transport = FakeHTTPTransport { [script, box] request in
+            switch request.url.path {
+            case CovaAuthSession.loginPath:
+                let response = script.nextLoginResponse()  // 第 1 次是甲，第 2 次是乙
+                // 只有甲那一次 `/login` 带动乙；乙自己那次拿到 nil，不再重入。
+                if let session = await box.claimWinnerRun() {
+                    do {
+                        let user = try await session.signIn(
+                            email: "b@example.invalid", password: SecretString("placeholder")
+                        )
+                        await box.saveWinner(user)
+                    } catch {
+                        await box.saveFailure(String(describing: error))
+                    }
+                }
+                return response
+            case CovaAuthSession.mePath:
+                return script.meResponse(for: request)
+            default:
+                return HTTPResponse(statusCode: 200, body: TestTransportData.ok)
+            }
+        }
+        let session = makeAuthSession(transport: transport, stack: stack)
+        await box.install(session)
+
+        do {
+            _ = try await session.signIn(email: "a@example.invalid", password: SecretString("placeholder"))
+            XCTFail("已被乙的提交取代的登录必须失败")
+        } catch let error as CovaAPIError {
+            XCTAssertEqual(error, .sessionChanged, "输家要报「会话已变」，不能假装登录成功")
+        }
+
+        let meUser = try JSONDecoder().decode(CovaMeResponse.self, from: TestAccount.b.meBody).user
+        let detail = await box.describeFailure() ?? "甲根本没走到 `/login`（探针未成立）"
+        guard let winnerUser = await box.saved() else {
+            XCTFail("乙这次登录应当成功，实得：\(detail)")
+            return
+        }
+        XCTAssertEqual(winnerUser, meUser)
+
+        let state = await session.currentState()
+        XCTAssertEqual(state, .authenticated(meUser), "状态必须停在**先提交的那个**（乙）")
+        // 症状本身：赢家的会话必须仍能供出 Authorization。
+        let winnerToken = try await session.accessToken()
+        XCTAssertEqual(
+            winnerToken?.rawValue, TestAccount.b.accessToken,
+            "输家的换号不得抹掉赢家的 access —— 状态说已登录、凭证却一无所知就是「每个请求都不带 Authorization」"
+        )
+        let snapshot = try await session.currentSession()
+        XCTAssertEqual(snapshot?.principal, TestAccount.b.principal, "凭证与状态必须是同一个人")
+        XCTAssertEqual(snapshot?.accessToken.rawValue, TestAccount.b.accessToken)
+        XCTAssertNotNil(
+            try stack.secureStore.secret(for: TestAccount.b.item(.refreshToken)),
+            "单次旋转的 refresh 同样不能被输家抹掉（抹掉后乙一过期就再也刷不动）"
+        )
+        // 三个归属面都必须仍然指向乙：输家既不该盖指针，也不该碰 lifecycle。
+        XCTAssertEqual(
+            try stack.activeOwnerStore.loadActiveOwner(), TestAccount.b.principal,
+            "owner 指针被输家清成 nil ⇒ 冷启动会以为没人登录"
+        )
+        let lifecycleOwner = await stack.lifecycle.currentOwner()
+        XCTAssertEqual(lifecycleOwner, TestAccount.b.principal, "输家根本不该为另一个 owner 调用 lifecycle")
+        XCTAssertNil(
+            try stack.secureStore.secret(for: TestAccount.a.item(.accessToken)),
+            "甲的凭证不得留下（复核成立时它压根没被写过）"
+        )
+        let loginCount = await transport.requestCount(path: CovaAuthSession.loginPath)
+        XCTAssertEqual(loginCount, 2, "两次登录各发一次 `/login`（探针不得靠重放凑数）")
+        let logoutCount = await transport.requestCount(path: CovaAuthSession.logoutPath)
+        XCTAssertEqual(
+            logoutCount, 1,
+            "甲要作废**自己**这次 `/login` 在服务端建立的会话族（本地没落凭证也得撤），且只撤一次"
+        )
+    }
+
+    // MARK: - R16-2 的副作用边界：同账号重新登录不得被换号前的复核误判
+
+    /// 当前 owner 就是甲时，甲再点一次登录：换号分支本来就不触发（`previous == principal`），
+    /// 换号前的复核也不能把它判废 —— 否则"换号前先看 epoch"就成了把正常重登也一起拦掉的新 bug。
+    func testReSignInForTheCurrentOwnerStillCommits() async throws {
+        let stack = makeTestStack()
+        let transport = makeAuthTransport()
+        let session = makeAuthSession(transport: transport, stack: stack)
+        let account = TestAccount.a
+        let meUser = try JSONDecoder().decode(CovaMeResponse.self, from: account.meBody).user
+
+        _ = try await session.signIn(email: "tester@example.invalid", password: SecretString("placeholder"))
+
+        let user = try await session.signIn(
+            email: "tester@example.invalid", password: SecretString("placeholder")
+        )
+        XCTAssertEqual(user, meUser, "同账号重登是合法的成功路径，不得被判「会话已变」")
+        let state = await session.currentState()
+        XCTAssertEqual(state, .authenticated(meUser))
+        let currentToken = try await session.accessToken()
+        XCTAssertEqual(
+            currentToken?.rawValue, account.accessToken,
+            "重登后自己的凭证必须可读"
+        )
+        XCTAssertEqual(try stack.activeOwnerStore.loadActiveOwner(), account.principal)
+        let lifecycleOwner = await stack.lifecycle.currentOwner()
+        XCTAssertEqual(lifecycleOwner, account.principal)
+        let logoutCount = await transport.requestCount(path: CovaAuthSession.logoutPath)
+        XCTAssertEqual(logoutCount, 0, "成功路径不得发出任何登出（包括换号前复核的那条作废分支）")
     }
 
     // MARK: - 提交判据的取舍：generation 不得当判据（反向用例）
@@ -255,6 +379,31 @@ final class SignInCommitDisciplineTests: XCTestCase {
 }
 
 // MARK: - 本文件专用夹具（刻意 private：不与其他测试文件的同名助手互相覆盖）
+
+/// 甲停在 `/login` 里时的记账：把状态机自身交给假传输层，让它在那一次调用里驱动乙登录。
+///
+/// 存 `CovaAuthSession`（actor 引用，天然 Sendable）而不是 `any Error`：actor 的存储属性
+/// 要满足 Sendable，错误只能存成描述文本。
+private actor InFlightLoginBox {
+    private var session: CovaAuthSession?
+    private var claimed = false
+    private var winner: AuthUser?
+    private var failure: String?
+
+    func install(_ session: CovaAuthSession) { self.session = session }
+
+    /// 第一次调用返回状态机（甲那次 `/login` 带动乙），之后一律 `nil`（乙自己那次不再重入）。
+    func claimWinnerRun() -> CovaAuthSession? {
+        if claimed { return nil }
+        claimed = true
+        return session
+    }
+
+    func saveWinner(_ user: AuthUser) { winner = user }
+    func saveFailure(_ description: String) { failure = description }
+    func saved() -> AuthUser? { winner }
+    func describeFailure() -> String? { failure }
+}
 
 /// 提交临界区里"谁赢了"的记账，兼当**只触发一次**的闸门（`claimWindow`）。
 ///

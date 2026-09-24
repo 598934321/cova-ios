@@ -233,6 +233,11 @@ public actor CovaAuthSession: APICredentialProviding {
     /// 不复核会有两类真后果：显式登出被在途登录推翻（状态复活成已登录、凭证留在库里，而那次
     /// 登出因为取到 nil principal 既没通知服务端也没做本地清理），以及并发登录两个账号时
     /// 「状态写甲、owner 指针是乙」—— 此后每个请求都不带 Authorization。
+    ///
+    /// **同一判据还要卡在破坏性重绑之前**（R16-2）：换号清理删的是**上一个 owner** 的凭证，
+    /// 只复核"我自己能不能提交"不够 —— 输家会在提交闸把自己拦下的**同时**把赢家抹干净
+    /// （状态说已登录、`accessToken()` 却是 nil，且 owner 指针与 lifecycle 归属一起变 nil，
+    /// 只有冷启动才自愈）。基线在**入口**取，`/login` 一跳回来后先复核再动 `lifecycle`。
     @discardableResult
     public func signIn(email: String, password: SecretString) async throws -> AuthUser {
         // 基准在**入口**取：本次登录期间任何用户可感知的会话变化都会推进它。
@@ -242,8 +247,30 @@ public actor CovaAuthSession: APICredentialProviding {
         let response: CovaLoginResponseDto = try await sendRaw(request)
         let principal = PrincipalID(rawValue: response.user.id)
 
+        let previous = await lifecycle.currentOwner()
+        // **破坏性重绑之前**先复核（R16-2）：`/login` 是在途窗口，期间另一个账号的登录（或用户的
+        // 显式登出/选游客）可能已经接管会话，而下面那次 `switchAccount(from: previous, to:)` 清理的
+        // 是 `previous` 的凭证 —— 也就是**别人**的东西。提交闸只能拦住"甲自己写下状态"，
+        // 拦不住"甲顺手抹掉乙"，所以同一判据要在动手之前再用一次。
+        //
+        // 位置刻意贴着 `currentOwner()` 那次 await 之后：判据读的是同步的 `sessionEpoch`，
+        // 复核与换号调用之间**不再插入任何 await**（插进去就等于把这道闸要堵的重入窗口重新打开），
+        // 上面那次读也只读 owner，不改任何归属面。
+        // 判据仍只取 `sessionEpoch`，不并 generation（D22①，与提交闸同一口径）。
+        guard sessionEpoch == epoch else {
+            // 本地一个字节都还没写（凭证、owner 指针、lifecycle 归属都没碰），所以既不能清别人的
+            // 状态，也没有自己的状态可清；只有服务端那次 `/login` 真建起了一条会话族 ——
+            // best-effort 撤掉它（D21④：logout 撤销整个 session family；本地不落凭证 ≠ 会话不存在）。
+            // 随后走既有的"接管已发生"收尾：`concludeFailedSignIn` 见 epoch 已推进 ⇒ 只做定点回滚，
+            // 不碰 `state`、不推进 epoch，因此赢家的三个归属面都不会被动到。
+            await sendLogoutBestEffort(token: response.token)
+            try await concludeFailedSignIn(
+                owner: principal, epoch: epoch, primary: CovaAPIError.sessionChanged
+            )
+        }
+
         var cleanupFailure: SessionCleanupFailure?
-        if let previous = await lifecycle.currentOwner(), previous != principal {
+        if let previous, previous != principal {
             do {
                 try await lifecycle.switchAccount(from: previous, to: principal)
             } catch let error as SessionCleanupFailure {
