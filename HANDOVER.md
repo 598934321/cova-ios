@@ -309,6 +309,16 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
   且调用点传的 `rows` 是随手数（5/6/8/4），**没有一处来自屏型规则**。
   ⇒ 与 TD-48 连在一起：UI 层没有测试目标，这类"规格未落地"机器看不见，只能靠逐屏验收发现。
   不在 M3 里顺手做的理由：改族形态要同时改 6 个调用点并重拍截图，属于 G2 逐屏验收的回炉面。
+- TD-50（2026-09-24 15:21 实测，**协调者自己写的钩子被自己的证据否证**）：新加的走查钩子
+  `COVA_PREVIEW_DYNTYPE` **没有生效**。取证方式：同一条 `simctl launch` 里
+  `-COVA_PREVIEW_ROUTE membership` 生效（画面确实是「会员权益」，两条 D12 脚注逐字在位），
+  而 `-COVA_PREVIEW_DYNTYPE ax3` 画面**与默认档逐像素相同**（字号没变、13 的四列对照表也没换成
+  纵向套餐卡）⇒ 参数送达没问题，问题在 `CovaApp.previewDynamicType` 的读点或 `Group` 分支
+  （三处之一没接上）。**已把三张假 AX 截图删掉，不拿它们当证据**。
+  ⇒ 后果要说白：**AX 档版式目前没有视觉证据**，只有代码与构建通过；05/13/16/15/行组件那五处
+  改动的真实观感要等这个钩子修好才能拍。修法是让钩子与既有 `COVA_PREVIEW_*` 走同一条读点
+  （`AppSession` 启动时读，而不是 `App.body` 里算），并**先证伪**：设 `ax3` 后 05 必须从 2 列变 1 列，
+  否则不算修好。
 
 **持续 / 工具链**
 - TD-47（第 11 批 B 期间的自查，协调者登记，M1 前处理）：**生产代码的 `@unchecked Sendable`
