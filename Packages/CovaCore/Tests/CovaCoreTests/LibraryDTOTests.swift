@@ -324,4 +324,126 @@ final class LibraryDTOTests: XCTestCase {
     func testMissingTaxonomyEnvelopeFailsDecoding() {
         XCTAssertThrowsError(try JSONDecoder().decode(TaxonomyDto.self, from: Data("{}".utf8)))
     }
+
+    // MARK: - `GET /api/tracks` 的查询编码（E3a）
+    //
+    // 服务端真实契约（2026-09-24 只读实测 `https://covalink.cn/api/tracks`，与 `web` 仓
+    // `src/app/api/tracks/route.ts` 的 `searchParams.get('search')` / `getAll(<维度名>)` 互证；
+    // 探针只看行数与 `total`，不回显任何响应值）：
+    // · 基线 `pageSize=100` → total 20324；
+    // · `search=zzzznotaterm` → 0（生效）；`q=` / `keyword=` → 20324（**被忽略**）；
+    // · `dimension=mood&term=…` → 20324（**被忽略**）；`mood=zzzznotaterm` / `scene=` / `genre=`
+    //   / `style=` / `type=` / `vocalType=` / `energy=` 各自 → 0（**维度名就是参数名**）；
+    // · 多选 = **重复同名参数**（维度内 OR）：`energy=高` → 7178、`energy=中` → 3393、
+    //   `energy=高&energy=中` → **10571 = 7178 + 3393**（精确相加 ⇒ 两个值都进了同一维度）；
+    //   逗号串 `energy=高,中` → 7178（等于单值 ⇒ 逗号不是该编码）。
+
+    /// 编码后的**真实查询串**（`percentEncodedQuery` 保留转义；`URL.query` 是解码后的，不能用）。
+    private func encodedTrackListQuery(_ query: TrackListQuery) throws -> String {
+        let url = try XCTUnwrap(
+            CovaEnvironment.makeAPIURL(path: "/api/tracks", queryItems: query.queryItems),
+            "编码后的地址必须过 D10 出口守卫"
+        )
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        return try XCTUnwrap(components.percentEncodedQuery)
+    }
+
+    /// 解码回 `name=value` 列表（断言可读；元组不成 `Equatable`，故合并成字符串）。
+    private func decodedQueryPairs(_ query: TrackListQuery) throws -> [String] {
+        let url = try XCTUnwrap(
+            CovaEnvironment.makeAPIURL(path: "/api/tracks", queryItems: query.queryItems)
+        )
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        return (components.queryItems ?? []).map { "\($0.name)=\($0.value ?? "")" }
+    }
+
+    func testTrackListQueryEncodesTextSearchAsSearchKey() throws {
+        XCTAssertEqual(
+            try encodedTrackListQuery(TrackListQuery(search: "深夜电台")),
+            "page=1&pageSize=20&search=%E6%B7%B1%E5%A4%9C%E7%94%B5%E5%8F%B0"
+        )
+        // 反向钉子：服务端不读的 `q` 不得再出现在查询里。
+        XCTAssertFalse(try encodedTrackListQuery(TrackListQuery(search: "深夜电台")).contains("q="))
+    }
+
+    func testTrackListQueryUsesDimensionNameAsTheParameterKey() throws {
+        let query = TrackListQuery(dimension: "mood", terms: ["宁静"])
+        XCTAssertEqual(
+            try decodedQueryPairs(query),
+            ["page=1", "pageSize=20", "mood=宁静"]
+        )
+        let names = try decodedQueryPairs(query).map { String($0.prefix(while: { $0 != "=" })) }
+        XCTAssertFalse(names.contains("dimension"), "`dimension=` 服务端从不读（实测 = 基线）")
+        XCTAssertFalse(names.contains("term"), "`term=` 服务端从不读（实测 = 基线）")
+    }
+
+    func testTrackListQueryEncodesMultiSelectAsRepeatedKeys() throws {
+        let query = TrackListQuery(dimension: "energy", terms: ["高", "中"], page: 2, pageSize: 8)
+        XCTAssertEqual(
+            try decodedQueryPairs(query),
+            ["page=2", "pageSize=8", "energy=高", "energy=中"]
+        )
+        XCTAssertEqual(
+            try encodedTrackListQuery(query),
+            "page=2&pageSize=8&energy=%E9%AB%98&energy=%E4%B8%AD"
+        )
+    }
+
+    /// 多选 + 文本检索 + 按艺人筛**同时**成立（三键互不吞没，顺序固定可断言）。
+    func testTrackListQueryCombinesSearchDimensionsAndArtist() throws {
+        let query = TrackListQuery(
+            dimension: "scene", terms: ["短视频/Vlog", "广告"],
+            search: "钢琴", artistID: "A06", page: 3, pageSize: 20
+        )
+        XCTAssertEqual(
+            try decodedQueryPairs(query),
+            [
+                "page=3", "pageSize=20", "artistId=A06",
+                "search=钢琴", "scene=短视频/Vlog", "scene=广告",
+            ]
+        )
+    }
+
+    /// 空白筛选**不发键**：`search=`（空值）在服务端等价于未传，但会把缓存键污染成两套形态。
+    func testTrackListQueryDropsBlankAndEmptyFilters() throws {
+        XCTAssertEqual(
+            try encodedTrackListQuery(
+                TrackListQuery(dimension: "  ", terms: ["", "  "], search: "   ", artistID: " ")
+            ),
+            "page=1&pageSize=20"
+        )
+        // 有维度名但没有词条 ⇒ 只发分页（发 `mood=` 空值等于没筛，还会伪装成"已筛"）。
+        XCTAssertEqual(
+            try encodedTrackListQuery(TrackListQuery(dimension: "mood")),
+            "page=1&pageSize=20"
+        )
+    }
+
+    /// 维度名直接当参数名 ⇒ **语法**门槛是注入面（`a=b&c` 这类名字会把查询改写）。
+    /// 门槛只校验形态，不维护"合法维度白名单"：词表由服务端 `getAll(<名>)` 逐名读，
+    /// 客户端再抄一份就会在新维度上线时静默吞掉筛选。
+    func testTrackListQueryRejectsMalformedDimensionNames() throws {
+        for name in ["mo od", "a=b", "x&y", "能量", "sc/ene", "", "-", String(repeating: "a", count: 40)] {
+            XCTAssertEqual(
+                try encodedTrackListQuery(TrackListQuery(dimension: name, terms: ["高"])),
+                "page=1&pageSize=20",
+                "非法维度名「\(name)」不得进查询"
+            )
+        }
+        // 合法形态放行（含 camelCase 的 `vocalType`，服务端就是这么读的）。
+        XCTAssertEqual(
+            try encodedTrackListQuery(TrackListQuery(dimension: "vocalType", terms: ["vocal"])),
+            "page=1&pageSize=20&vocalType=vocal"
+        )
+    }
+
+    /// 分页两键恒在：服务端 `page`/`pageSize` 缺失时按 1/20 处理，但显式发出才能让
+    /// 「同一筛选 = 同一地址」这条断言成立（也便于缓存与日志对齐）。
+    func testTrackListQueryKeepsPaginationAlwaysPresent() throws {
+        XCTAssertEqual(try encodedTrackListQuery(TrackListQuery()), "page=1&pageSize=20")
+        XCTAssertEqual(
+            try encodedTrackListQuery(TrackListQuery(page: 7, pageSize: 100)),
+            "page=7&pageSize=100"
+        )
+    }
 }

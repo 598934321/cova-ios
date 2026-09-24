@@ -30,7 +30,7 @@
 | `favorite-mutation-response.json` | 契约 §2 写操作响应 | — |
 | `saved-playlists.json` | 契约 §2 `{playlists}`（真实歌单载荷 + `savedAt`） | — |
 | `saved-playlist-mutation-response.json` | 契约 §2 写操作响应 | — |
-| `play-report-response.json` | 契约 §2 `POST /api/tracks/play`（`source:"app-ios"`） | **NEEDS-2**：`app-ios` 需后端 allowlist 放行 |
+| `play-report-response.json` | 契约 §2 `POST /api/tracks/play` 的 200 形态 | 2026-09-24 线上实测键名 `{authenticated, idempotentReplay, message, play, recorded}`；`play` 内为 `{trackId, source, playedAt}`，`source` 是**服务端回显的请求值**，此处取本客户端默认 `.player`（写端点不可只读回灌） |
 | `one-step-plan-cards.json` | 契约 §4 计划卡投影（12 态） | — |
 | `generation-job.json` / `generation-jobs.json` | 契约 §4 生成任务（6 态、`metadata` 为 JSON 字符串） | — |
 | `checkout-response.json` | 契约 §3 `POST /api/downloads/checkout` | — |
@@ -51,7 +51,7 @@
 |---|---|---|
 | `requests/favorite-mutation-request.json` | `POST/DELETE /api/favorites` | 契约 §2 |
 | `requests/saved-playlist-mutation-request.json` | `POST/DELETE /api/saved-playlists` | 契约 §2 |
-| `requests/play-report-request.json` | `POST /api/tracks/play`（`source:"app-ios"`） | 契约 §2 + **NEEDS-2** |
+| `requests/play-report-request.json` | `POST /api/tracks/play`（`source` ∈ 服务端闭合 allowlist `discover\|playlist\|project\|track_detail\|player`，取默认 `player`） | 契约 §2 + D8 |
 | `requests/login-request.json` | `POST /api/auth/login`（password 为占位符，非真实凭据） | 契约 §1 + **NEEDS-1** |
 | `requests/checkout-request.json` | `POST /api/downloads/checkout`（幂等键） | 契约 §3 + D8 |
 | `requests/one-step-plan-start-request.json` | `POST /api/studio/one-step/plans/start`（幂等键） | 契约 §4 + D8 |

@@ -6,6 +6,11 @@ import Foundation
 /// - `downloadCheckout` → `POST /api/downloads/checkout`（扣费）
 /// - `planStart` → `POST /api/studio/one-step/plans/start`（启动制作）
 /// - `playReport` → `POST /api/tracks/play`（播放上报）
+///
+/// `rawValue` 与 `keyPrefix` 只服务**本地键的形态**（`cova-<operation>-<hex>`），
+/// 不是任何端点的业务字段：E2 的病根正是把「客户端自造的标识」当成可以随意填的
+/// 线格式取值 —— 播放来源是另一回事，由 `PlayReportSource` 按服务端闭合集钉死。
+/// 键的字符集是服务端校验正则（`[A-Za-z0-9._:-]{8,128}`）的子集，故一律可被接受。
 public enum IdempotentOperation: String, CaseIterable, Codable, Sendable {
     case downloadCheckout = "download-checkout"
     case planStart = "plan-start"

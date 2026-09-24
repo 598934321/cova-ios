@@ -456,7 +456,7 @@ actor StubPlayReportSubmitter: PlayReportSubmitting {
 
     var keys: [IdempotencyKey] { requests.map(\.idempotencyKey) }
     var trackIDs: [String] { requests.map(\.trackId) }
-    var sources: [String] { requests.map(\.source) }
+    var sources: [PlayReportSource] { requests.map(\.source) }
 
     func submit(_ request: PlayReportRequestDto) async throws -> PlayReportResponseDto {
         let index = requests.count

@@ -40,6 +40,43 @@ public enum CovaColor {
     public static let success = dynamic("#30D158", "#30D158")
     public static let error = dynamic("#FF453A", "#FF453A")
     public static let warning = dynamic("#FF9F0A", "#FF9F0A")
+    /// 会员金（04 §3.F / components §9）。**Light 用深金、Dark 用亮金** —— 双值已在 tokens 里备好，
+    /// 实现侧不得再自行挑一个（04 §5 明文）。
+    public static let memberGold = dynamic("#66511F", "#D9A52F")
+    public static let memberGoldSoft = dynamic("#F7F0D8", "#2A2210")
+    public static let memberGoldBorder = dynamic("#C8AA5A", "#66511F")
+    public static let enterpriseBlue = dynamic("#006EDC", "#79BEFF")
+    public static let enterpriseBlueSoft = dynamic("#EAF4FF", "#0A2540")
+    public static let enterpriseBlueBorder = dynamic("#84BDF3", "#1D4ED8")
+}
+
+/// 渐变（`tokens.json` 的 `gradient.*`，双主题同值 ⇒ 不走 `dynamic` 双值）。
+///
+/// **方向是近似**：CSS 的 `110deg`（自正北顺时针 110°，即「偏下的横向」）在 SwiftUI 里落成
+/// `.topLeading → .bottomTrailing` 这条轴 —— 库里没有「任意角度线性渐变」的档位，
+/// 而 110° 与这条 45° 轴同象限（向右下）。**色标与位置逐字照抄 JSON**，不重排不取整：
+/// 未给位置的两个色标按 CSS 规则在 42%→100% 之间等分（61.3% / 80.7%）。
+public enum CovaGradient {
+    /// `gradient.ai`：AI 语境渐变。**只**用于创作入口与 agent 文字（design-language §2 红线）。
+    public static let ai = LinearGradient(
+        stops: [
+            .init(color: CovaColor.dynamic("#FF9A3D", "#FF9A3D"), location: 0),
+            .init(color: CovaColor.dynamic("#FF6B00", "#FF6B00"), location: 0.42),
+            .init(color: CovaColor.dynamic("#E84E8A", "#E84E8A"), location: 0.613),
+            .init(color: CovaColor.dynamic("#FF9A3D", "#FF9A3D"), location: 0.807),
+        ],
+        startPoint: .topLeading, endPoint: .bottomTrailing
+    )
+    /// `gradient.brandButton`：主按钮深渐变（白字对比度达标）。
+    public static let brandButton = LinearGradient(
+        stops: [
+            .init(color: CovaColor.dynamic("#D04E00", "#D04E00"), location: 0),
+            .init(color: CovaColor.dynamic("#C24E00", "#C24E00"), location: 0.42),
+            .init(color: CovaColor.dynamic("#C03470", "#C03470"), location: 0.613),
+            .init(color: CovaColor.dynamic("#D04E00", "#D04E00"), location: 0.807),
+        ],
+        startPoint: .topLeading, endPoint: .bottomTrailing
+    )
 }
 
 public enum CovaSpace {

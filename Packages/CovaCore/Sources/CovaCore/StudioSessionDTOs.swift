@@ -14,6 +14,15 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
     public let summary: String?
     public let workflowMode: String?
     public let status: String?
+    /// `session.workflowState` —— **JSON 字符串**，不是嵌套对象
+    /// （2026-09-24 真实账号实测：`{"completedSteps":[…],"activeStep":"demo",
+    /// "summaries":{…},"updatedAt":"…"}`）。与 `GenerationJobDto.metadata` 是**同一条形态约定**
+    /// ⇒ 同样原样留 `String`，结构化视图走 `decodedWorkflowState()`。
+    ///
+    /// 这一条是 **E5 的更正**：旧版这里没有建模该键，`DeliveryProgress` 的注释于是把
+    /// 「读不到的字段」写成了「不存在的字段」，据称"契约里没有任何进度字段"并把进度条
+    /// 设计成永不填满。见 `DeliveryProgress.swift` 与 `docs/NEEDS.md` NEEDS-25。
+    public let workflowState: String?
     public let createdAt: String?
     public let updatedAt: String?
 
@@ -24,6 +33,7 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
         case summary
         case workflowMode
         case status
+        case workflowState
         case createdAt
         case updatedAt
     }
@@ -56,6 +66,11 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
         summary = try container.decodeIfPresent(String.self, forKey: .summary)
         workflowMode = try container.decodeIfPresent(String.self, forKey: .workflowMode)
         status = try container.decodeIfPresent(String.self, forKey: .status)
+        // 「值出现了但**不是字符串**」（后端哪天改成真对象）与「键不在」在这里同等对待：
+        // `decodeIfPresent(String.self)` 遇到对象会抛 typeMismatch，那会把整张详情打成
+        // 「这个会话打不开」—— 一个进度展示位读不到，不配让消息流一起消失。故 `try?` 吞掉形态不符，
+        // 退化成「没给」= 今天的行为（NEEDS-25 要的正是把这个形态写进契约）。
+        workflowState = (try? container.decodeIfPresent(String.self, forKey: .workflowState)) ?? nil
         createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
     }
@@ -71,6 +86,99 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
     public var displaySummary: String? {
         guard let summary, !summary.isEmpty else { return nil }
         return summary
+    }
+
+    /// `workflowState` 的结构化视图（同 `GenerationJobDto.decodedMetadata()` 的口径：
+    /// 字符串里装着 JSON，需要时才解）。**解不出 ⇒ `nil`**，而 `nil` 在这条链路上只有一个含义：
+    /// 「这一格没有实测进度」⇒ 界面退回今天的样子（`DeliveryProgressPlanner` 的契约状态映射）。
+    /// 它**不等于**「0 步」，也**不等于**「全部完成」—— 那两个都是把"读不到"印成"读到了"。
+    public func decodedWorkflowState() -> StudioWorkflowStateDto? {
+        StudioWorkflowStateDto.decode(fromJSONString: workflowState)
+    }
+}
+
+/// `session.workflowState` 那个 JSON 字符串的**容忍**解码视图
+/// （`GET /api/find-my-song/sessions/:id`，2026-09-24 真实账号实测键名逐字取自线上）：
+///
+/// ```json
+/// {"completedSteps":["collect","lyrics","style","musician","brief","breakdown"],
+///  "activeStep":"demo",
+///  "summaries":{"demo":"一步计划已锁定，正在制作两个 Demo。"},
+///  "updatedAt":"2026-09-24T13:09:14.778Z"}
+/// ```
+///
+/// ### 容忍规则（逐条都是「不猜」，不是「多接一点」）
+/// 1. **逐字段**容错，不整包连坐：`completedSteps` 里混进非字符串元素、`summaries` 的值不是
+///    字符串、`activeStep` 是数字 —— 都只让**那一个字段**变成 `nil`，其余字段照常可用。
+///    （整包 `try?` 会让后端加一个异形字段就把用户的进度条整个吃掉。）
+/// 2. **不认识的位置一律不猜**：本类型只是**记录**后端给的字符串键，**不给任何键赋予位置**。
+///    位置只有一处来源 —— `DeliveryProgress.swift` 里那份与 web 同源的 14 步规范序；
+///    不在其中的键（未来新增的 `quantum`、`timemachine`…）因此**无法**声称走过某一格。
+/// 3. `activeStep: null`（会话收口）是**合法值**，不是错误：`decodeIfPresent` 给 `nil`。
+/// 4. **空串/纯空白/非法 JSON/顶层不是对象** ⇒ `decode` 返回 `nil`（见该方法）。
+///    注意"顶层是对象但一个字段都没有"（`"{}"`）**能**解出实例 —— 它没有可用信号，
+///    由 `DeliveryProgressPlanner` 那一层判「不足以画梯子」，本类型不越权裁决。
+/// 5. 字段里**没有任何凭证/签名地址**（`summaries` 是后端写给人看的中文句子，
+///    `completedSteps`/`activeStep` 是环节名）⇒ 不进 `SecretString` 收口；
+///    但同 09 §8 的口径，它同样**不写日志**（界面上只印中文，不印键名与原文 JSON）。
+public struct StudioWorkflowStateDto: Codable, Equatable, Sendable {
+    /// 后端自报**已完成**的环节键（未去重、未排序、可能含未知键 —— 见类型注释 2）。
+    public let completedSteps: [String]?
+    /// 当前进行中的环节键；收口时后端给 `null`。
+    public let activeStep: String?
+    /// 后端自己标注"跳过"的环节。**进度计算不使用它**：跳过 ≠ 做过
+    /// （web 的 5 组投影 `tutorialStepsFromWorkflow` 同样不看这个字段）。建模它是为了读全这份载荷。
+    public let skippedSteps: [String]?
+    /// 环节号 → 后端写的那句话（09 屏左列优先用它，见 `DeliveryProgress`）。
+    public let summaries: [String: String]?
+    /// ISO-8601 串；**原样保留**，本屏不参与计算（格式由后端定，客户端不裁决）。
+    public let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case completedSteps
+        case activeStep
+        case skippedSteps
+        case summaries
+        case updatedAt
+    }
+
+    public init(
+        completedSteps: [String]?,
+        activeStep: String?,
+        skippedSteps: [String]? = nil,
+        summaries: [String: String]?,
+        updatedAt: String?
+    ) {
+        self.completedSteps = completedSteps
+        self.activeStep = activeStep
+        self.skippedSteps = skippedSteps
+        self.summaries = summaries
+        self.updatedAt = updatedAt
+    }
+
+    /// 每个字段**单独**容错（规则 1）：某字段形态不对 ⇒ 只丢那一个字段，其余照常。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        completedSteps = (try? container.decodeIfPresent([String].self, forKey: .completedSteps)) ?? nil
+        activeStep = (try? container.decodeIfPresent(String.self, forKey: .activeStep)) ?? nil
+        skippedSteps = (try? container.decodeIfPresent([String].self, forKey: .skippedSteps)) ?? nil
+        summaries = (try? container.decodeIfPresent([String: String].self, forKey: .summaries)) ?? nil
+        updatedAt = (try? container.decodeIfPresent(String.self, forKey: .updatedAt)) ?? nil
+    }
+
+    /// **唯一的**字符串→结构入口（缺失 / 空 / 空白 / 非法 JSON / 顶层不是对象 ⇒ `nil`）。
+    ///
+    /// 「顶层不是对象」这一条必须显式挡：`"null"`、`"123"`、`"\"abc\""` 都是**合法 JSON**，
+    /// 但没有键容器 ⇒ 交给 `init(from:)` 会在 `container(keyedBy:)` 抛错。
+    /// 这里靠 `try?` 同样能得到 `nil`，可那条路径是"靠异常做控制流"，
+    /// 而真实响应里 `"null"` 就是"没有工作流"（`StudioSessionDto` 实测见过 `proposedTitle: null`）
+    /// ⇒ 提前判掉，让「空」与「坏」在两处含义上都不必走到抛错。
+    public static func decode(fromJSONString raw: String?) -> StudioWorkflowStateDto? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 只有以 `{` 开头的载荷才可能是那个对象；`null` / `""` / `"[]"` 一律按「没给」处理。
+        guard trimmed.hasPrefix("{"), let data = trimmed.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(StudioWorkflowStateDto.self, from: data)
     }
 }
 

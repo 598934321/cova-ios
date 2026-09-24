@@ -1,5 +1,5 @@
 {
   "trackId": "library-1",
-  "source": "app-ios",
+  "source": "player",
   "idempotencyKey": "cova-play-report-00000000000000000000000000000000"
 }

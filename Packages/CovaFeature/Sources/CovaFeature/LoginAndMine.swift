@@ -70,10 +70,6 @@ public struct LoginView: View {
 /// 游客态给登录入口。收藏/歌单/创作/下载四个入口走抽屉同款列表。
 public struct MineView: View {
     @Environment(AppSession.self) private var session
-    @State private var me: CovaMeResponse?
-    /// `/me` 的失败**必须可见**：原先写成 `try?`，把「未登录竞态下的 401」和「真出错」
-    /// 一起吞成 nil ⇒ 已登录却满屏没有权益与余额，而且永不重试（截图实测到的正是这个）。
-    @State private var meFailed = false
 
     public init() {}
 
@@ -96,21 +92,9 @@ public struct MineView: View {
             .padding(.vertical, CovaSpace.xl)
         }
         .covaPage()
-        // `task(id:)`：换号 / 登录后自动重取，不靠"恰好在这屏才登录"的运气。
-        .task(id: authPhaseKey) { await loadMe() }
-    }
-
-    @MainActor
-    private func loadMe() async {
-        guard case .signedIn = session.authPhase else { me = nil; meFailed = false; return }
-        meFailed = false
-        do {
-            me = try await CatalogService(client: session.client).me()
-        } catch {
-            // 失败要说出来并给重试，而不是安静地少画两行。
-            me = nil
-            meFailed = true
-        }
+        // `/me` 的账本已经上移到 `AppSession`（04 抽屉 G 区与本页读**同一份**）：
+        // 这里只按认证阶段变化触发一次，`loadMe` 自己会合并同身份的重复请求。
+        .task(id: authPhaseKey) { await session.loadMe() }
     }
 
     @ViewBuilder
@@ -124,16 +108,21 @@ public struct MineView: View {
                     // 登录响应的 `user` 没有 —— 所以这一行同时也是「两步入口是否走通」的可见证据。
                     Text(user.covaId ?? user.email ?? "")
                         .font(CovaType.mono).foregroundStyle(CovaColor.secondary)
-                    if let me {
+                    if let me = session.me {
                         Text("计划：\(me.entitlements.plan.rawValue)")
                             .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                         // D12：只展示余额，**不放任何购买/充值入口**。
                         Text("剩余 co 币：\(me.entitlements.creditsBalance)")
                             .font(CovaType.callout).foregroundStyle(CovaColor.accentText)
-                    } else if meFailed {
-                        // 取不到就说取不到：少画两行与"这账号没有权益"在两回事。
-                        Text("权益没取到").font(CovaType.subhead).foregroundStyle(CovaColor.error)
-                        Button("重试") { Task { await loadMe() } }
+                    }
+                    // `/me` 的失败**必须可见**（原先 `try?` 把 401 与真出错一起吞成 nil，
+                    // 于是"已登录却满屏没有权益"而且永不重试 —— 截图实测到的正是这个）：
+                    // 有旧值时 11 §4 走「保留缓存 + 未同步」的行内降级，无旧值时才说「没取到」。
+                    if session.meState == .outOfSync {
+                        Text(session.me == nil ? "权益没取到" : "未同步")
+                            .font(CovaType.subhead)
+                            .foregroundStyle(session.me == nil ? CovaColor.error : CovaColor.muted)
+                        Button("重试") { Task { await session.loadMe(force: true) } }
                             .font(CovaType.subhead).foregroundStyle(CovaColor.accentText)
                             .buttonStyle(.plain)
                     }

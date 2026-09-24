@@ -51,6 +51,82 @@ public final class AppSession {
     public var toast: (message: String, isError: Bool)?
     public private(set) var snapshot: PlaybackSnapshot?
 
+    // MARK: `GET /api/auth/me` 共享账（04 §7 G 区卡片 + 11「我的」同读这一份）
+
+    /// `/me` 的**同步状态**。它与「上一次成功取到的值」是两本账，不能压成一个 optional：
+    /// 04 §4 / 11 §4 都要求失败时**保留上次缓存值**并另标「未同步」——
+    /// 只留一个 `me?` 就要么丢掉缓存、要么把「没取到」伪装成「这账号没有权益」。
+    public enum MeSyncState: Equatable {
+        case idle        // 还没发过（游客态：04 §7「游客态：不发 me」）
+        case syncing     // 在途
+        case synced      // 最近一次成功
+        case outOfSync   // 最近一次失败（可能手里还留着旧值）
+    }
+
+    /// 最近一次**成功**取到的 `/me`；失败不清空（04 §4「保留上次缓存值」），但换身份/登出会清。
+    public private(set) var me: CovaMeResponse?
+    public private(set) var meState: MeSyncState = .idle
+    /// 已为哪个身份取过（D8 防串号：换号即作废，不给新账号看旧账号的余额）。
+    private var meOwner: String?
+    /// 在途去重：抽屉与 11 同一帧都要数据时只发一次请求。
+    private var meTask: Task<Void, Never>?
+    /// 请求代号：每发起一次 +1。**迟到包只认自己那一代的账** —— 否则换号后旧请求返回，
+    /// 既会把新账号的在途标记销掉（下一次 `loadMe` 就永远不再发），也会把旧余额落进新账。
+    private var meRequestID = 0
+
+    /// 取 `/me`：**一次认证变化只取一次**，`force` 才重发。
+    ///
+    /// 04 §7 写的是「距上次 > 5min 才刷新」，而 5min 这个时限**没有 token 也没有配置档**
+    /// （TG-09 未裁决）⇒ 不发明时限，退化成「同身份内不重复取，除显式重试」。
+    /// 游客**不发**；失败**不吞**（状态留 `.outOfSync` 给 UI 说话用）。
+    public func loadMe(force: Bool = false) async {
+        guard case .signedIn(let user) = authPhase else {
+            resetMe()
+            return
+        }
+        let owner = user.id
+        if !force, meOwner == owner, meState == .synced || meState == .syncing { return }
+        // 只合并**同一身份**的在途请求；换号后的迟到包不参与这个判断。
+        if let running = meTask, meOwner == owner { await running.value; return }
+        meRequestID += 1
+        let id = meRequestID
+        meOwner = owner
+        meState = me == nil ? .syncing : .outOfSync
+        let service = CatalogService(client: client)
+        let operation = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await service.me()
+                guard self.meRequestID == id else { return }   // 迟到的旧一代：不落账
+                self.me = response
+                self.meState = .synced
+            } catch {
+                guard self.meRequestID == id else { return }
+                self.meState = .outOfSync     // 旧值留着（04 §4），但状态说实话
+            }
+            if self.meRequestID == id { self.meTask = nil }
+        }
+        meTask = operation
+        await operation.value
+    }
+
+    /// 清 `/me` 这本账（登出/游客/换号前的同一动作）。`meRequestID` 一并推进，
+    /// 让任何在途的迟到包自己认不出这一代。
+    private func resetMe() {
+        meTask?.cancel()
+        meTask = nil
+        me = nil
+        meState = .idle
+        meOwner = nil
+        meRequestID += 1
+    }
+
+    /// `/me` 的身份（抽屉 G 区首选用它：`covaId` 只在 `/me` 上给，登录响应的 `user` 没有）。
+    public var meUser: AuthUser? {
+        if case .signedIn(let user) = authPhase { return me?.user ?? user }
+        return nil
+    }
+
     public let auth: CovaAuthSession
     public let client: CovaAPIClient
     public let player: CovaPlayer
@@ -76,6 +152,7 @@ public final class AppSession {
                 await bindPlayerSession()
                 bindRecents(owner: user.id)
                 await refreshCollections()
+                await loadMe()
             } else {
                 authPhase = .guest
                 bindRecents(owner: nil)
@@ -95,6 +172,8 @@ public final class AppSession {
             await bindPlayerSession()
             bindRecents(owner: user.id)
             await refreshCollections()
+            // 04 §7：登录成功**强制刷新** `/me`（余额/身份在登录后才有意义）。
+            await loadMe(force: true)
             showToast("欢迎回来，\(user.name)")
         } catch let error as CovaAPIError {
             switch error {
@@ -125,6 +204,8 @@ public final class AppSession {
         try? await auth.signOut()
         await player.bindSession(PlaybackSessionContext(owner: nil, generation: .initial))
         authPhase = .guest
+        // 04 §4「登出后 G 区立即回落未登录态」：`/me` 这本账（含缓存值）不留残留（D8 owner 隔离）。
+        resetMe()
         // D8 同一条理由：换号/登出后两本收藏账必须清空，否则新账号会看见旧账号的收藏态。
         favoriteIDs = []
         savedPlaylistIDs = []
@@ -141,6 +222,7 @@ public final class AppSession {
     public func continueAsGuest() async {
         await auth.continueAsGuest()
         authPhase = .guest
+        resetMe()   // 游客态不发 `me`（04 §7），也不许留着上一个身份的余额
     }
 
     // MARK: 导航与收藏态（design 04/06/07/12a/12b）

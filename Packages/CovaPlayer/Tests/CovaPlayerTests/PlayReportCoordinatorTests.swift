@@ -5,7 +5,19 @@ import XCTest
 /// 播放上报去重（D8 / api-contracts §5 / TD-19）。
 ///
 /// 全部经桩提交器，**零真实网络**。
+///
+/// 本文件的来源断言按 **E2** 更正后的契约重写：旧用例钉的是 `source == "app-ios"`，
+/// 而线上 `POST /api/tracks/play` 的 source allowlist 是闭合的、该值被 400 拒绝
+/// （`播放来源无效`）—— 那条期望钉住的是一个真实缺陷（本客户端的播放历史从未落库），
+/// 所以改写期望是正当的，不是删断言。幂等键那批断言（一次播放一个键、重试复用同键）
+/// 一条未动。
 final class PlayReportCoordinatorTests: XCTestCase {
+    /// 服务端 source allowlist 在本文件里的**独立副本**（不从 `PlayReportSource` 推导，
+    /// 否则「字节都在 allowlist 内」就退化成自证）。依据：2026-09-24 线上 400/200 实测。
+    private static let acceptedSources: Set<String> = [
+        "discover", "playlist", "project", "track_detail", "player",
+    ]
+
     private var submitter: StubPlayReportSubmitter!
     private var subject: PlayReportCoordinator!
     private let authenticated = PlaybackSessionContext(owner: PrincipalID(rawValue: "p1"))
@@ -26,8 +38,19 @@ final class PlayReportCoordinatorTests: XCTestCase {
         _ = await subject.bindSession(context)
     }
 
-    private func start(_ id: String, kind: PlaybackItem.Kind = .libraryTrack) async -> PlayReportOutcome {
-        await subject.playbackStarted(itemID: id, kind: kind, session: authenticated)
+    private func start(
+        _ id: String, kind: PlaybackItem.Kind = .libraryTrack, source: PlayReportSource = .player
+    ) async -> PlayReportOutcome {
+        await subject.playbackStarted(itemID: id, kind: kind, session: authenticated, source: source)
+    }
+
+    /// 把桩收到的请求**编码成真实出站字节**后读 `source`：
+    /// 断言的是线上看得见的字符串，不是内存里的枚举值。
+    private func wireSources(_ requests: [PlayReportRequestDto]) throws -> [String] {
+        try requests.map { request in
+            let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request))
+            return try XCTUnwrap((object as? [String: Any])?["source"] as? String)
+        }
     }
 
     // MARK: - 一次实际播放 = 一个键
@@ -41,7 +64,7 @@ final class PlayReportCoordinatorTests: XCTestCase {
         var calls = await submitter.callCount
         XCTAssertEqual(calls, 1)
         let sources = await submitter.sources
-        XCTAssertEqual(sources, ["app-ios"], "source 恒为 app-ios（D10）")
+        XCTAssertEqual(sources, [.player], "语境未知时按唯一播放面归因（服务端 allowlist 内的值）")
         let tracks = await submitter.trackIDs
         XCTAssertEqual(tracks, ["track-1"])
         let reported = await subject.reportedCount()
@@ -341,18 +364,96 @@ final class PlayReportCoordinatorTests: XCTestCase {
         XCTAssertEqual(calls, 0)
     }
 
-    // MARK: - DTO 契约面
+    // MARK: - DTO 契约面（来源：服务端 allowlist 是闭合集，E2）
 
-    func testRequestCarriesNoOverridePathForSource() throws {
-        // `PlayReportRequestDto` 的 source 只有默认值 + 显式覆写；本层不提供覆写入口。
+    /// 旧用例 `testRequestCarriesNoOverridePathForSource` 钉的是「source 恒为 app-ios 且
+    /// 本层不给覆写入口」—— 那正好把 E2 写进了测试：`app-ios` 不在服务端 allowlist 内，
+    /// 每次上报都被 400 拒掉。按更正后的契约改写：默认值必须是 allowlist 内的 `player`，
+    /// 并且**语境要能从调用点传进来**（覆写入口是本次修复的一部分，不再是缺陷）。
+    func testDefaultSourceEncodesOntoTheServerAllowlist() throws {
         let token = IdempotentRequestToken(operation: .playReport)
         let request = try PlayReportRequestDto(trackId: "t1", token: token)
-        XCTAssertEqual(request.source, PlayReportRequestDto.appIOSSource)
-        XCTAssertEqual(request.source, "app-ios")
+        XCTAssertEqual(request.source, .player)
         let data = try JSONEncoder().encode(request)
         let json = String(data: data, encoding: .utf8) ?? ""
-        XCTAssertTrue(json.contains("\"source\":\"app-ios\""), json)
+        XCTAssertTrue(json.contains("\"source\":\"player\""), json)
         XCTAssertTrue(json.contains(token.key.rawValue), json)
+        XCTAssertFalse(json.contains("app-ios"), "旧常量不得再出现在任何请求体里：\(json)")
+    }
+
+    /// 协调器发出的**每一条**上报，其字节里的 source 都必须落在服务端闭合集内。
+    func testEverySubmittedRequestCarriesAnAllowedSource() async throws {
+        await bind(authenticated)
+        _ = await start("track-1")
+        _ = await start("track-2", source: .discover)
+        _ = await start("track-3", source: .trackDetail)
+        _ = await start("track-4", source: .playlist)
+        _ = await start("track-5", source: .project)
+        let requests = await submitter.requests
+        XCTAssertEqual(requests.count, 5)
+        let sources = try wireSources(requests)
+        XCTAssertEqual(sources, ["player", "discover", "track_detail", "playlist", "project"])
+        for source in sources {
+            XCTAssertTrue(
+                Self.acceptedSources.contains(source),
+                "服务端只认这五个值，\(source) 会换回 400 播放来源无效"
+            )
+        }
+    }
+
+    /// 语境在调用点已知时就地归因（09 试听一条已入库的候选 ⇒ `project`）。
+    func testCallSiteContextReachesTheWire() async throws {
+        await bind(authenticated)
+        _ = await start("track-1", source: .project)
+        let requests = await submitter.requests
+        XCTAssertEqual(try wireSources(requests), ["project"])
+    }
+
+    /// 集次的归因与幂等键**同生命周期**：失败后补发既复用同键也必须复用同来源。
+    ///
+    /// 服务端对同一 `idempotencyKey` 额外比对 `(trackId, source)`，补发时换来源会撞
+    /// 409 `IDEMPOTENCY_CONFLICT`，等于把一次真实播放报成冲突。
+    func testResubmissionReusesBothTheKeyAndTheEpisodeSource() async throws {
+        await bind(authenticated)
+        await submitter.script(StubPlayReportSubmitter.Script(failures: [0: .transport]))
+        let first = await start("track-1", source: .discover)
+        guard case .failed(_, let key, let reason) = first else { return XCTFail("\(first)") }
+        XCTAssertEqual(reason, .transport)
+
+        let outcomes = await subject.retryPending()
+        guard case .sent(_, let resentKey)? = outcomes.first else { return XCTFail("\(outcomes)") }
+        XCTAssertEqual(resentKey, key, "补发复用同一幂等键（D8）")
+
+        let requests = await submitter.requests
+        XCTAssertEqual(requests.count, 2, "一次失败 + 一次补发")
+        XCTAssertEqual(Set(requests.map(\.idempotencyKey)), [key])
+        XCTAssertEqual(try wireSources(requests), ["discover", "discover"], "补发不得改变这一集次的归因")
+        XCTAssertEqual(Set(requests.map(\.trackId)), ["track-1"])
+    }
+
+    /// 同一集次误重入时带上了**不同**来源：首次取值生效，不得改写这一集次的归因。
+    func testReentryWithADifferentSourceDoesNotOverwriteTheEpisode() async throws {
+        await bind(authenticated)
+        await submitter.script(StubPlayReportSubmitter.Script(failures: [0: .transport]))
+        _ = await start("track-1", source: .discover)
+        _ = await subject.playbackStarted(
+            itemID: "track-1", kind: .libraryTrack, session: authenticated, source: .playlist
+        )
+        let requests = await submitter.requests
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(Set(requests.map(\.idempotencyKey)).count, 1, "两次尝试仍是同一个键")
+        XCTAssertEqual(try wireSources(requests), ["discover", "discover"])
+    }
+
+    /// 后台挂起 → 回前台补发：来源跟着集次走，不会退回默认值。
+    func testBackgroundResendKeepsTheEpisodeSource() async throws {
+        await bind(authenticated)
+        _ = await subject.lifecyclePhaseChanged(.background)
+        let queued = await start("track-1", source: .trackDetail)
+        if case .queued = queued {} else { return XCTFail("后台应挂起：\(queued)") }
+        let sent = await subject.lifecyclePhaseChanged(.active)
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(try wireSources(await submitter.requests), ["track_detail"])
     }
 
     func testWrongOperationTokenIsRejected() {
@@ -433,7 +534,9 @@ final class CovaAPIClientPlayReporterTests: XCTestCase {
         XCTAssertEqual(sent.url.path, "/api/tracks/play")
         XCTAssertTrue(CovaEnvironment.isProductionOrigin(sent.url), "唯一出口（D10）")
         let body = String(data: try XCTUnwrap(sent.body), encoding: .utf8) ?? ""
-        XCTAssertTrue(body.contains("\"source\":\"app-ios\""), body)
+        // 出站字节里的 source 必须是服务端 allowlist 内的值（E2：`app-ios` 换回 400）。
+        XCTAssertTrue(body.contains("\"source\":\"player\""), body)
+        XCTAssertFalse(body.contains("app-ios"), body)
         XCTAssertTrue(body.contains(token.key.rawValue), body)
         XCTAssertEqual(sent.headers["Authorization"], "Bearer stub-access-token-value")
     }

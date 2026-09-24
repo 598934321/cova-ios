@@ -297,4 +297,136 @@ final class StudioSessionDTOTests: XCTestCase {
             try JSONDecoder().decode(StudioCreateSessionResponseDto.self, from: Data(#"{"ok":true}"#.utf8))
         )
     }
+
+    // MARK: E5 —— `session.workflowState`（09 §3-I 进度的真来源）
+
+    /// 一个**只读 GET** 拿到的真实载荷（2026-09-24，键名与内容逐字取自 `…/sessions/:id` 的
+    /// `session.workflowState`；会话号/userId 已换成不可用的假值 —— 真实号不入 fixture）。
+    /// 这一条守的是 E5 的全部起因：**这个键存在**，而旧版 `StudioSessionDto` 没建模它，
+    /// 于是「客户端没读的字段」被写成「后端没有的字段」（NEEDS-25 的旧框法）。
+    func testWorkflowStateDecodesTheCapturedRealPayload() throws {
+        let captured = #"""
+        {"completedSteps":["collect","lyrics","style","musician","brief","breakdown"],
+         "activeStep":"demo",
+         "summaries":{"demo":"一步计划已锁定，正在制作两个 Demo。"},
+         "updatedAt":"2026-09-24T13:09:14.778Z"}
+        """#
+        // 载荷是**转义后的 JSON 字符串**（同 `GenerationJobDto.metadata` 的形态）⇒ 先造详情响应再解。
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "session": [
+                "sessionId": "6029c66b-0000-4ba8-841c-3aa4cd2efc0b",
+                "workflowMode": "find-my-song",
+                "workflowState": captured.replacingOccurrences(of: "\n", with: ""),
+            ],
+        ])
+        let detail = try JSONDecoder().decode(StudioSessionDetailDto.self, from: payload)
+        let state = try XCTUnwrap(
+            detail.session?.decodedWorkflowState(),
+            "线上载荷里 workflowState 是字符串装的 JSON，解不出来就是没建模"
+        )
+        XCTAssertEqual(
+            state.completedSteps,
+            ["collect", "lyrics", "style", "musician", "brief", "breakdown"]
+        )
+        XCTAssertEqual(state.activeStep, "demo")
+        XCTAssertEqual(state.summaries?["demo"], "一步计划已锁定，正在制作两个 Demo。")
+        XCTAssertEqual(state.updatedAt, "2026-09-24T13:09:14.778Z")
+        XCTAssertNil(state.skippedSteps, "这份载荷没给 skippedSteps ⇒ 不编一个空数组")
+    }
+
+    /// **缺键 / 空串 / 空白 / `"null"` / 非法 JSON / 顶层不是对象** ⇒ 一律 `nil`。
+    /// `nil` 只有一个含义：「这一格没有实测进度」⇒ 界面退回今天的样子。
+    /// 它**不能**是「0 步」也不能是「全完成」—— 那两个都把"读不到"印成了"读到了"。
+    func testWorkflowStateWithoutUsablePayloadDecodesToNil() throws {
+        let unusable: [String?] = [
+            nil,                                       // 键都不在（今天线上的旧会话）
+            "",                                        // 空串
+            "   \n ",                                  // 纯空白
+            "null",                                    // JSON null ⇒ 后端明确说"没有"
+            "[]",                                      // 合法 JSON，但不是对象
+            #"[{"activeStep":"demo"}]"#,                // 合法 JSON 数组
+            "not json at all",                          // 非 JSON
+            #"{completedSteps:}"#,                      // 看着像但不是合法 JSON
+        ]
+        for raw in unusable {
+            XCTAssertNil(
+                StudioWorkflowStateDto.decode(fromJSONString: raw),
+                "「\(raw ?? "<缺键>")」不是可用的 workflowState ⇒ 必须退化成 nil"
+            )
+        }
+        // 空对象**能**解出实例（它是个对象），但它一个信号都没有 —— 那一层由进度侧裁决
+        // （`DeliveryProgressPlannerTests.testUnknownStepKeysNeverFabricateProgress`）。
+        XCTAssertNotNil(StudioWorkflowStateDto.decode(fromJSONString: "{}"))
+    }
+
+    /// 逐字段容错：后端给一个**异形**字段，只损失那一个字段，其余照常可用。
+    /// 整包 `try?` 的话，后端哪天把 `summaries` 的值改成对象 ⇒ 用户的进度条整个消失。
+    func testWorkflowStateToleratesOneMalformedFieldWithoutLosingTheOthers() throws {
+        // completedSteps 里混进数字 ⇒ 该字段作废，activeStep/summaries 仍然可用。
+        let mixed = #"{"completedSteps":["collect",7],"activeStep":"demo","summaries":{"demo":"在做 Demo。"}}"#
+        let brokenList = try XCTUnwrap(StudioWorkflowStateDto.decode(fromJSONString: mixed))
+        XCTAssertNil(brokenList.completedSteps, "元素类型不符 ⇒ 这个字段不猜，直接不接")
+        XCTAssertEqual(brokenList.activeStep, "demo")
+        XCTAssertEqual(brokenList.summaries?["demo"], "在做 Demo。")
+
+        // summaries 的值不是字符串 ⇒ 同理只损失 summaries。
+        let badSummaries = #"{"completedSteps":["collect"],"summaries":{"demo":{"text":"x"}}}"#
+        let decoded = try XCTUnwrap(StudioWorkflowStateDto.decode(fromJSONString: badSummaries))
+        XCTAssertNil(decoded.summaries)
+        XCTAssertEqual(decoded.completedSteps, ["collect"])
+
+        // activeStep 给了非字符串（数字/对象）⇒ 没有当前环节，但完成清单照用。
+        let badActive = #"{"completedSteps":["collect"],"activeStep":3}"#
+        let activeless = try XCTUnwrap(StudioWorkflowStateDto.decode(fromJSONString: badActive))
+        XCTAssertNil(activeless.activeStep)
+        XCTAssertEqual(activeless.completedSteps, ["collect"])
+
+        // activeStep: null 是**合法值**（会话收口），不是错误。
+        let settled = #"{"completedSteps":["copyright"],"activeStep":null}"#
+        XCTAssertEqual(
+            try XCTUnwrap(StudioWorkflowStateDto.decode(fromJSONString: settled)).activeStep, nil
+        )
+    }
+
+    /// **不认识的东西一律原样记录、不赋予位置**：未知键、未知字段都留在 DTO 里，
+    /// 位置只在词表那一侧算（`StudioWorkflowLadder.stepOrder`）。后端补新环节时这条不破。
+    func testWorkflowStateRecordsUnknownKeysAndIgnoresUnknownFields() throws {
+        let future = #"""
+        {"completedSteps":["collect","quantum","tunneling"],"activeStep":"timemachine",
+         "summaries":{"timemachine":"穿越中"},"updatedAt":"2026-09-24T13:09:14.778Z",
+         "deliveryFiles":[{"name":"a.wav"}],"deliveryRevision":3,"schemaVersion":9}
+        """#
+        let state = try XCTUnwrap(StudioWorkflowStateDto.decode(fromJSONString: future))
+        XCTAssertEqual(
+            state.completedSteps, ["collect", "quantum", "tunneling"],
+            "DTO 只记录后端给的原文，不去认/不猜位置"
+        )
+        XCTAssertEqual(state.activeStep, "timemachine")
+        XCTAssertNil(state.summaries?["collect"], "没给句子就是没给，不拿别的环节凑")
+    }
+
+    /// 后端哪天把 workflowState 改成**真对象**（不再是字符串）⇒ 会话屏不能因此打不开。
+    /// `decodeIfPresent(String.self)` 在这种值上抛 typeMismatch，那会把整张详情打成
+    /// 「这个会话打不开」：一个进度展示位读不到，不配让消息流一起消失。故按「没给」退化。
+    func testWorkflowStateAsObjectDegradesInsteadOfFailingTheWholeScreen() throws {
+        let json = Data(
+            #"""
+            {"session":{"sessionId":"s-77","workflowState":{"activeStep":"demo"},
+            "messages":[{"role":"user","content":"做一首雨天的歌","timestamp":"2026-09-24T12:00:00.000Z"}]}}
+            """#.utf8
+        )
+        let detail = try JSONDecoder().decode(StudioSessionDetailDto.self, from: json)
+        XCTAssertEqual(detail.messages.count, 1, "消息流必须照旧解出来")
+        XCTAssertNil(detail.session?.workflowState, "形态不认识 ⇒ 按「没给」处理，不猜")
+        XCTAssertNil(detail.session?.decodedWorkflowState())
+    }
+
+    /// 该键**不存在**时的行为与今天逐字节相同（旧 fixture 没有这个键，而它们全部照旧解得出）。
+    func testSessionWithoutWorkflowStateKeyStillDecodesAsBefore() throws {
+        let json = Data(#"{"session":{"sessionId":"s-78","title":"没有进度位的会话"}}"#.utf8)
+        let detail = try JSONDecoder().decode(StudioSessionDetailDto.self, from: json)
+        XCTAssertEqual(detail.session?.id, "s-78")
+        XCTAssertNil(detail.session?.workflowState)
+        XCTAssertNil(detail.session?.decodedWorkflowState())
+    }
 }

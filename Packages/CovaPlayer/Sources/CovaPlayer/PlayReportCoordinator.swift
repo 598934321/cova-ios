@@ -115,7 +115,10 @@ public protocol PlayReportSubmitting: Sendable {
     func submit(_ request: PlayReportRequestDto) async throws -> PlayReportResponseDto
 }
 
-/// 生产实现：`POST /api/tracks/play`（NEEDS-2 未解锁 → M1 联调前不接入线上验收）。
+/// 生产实现：`POST /api/tracks/play`。
+///
+/// 请求体的 `source` 由 `PlayReportSource` 保证落在服务端闭合集内（E2 的修复面），
+/// 本类型只负责把它发出去，不决定来源。
 public struct CovaAPIClientPlayReporter: PlayReportSubmitting {
     public static let path = "/api/tracks/play"
 
@@ -142,7 +145,10 @@ public struct CovaAPIClientPlayReporter: PlayReportSubmitting {
 /// - 同一集次的提交**已在途**时，补发/重投一律让路（`.submissionInFlight`）：
 ///   「未决」不等于「可以发」，一次实际播放只允许一个写请求在写（F-C）；
 /// - 未认证：分配并保留键 → `.queued(.unauthenticated)`，**不静默丢包**；
-/// - generation 推进（登出/换号）：未决集次作废，且不产生任何提交。
+/// - generation 推进（登出/换号）：未决集次作废，且不产生任何提交；
+/// - **来源标识按集次固定**（E2）：`source` 在集次创建那一刻定下，重试与回前台补发
+///   复用同一个值 —— 服务端对同一幂等键还校验 `(trackId, source)` 完全一致，
+///   补发时换来源会撞 409 `IDEMPOTENCY_CONFLICT`，等于把一次真实播放记成冲突。
 public actor PlayReportCoordinator {
     /// 未决集次的保留上限（超出即丢弃最旧者，防止病态循环撑大内存）。
     public static let maximumPendingEpisodes = 16
@@ -151,6 +157,11 @@ public actor PlayReportCoordinator {
         let id: UInt64
         let itemID: String
         let token: IdempotentRequestToken
+        /// 本次实际播放的归因来源（`PlayReportSource` 保证是服务端认的取值之一）。
+        ///
+        /// 与 `token` 同级：**集次创建时定、之后不改**，重试与补发都带着它，
+        /// 这样「同一幂等键 = 同一次播放」在服务端那句 `(trackId, source)` 比对下也成立。
+        let source: PlayReportSource
         var submitted = false
         var attempts = 0
         /// **提交在途标记**（F-C）：此刻是否已有一路 `submit` 挂在这个集次上。
@@ -236,11 +247,16 @@ public actor PlayReportCoordinator {
     // MARK: - 集次生命周期
 
     /// 一次**实际播放**开始（引擎进入 playing 时由 `PlaybackCoordinator` 调用；pause/resume 不调用）。
+    ///
+    /// `source` 默认 `.player`：本层只有唯一播放面，起播语境（广场 / 歌单 / 作品页 / 生成结果）
+    /// 只有视图层知道，`PlaybackItem` 与队列刻意不携带来源字段，所以未显式指明时按播放面归因。
+    /// 同一集次重入时**首次的取值生效**（一次播放一次归因，换值会撞服务端的键冲突判定）。
     @discardableResult
     public func playbackStarted(
         itemID: String,
         kind: PlaybackItem.Kind,
-        session: PlaybackSessionContext
+        session: PlaybackSessionContext,
+        source: PlayReportSource = .player
     ) async -> PlayReportOutcome {
         guard !tornDown else { return .dropped(itemID: itemID, reason: .tornDown) }
         guard kind != .privateCandidate else {
@@ -254,7 +270,10 @@ public actor PlayReportCoordinator {
             return await deliver(existing)
         }
         if let owner = session.owner { boundGenerationOwner = owner }
-        let episode = Episode(id: nextEpisodeID, itemID: itemID, token: IdempotentRequestToken(operation: .playReport))
+        let episode = Episode(
+            id: nextEpisodeID, itemID: itemID,
+            token: IdempotentRequestToken(operation: .playReport), source: source
+        )
         nextEpisodeID &+= 1
         // 换曲隐含「上一集次已结束」：已成功的旧集次只留去重账本，实体释放。
         if let previousID = activeID, episodes[previousID]?.submitted == true {
@@ -342,8 +361,10 @@ public actor PlayReportCoordinator {
         }
         let request: PlayReportRequestDto
         do {
-            // `source` 由 DTO 默认值钉死为 "app-ios"（D10），此处不提供覆写入口。
-            request = try PlayReportRequestDto(trackId: current.itemID, token: current.token)
+            // 来源与键同源：都取自**这个集次**，所以补发/重试不会改变一次播放的归因。
+            request = try PlayReportRequestDto(
+                trackId: current.itemID, source: current.source, token: current.token
+            )
         } catch {
             // 键由本类型按 .playReport 生成，理论上不可达；保留 fail-closed 分支。
             return .failed(itemID: current.itemID, key: key, reason: .unknown)

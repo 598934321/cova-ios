@@ -25,6 +25,10 @@ public struct AISessionDetailView: View {
     @State private var candidates: [GenerationCandidateDto] = []
     /// 最近一轮生成任务：09 §I 的进度条用它读 6 态（§8「只驱动 I 进度条与 H 终态条」）。
     @State private var latestJob: GenerationJobDto?
+    /// `GET …/sessions/:id` 的 `session.workflowState`（E5：09 §3-I 那条进度的**真来源**）。
+    /// 每次详情载荷到达就整包重播（与 ♡ 账同一口径）：留着上一轮的阶梯 = 把已经走过的环节
+    /// 继续显示成没走过。`nil` 不是错误，是"这一格没有实测进度"⇒ 进度条退回 §3-I 的老样子。
+    @State private var workflow: StudioWorkflowStateDto?
     /// 候选 ♡ 的账：键 = `mediaReferenceId`，**每次详情载荷到达都整本重新播种**
     /// （留下未确认的乐观翻转 = 把本地的谎继续显示成后端的谎）。
     @State private var favorites = CandidateFavoriteLedger()
@@ -378,34 +382,43 @@ public struct AISessionDetailView: View {
         }
     }
 
-    /// 出现条件与格数全部由 CovaCore 的纯映射决定（那里有 7 条用例钉住），本屏只负责画。
+    /// 出现条件与格数全部由 CovaCore 的纯映射决定（那里有 13 条用例钉住），本屏只负责画。
     ///
-    /// `jobStatus` 取自**详情载荷里的 `generationJobs.last`**（§8 的「历史与对账」那一行）。
-    /// §8 另给的 `GET …/generation-jobs?id=` 轮询节奏（前 6 次 5s、之后 10s）**本屏尚未接** ——
-    /// 该端点目前全仓零调用点（DTO 有、服务方法没有），所以取消/失败这类只出现在 job 上的
-    /// 事实要等下一次进屏 / 下拉刷新才会被看到。这是**客户端待办**，不是后端缺口，
-    /// 也不拿轮询冒充：见 `docs/log` 当日「没做的（据实）」。
+    /// 三个输入各自是什么：
+    /// · `plan.status` —— §3-I 的**出现/收起**条件（只有 `delivery_preparing` / `rehydrating`）。
+    /// · `latestJob.status` —— 只换一句文案（取消 ⇒ 「本轮已停止」）。
+    ///   §8 另给的 `GET …/generation-jobs?id=` 轮询节奏（前 6 次 5s、之后 10s）**本屏尚未接** ——
+    ///   该端点目前全仓零调用点（DTO 有、服务方法没有），所以取消/失败这类只出现在 job 上的
+    ///   事实要等下一次进屏 / 下拉刷新才会被看到。这是**客户端待办**，不是后端缺口，
+    ///   也不拿轮询冒充：见 `docs/log` 当日「没做的（据实）」。
+    /// · `workflow` —— 09 §3-I 那条进度的**真来源**（`session.workflowState`，E5 的更正）。
+    ///   解不出/没有 ⇒ 映射自己退回契约状态那套数字，本屏不需要为它写分支。
+    ///   与 job 同一节奏：只在进屏/下拉刷新时重取，**不**随 SSE 增量前进（那是客户端待办，
+    ///   契约里没有任何"工作流增量"事件可锚，见 NEEDS-13）。
     private var deliveryProgress: DeliveryProgress? {
         guard let plan = latestPlan else { return nil }
         return DeliveryProgressPlanner.progress(
-            planStatus: plan.status, jobStatus: latestJob?.status
+            planStatus: plan.status, jobStatus: latestJob?.status, workflow: workflow
         )
     }
 
     /// §3-I 的形态：左文案（`type.subhead` / `color.secondary`）+ 右列（`type.mono` / `color.muted`）
     /// + 4pt 细轨道（`color.line`）配 `color.accent` 填充。
     ///
-    /// **右列不是百分比**：契约里没有任何进度字段（计划卡 12 态、job 6 态、候选投影里都没有），
-    /// 所以那一位放的是「第几格 / 共几格」的阶段计数，且填充比**永不**到达 1.0 ——
-    /// 填满等于声称 §3-I 的完成态（`fullMediaReady`）已到，而那件事当前没有来源。
-    /// 数值来源已登记 **NEEDS-25**，拿到真进度后把 `stepText` 换回百分比即可，判定不用改。
+    /// **右列印什么由数据决定**（`rightColumnText`，CovaCore 那一层裁决）：
+    /// 拿到 `session.workflowState`（2026-09-24 实测存在的 JSON 字符串）⇒ 印 §3-I 要的**百分比**，
+    /// 分子是「5 个交付组收口了几组」，轨道**可以**走到 100%（那时左列说「已完成」）；
+    /// 拿不到 ⇒ 退回旧的「第几格 / 共几格」计数且**不填满** —— 那时候确实没有可印的数字，
+    /// 旧注释里"不印猜出来的数字"那一句在这一条腿上仍然成立。
+    /// （旧版把这格写死成 `7/9` 且声明永不填满，是因为当时**没建模** `workflowState` 那个键，
+    /// 把"客户端没读"当成"后端没有" —— 见 `DeliveryProgress.swift` 开头的 E5 更正与 NEEDS-25。）
     private func deliveryProgressBar(_ progress: DeliveryProgress) -> some View {
         VStack(alignment: .leading, spacing: CovaSpace.sm) {
             HStack(alignment: .firstTextBaseline) {
                 Text(progress.label)
                     .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                 Spacer(minLength: CovaSpace.sm)
-                Text(progress.stepText)
+                Text(progress.rightColumnText)
                     .font(CovaType.mono).foregroundStyle(CovaColor.muted)
             }
             GeometryReader { proxy in
@@ -487,6 +500,8 @@ public struct AISessionDetailView: View {
             let jobs = result.generationJobs
             latestJob = jobs.last
             candidates = jobs.last?.candidates() ?? []
+            // 09 §3-I 的进度阶梯：整包重播，不保留上一轮的格位（同上 ♡ 账口径）。
+            workflow = result.session?.decodedWorkflowState()
             // 服务端为事实源（PRD 4.2）⇒ 载荷一到就以它重播 ♡ 账，不保留上一轮的乐观值。
             favorites.reseed(from: candidates)
             // 「已经问过要挑哪一版」是**本轮界面**的临时态：重新对账后不得继续亮着选择钮，

@@ -188,13 +188,28 @@ final class IdempotencyTests: XCTestCase {
         XCTAssertTrue(token.key.isCanonical(for: .planStart))
     }
 
+    /// 一次逻辑播放 = 一个键，重试/重放复用同键（D8）。
+    ///
+    /// 旧用例在此钉的是 `source == "app-ios"`，而该值会被服务端 400 拒绝（E2 实测），
+    /// 故按更正后的契约改写：同一次播放复用同键时，**归因来源也必须同值** ——
+    /// 服务端对同一 `idempotencyKey` 额外比对 `(trackId, source)`，换来源即 409。
     func testRetryReusesSameKeyForPlayReport() throws {
         let token = IdempotentRequestToken(operation: .playReport)
         let request = try PlayReportRequestDto(trackId: "library-1", token: token)
         let retried = try PlayReportRequestDto(trackId: "library-1", token: token)
         XCTAssertEqual(request.idempotencyKey, retried.idempotencyKey)
-        XCTAssertEqual(request.source, "app-ios")
+        XCTAssertEqual(request.source, .player)
+        XCTAssertEqual(request.source, retried.source)
         XCTAssertTrue(token.key.isCanonical(for: .playReport))
+    }
+
+    /// 显式传入的来源在同键重放时保持可复现（不依赖调用顺序或全局状态）。
+    func testPlayReportSourceIsCarriedVerbatimOnRetries() throws {
+        let token = IdempotentRequestToken(operation: .playReport)
+        let first = try PlayReportRequestDto(trackId: "library-1", source: .playlist, token: token)
+        let replay = try PlayReportRequestDto(trackId: "library-1", source: .playlist, token: token)
+        XCTAssertEqual(first.source, replay.source)
+        XCTAssertEqual(try JSONEncoder().encode(first), try JSONEncoder().encode(replay))
     }
 
     /// TD-24：写请求 DTO 拒绝 operation↔key 错配（DTO 层不再接受任意键）。

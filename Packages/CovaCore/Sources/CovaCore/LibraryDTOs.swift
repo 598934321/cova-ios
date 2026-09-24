@@ -325,6 +325,103 @@ public struct SimilarTrackPageDto: Codable, Equatable, Sendable {
     }
 }
 
+/// `GET /api/tracks` 的筛选查询编码（E3a）。
+///
+/// 存在的理由：服务端读的是 `search=<文本>` 与 `<维度名>=<词条>`，而 iOS 旧实现发的是
+/// `q=` / `dimension=` / `term=` —— 三个键服务端**从不读**，于是每个筛选页拿到的都是
+/// 未筛选的第一页（"筛选静默失效"）。本类型把编码收成一处纯函数，好让**查询串的字节**
+/// 能被直接断言（CovaFeature 侧没有测试目标，编码留在这里才可测）。
+///
+/// 真实契约（2026-09-24 只读探针打 `https://covalink.cn/api/tracks`，与 `web` 仓
+/// `src/app/api/tracks/route.ts` 的 `searchParams.get('search')` / `getAll(<维度名>)` 互证；
+/// 探针只读行数与 `total`，不回显任何响应值）：
+/// · 基线 `pageSize=100` → total **20324**；
+/// · `search=zzzznotaterm` → **0**（生效）；`q=` / `keyword=` → 20324（**忽略**）；
+/// · `dimension=mood&term=…` → 20324（**忽略**）；`mood=` / `scene=` / `genre=` / `style=`
+///   / `type=` / `vocalType=` / `energy=` 各填 nonsense → **0** ⇒ **维度名就是参数名**，
+///   服务端认识的词表为 `scene, mood, genre, subgenre, style, type, instrument, attribute,
+///   energy, vocalType`；
+/// · 同一维度多选 = **重复同名参数**（维度内 OR）：`energy=高` → 7178、`energy=中` → 3393、
+///   `energy=高&energy=中` → **10571 = 7178 + 3393**（精确相加，两个值都进了同一维度）；
+///   逗号串 `energy=高,中` → 7178（等于单值 ⇒ 逗号不是该编码）；
+/// · 词条不在词表时服务端自己回 0 行（`energy=zzzza&energy=zzzzb` → 0），客户端**不**抄词表。
+public struct TrackListQuery: Equatable, Sendable {
+    /// 维度名的语法门槛：首字母 ASCII 字母、其后 `[A-Za-z0-9]`、总长 ≤ 32。
+    ///
+    /// 只校验**形态**不校验**语义**：维度名会被直接当作查询键发出去，`a=b&c` 这种名字
+    /// 能把整条查询改写出第二套语义（注入面），必须拦；而"哪些维度名后端认识"是服务端的
+    /// 事实，客户端抄一份白名单就会在新维度上线时把筛选静默吞掉（正是本条要修的那类缺陷）。
+    static func isLegalDimensionName(_ name: String) -> Bool {
+        guard name.count <= 32, let first = name.utf16.first else { return false }
+        let isLetter = (65...90).contains(first) || (97...122).contains(first)
+        guard isLetter else { return false }
+        for scalar in name.unicodeScalars.dropFirst() {
+            let v = scalar.value
+            let ok = (v >= 0x61 && v <= 0x7A) || (v >= 0x41 && v <= 0x5A) || (v >= 0x30 && v <= 0x39)
+            if !ok { return false }
+        }
+        return true
+    }
+
+    /// 去空白 + 丢空项 + 按首次出现顺序去重（重复同一个词条只会把同一条件写两遍）。
+    static func sanitizedValues(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
+            return trimmed
+        }
+    }
+
+    private static func sanitized(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    public var dimension: String?
+    /// 同一维度下选中的词条（多选 = 逐个发出同名参数，见类型文档）。
+    public var terms: [String]
+    /// 文本检索词（编码为 `search=`）。
+    public var search: String?
+    public var artistID: String?
+    public var page: Int
+    public var pageSize: Int
+
+    public init(
+        dimension: String? = nil, terms: [String] = [], search: String? = nil,
+        artistID: String? = nil, page: Int = 1, pageSize: Int = 20
+    ) {
+        self.dimension = dimension
+        self.terms = terms
+        self.search = search
+        self.artistID = artistID
+        self.page = page
+        self.pageSize = pageSize
+    }
+
+    /// 分页两键恒发（`pageSize` 服务端封顶 100），其余筛选缺位就**不发键**：
+    /// 发一个空值键（`mood=`）在服务端等价于未筛，却让"同一筛选 = 同一地址"这条不变量分裂。
+    public var queryItems: [URLQueryItem] {
+        var items = [
+            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "pageSize", value: String(pageSize)),
+        ]
+        if let artistID = Self.sanitized(artistID) {
+            items.append(URLQueryItem(name: "artistId", value: artistID))
+        }
+        if let search = Self.sanitized(search) {
+            items.append(URLQueryItem(name: "search", value: search))
+        }
+        if let dimension = Self.sanitized(dimension), Self.isLegalDimensionName(dimension) {
+            for term in Self.sanitizedValues(terms) {
+                items.append(URLQueryItem(name: dimension, value: term))
+            }
+        }
+        return items
+    }
+}
+
 /// `GET /api/tracks` 分页封套（真实响应：`{tracks, total, page, pageSize, totalPages}`）。
 public struct TrackPageDto: Codable, Equatable, Sendable {
     public let tracks: [TrackDto]

@@ -1,4 +1,5 @@
 import CovaCore
+import CovaPlayer
 import CovaUI
 import SwiftUI
 
@@ -7,15 +8,19 @@ import SwiftUI
 /// 我的收藏（design 12a）。骨架是 12a/12b 共用的一套：
 /// A 导航条（‹ / 标题 / 编辑）→ B 摘要行 → C 行 → D 尾部状态行，E 左滑单枚 destructive。
 ///
-/// 三条硬口径：
+/// 四条硬口径：
 /// · **客户端不重排**（响应没有 `savedAt`、没有分页参数 ⇒ 以后端顺序为准）；
 /// · 批量取消 = **逐条 DELETE + 幂等键，≤4 并发**，不发明 `POST /api/favorites/batch`；
-/// · NEEDS-11（`{tracks}` 混入生成音乐条目）⇒ 只渲染可解码条目，未识别的**静默跳过**，
-///   B 的条数 = 已渲染条目数，**不得**为凑数显 `+N`。
+/// · `GET /api/favorites` 是**合并 feed**（库曲 + 生成笔记，E3b）⇒ 两类都渲染成行，
+///   服务端不发的字段（`favoriteCount`/`energy`/`tags`）一律不显，**不拿 0 顶**；
+///   笔记条目也**不丢行** —— 丢的是用户自己的收藏；
+/// · 收藏动作**按种类路由**：笔记走 `/api/notes/:id/favorite`，库曲走 `/api/favorites`；
+///   取消动作这里统一用 `removeFavorites`（"这一屏里的条目必然已收藏"是本页的事实，
+///   拿 `favoriteIDs` 反推会把笔记条目翻转成"再收藏一次"）。
 public struct FavoritesView: View {
     @Environment(AppSession.self) private var session
     @State private var phase: Phase = .loading
-    @State private var tracks: [TrackDto] = []
+    @State private var items: [FavoriteItemDto] = []
     @State private var editing = false
     @State private var selected: Set<String> = []
     @State private var busy = false
@@ -32,7 +37,7 @@ public struct FavoritesView: View {
             case .failed(let failure):
                 CovaErrorState(kind: Self.kind(failure)) { Task { await load() } }
             case .ready:
-                if tracks.isEmpty {
+                if items.isEmpty {
                     VStack(spacing: CovaSpace.sm) {
                         CovaEmptyState(
                             symbol: "heart",
@@ -74,7 +79,7 @@ public struct FavoritesView: View {
                 if editing {
                     HStack(spacing: CovaSpace.md) {
                         Button(allSelected ? "取消全选" : "全选") {
-                            selected = allSelected ? [] : Set(tracks.map(\.id))
+                            selected = allSelected ? [] : Set(items.map(\.id))
                         }
                         Button("完成") { editing = false; selected = [] }
                     }
@@ -88,7 +93,12 @@ public struct FavoritesView: View {
     }
 
     private var allSelected: Bool {
-        !tracks.isEmpty && selected.count == tracks.count
+        !items.isEmpty && selected.count == items.count
+    }
+
+    /// 只取库曲条目（既有播放队列口径：`session.play(tracks:)` 吃的是 `[TrackDto]`）。
+    private var libraryTracks: [TrackDto] {
+        items.compactMap { if case .library(let track) = $0 { track } else { nil } }
     }
 
     private var list: some View {
@@ -102,8 +112,8 @@ public struct FavoritesView: View {
                     .listRowBackground(Color.clear)
             }
             Section {
-                ForEach(tracks, id: \.id) { track in
-                    row(track)
+                ForEach(items, id: \.id) { item in
+                    row(item)
                 }
                 tailRow
             }
@@ -113,22 +123,21 @@ public struct FavoritesView: View {
         .scrollContentBackground(.hidden)
     }
 
-    private func row(_ track: TrackDto) -> some View {
-        let artist = (track.artistNameCn ?? track.artist.name)
+    private func row(_ item: FavoriteItemDto) -> some View {
         return CovaListRow(
-            title: track.titleCn ?? track.title,
-            subtitle: "\(artist.isEmpty ? "未知艺人" : artist) · \(Int(track.audioDuration ?? track.duration))s",
-            artwork: CovaArtwork(url: URL(string: track.cover), title: track.title)
+            title: title(of: item),
+            subtitle: subtitle(of: item),
+            artwork: CovaArtwork(url: artworkURL(of: item), title: title(of: item))
         ) {
             if editing {
-                Image(systemName: selected.contains(track.id) ? "checkmark.circle.fill" : "circle")
+                Image(systemName: selected.contains(item.id) ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 22)).foregroundStyle(
-                        selected.contains(track.id) ? CovaColor.accent : CovaColor.muted)
+                        selected.contains(item.id) ? CovaColor.accent : CovaColor.muted)
                     .accessibilityLabel("选择本曲")
-                    .accessibilityValue(selected.contains(track.id) ? "已选择" : "未选择")
+                    .accessibilityValue(selected.contains(item.id) ? "已选择" : "未选择")
             } else {
                 Button {
-                    Task { await session.toggleFavorite(track.id); await load(silent: true) }
+                    Task { await removeFavorite(item) }
                 } label: {
                     Image(systemName: "heart.fill").foregroundStyle(CovaColor.accent)
                 }
@@ -137,9 +146,9 @@ public struct FavoritesView: View {
             }
         } action: {
             if editing {
-                selected.formSymmetricDifference([track.id])
+                selected.formSymmetricDifference([item.id])
             } else {
-                Task { await play(track) }
+                Task { await play(item) }
             }
         }
         .frame(minHeight: 64)
@@ -147,11 +156,7 @@ public struct FavoritesView: View {
             top: 0, leading: CovaSpace.pageGutter, bottom: 0, trailing: CovaSpace.pageGutter))
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button("取消收藏", systemImage: "heart.slash") {
-                Task {
-                    let failed = await session.removeFavorites([track.id])
-                    if failed.isEmpty { await load(silent: true) }
-                    else { session.showToast("取消收藏没保存上，再试一次", isError: true) }
-                }
+                Task { await removeFavorite(item) }
             }
             .tint(CovaColor.error)
         }
@@ -198,22 +203,123 @@ public struct FavoritesView: View {
         await load(silent: true)
     }
 
-    private func play(_ track: TrackDto) async {
-        guard AppSession.playbackItem(from: track) != nil else {
-            session.showToast("这首暂时不能播", isError: true)
-            return
+    /// 单条取消收藏（♡ 与左滑共用一条腿）。
+    ///
+    /// 用 `removeFavorites` 而不是 `toggleFavorite`：这一屏里的条目**必然已收藏**（本页就是
+    /// 收藏 feed），而 `toggleFavorite` 是按 `favoriteIDs` 反推目标态的 —— 那本账只认库曲 id
+    /// （笔记收藏在 `/api/notes/:id/favorite` 那一侧），笔记条目会被翻成「再收藏一次」。
+    private func removeFavorite(_ item: FavoriteItemDto) async {
+        let failed = await session.removeFavorites([item.id])
+        if failed.isEmpty { await load(silent: true) }
+        else { session.showToast("取消收藏没保存上，再试一次", isError: true) }
+    }
+
+    private func play(_ item: FavoriteItemDto) async {
+        switch item {
+        case .library(let track):
+            guard AppSession.playbackItem(from: track) != nil else {
+                session.showToast("这首暂时不能播", isError: true)
+                return
+            }
+            await session.play(tracks: libraryTracks.filter { $0.audioUrl.isEmpty == false }, at: 0)
+        case .note(let note):
+            guard let playback = Self.playbackItem(for: note) else {
+                session.showToast("这首暂时不能播", isError: true)
+                return
+            }
+            await session.play(items: [playback], at: 0)
         }
-        await session.play(tracks: tracks.filter { $0.audioUrl.isEmpty == false }, at: 0)
+    }
+
+    // MARK: 一行的三面（两类条目各有各的"没有"）
+
+    private func title(of item: FavoriteItemDto) -> String {
+        switch item {
+        case .library(let track): return track.titleCn ?? track.title
+        case .note(let note): return note.displayTitle
+        }
+    }
+
+    private func subtitle(of item: FavoriteItemDto) -> String {
+        switch item {
+        case .library(let track):
+            let artist = track.artistNameCn ?? track.artist.name
+            return "\(artist.isEmpty ? "未知艺人" : artist) · \(Int(track.audioDuration ?? track.duration))s"
+        case .note(let note):
+            // 笔记的 `duration` 服务端恒发 0（未分析）⇒ 不显「0s」，也不显 BPM/收藏数（根本不发）。
+            let artist = Self.artist(of: note)
+            guard let duration = note.displayDuration else { return artist }
+            return "\(artist) · \(Int(duration))s"
+        }
+    }
+
+    private func artworkURL(of item: FavoriteItemDto) -> URL? {
+        switch item {
+        case .library(let track): return URL(string: track.cover)
+        case .note(let note): return Self.displayURL(note.cover)
+        }
+    }
+
+    private static func artist(of note: NoteFavoriteDto) -> String {
+        if let cn = note.artistNameCn, !cn.isEmpty { return cn }
+        if let name = note.artistName, !name.isEmpty { return name }
+        return "未知艺人"
+    }
+
+    /// 本站**相对路径**补全成生产出口（绝对地址原样交出）。
+    ///
+    /// 必要性：笔记条目的 `cover` / `audioUrl` 实测形态是 `/api/proxy/audio?…&sig=…` 或
+    /// `/audio/suno_*.mp3` 这类相对路径（`web` 仓 `resolveNoteAudioUrl` + `playableAudioUrl`
+    /// 会把 Suno 资产改写成签名代理），相对地址既不能播也不能取。
+    /// 补全只经 `CovaEnvironment.makeAPIURL`（D10 唯一出口），补不出来就当没有 —— 不猜 host。
+    static func displayURL(_ raw: String?) -> URL? {
+        guard let raw, !raw.isEmpty, let parsed = URL(string: raw) else { return nil }
+        if parsed.scheme?.lowercased() == "https" { return parsed }
+        guard parsed.scheme == nil, parsed.host == nil, parsed.path.hasPrefix("/") else { return nil }
+        let components = URLComponents(string: raw)
+        return CovaEnvironment.makeAPIURL(
+            path: components?.path ?? parsed.path,
+            queryItems: components?.queryItems ?? []
+        )
+    }
+
+    /// 笔记条目 → `PlaybackItem`。
+    ///
+    /// **走 D7 私有顺序**（Bearer 下载 → 校验非空 → `file://`），不走公开直链：
+    /// 服务端给的是本站签名代理/静态路径，本身不要求 Bearer，但生成音频在 iOS 侧的口径
+    /// 就是先本地化（AGENTS 硬边界 6），且这一栏随时可能改回真正的私有直链 ⇒ 收敛到更严一侧。
+    /// `kind` 取 `.privateCandidate`：它不是库曲，`POST /api/tracks/play` 只认库曲 id，
+    /// 按 `.libraryTrack` 起播会拿 `note:<uuid>` 去打一个必然 404 的上报。
+    static func playbackItem(for note: NoteFavoriteDto) -> PlaybackItem? {
+        guard let audio = displayURL(note.audioUrl), let audioURL = try? AudioURL(https: audio) else { return nil }
+        // `PlaybackItem.id` 的口径是 `[A-Za-z0-9_-]`（同时是缓存文件名），`note:` 前缀进不去。
+        guard let noteID = note.noteIdentifier else { return nil }
+        return try? PlaybackItem(
+            id: noteID,
+            title: note.displayTitle,
+            artist: artist(of: note),
+            album: nil,
+            duration: note.displayDuration,
+            coverURL: displayURL(note.cover).flatMap { try? AudioURL(https: $0) },
+            audioSource: .bearerRequired(audioURL),
+            kind: .privateCandidate
+        )
     }
 
     /// B 摘要 = **客户端计算**（后端没有汇总字段）。
+    /// 时长只累加"服务端真给了的"：笔记条目 `duration` 为 0/缺 ⇒ 不计入，也不按 0 假装算过。
     private var summary: String {
-        let total = tracks.reduce(0.0) { $0 + ($1.audioDuration ?? $1.duration) }
+        let total = items.reduce(0.0) { sum, item in
+            switch item {
+            case .library(let track): return sum + (track.audioDuration ?? track.duration)
+            case .note(let note): return sum + (note.displayDuration ?? 0)
+            }
+        }
         let minutes = Int(total) / 60
         let span: String
         if minutes >= 60 { span = "约 \(minutes / 60) 小时 \(minutes % 60) 分" }
         else { span = "约 \(minutes) 分钟" }
-        return "\(tracks.count) 首 · \(span)"
+        return "\(items.count) 首 · \(span)"
     }
 
     private static func kind(_ failure: CatalogFailure) -> CovaErrorState.Kind {
@@ -229,7 +335,7 @@ public struct FavoritesView: View {
         if !silent { phase = .loading }
         do {
             let page = try await session.catalog.favorites()
-            tracks = page.tracks
+            items = page.items
             phase = .ready
         } catch {
             let failure = CatalogService.classify(error, decodingNeeds: "NEEDS-11")

@@ -29,17 +29,33 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
         try IdempotentRequestToken(operation: operation, key: IdempotencyKey(validating: operation.keyPrefix + hex))
     }
 
-    func testPlayReportRequestIsConstructibleAndDefaultsToAppIOSSource() throws {
+    /// 模块外（本文件 `import CovaCore`，非 `@testable`）构造播放上报请求，并钉住默认归因。
+    ///
+    /// 旧用例钉的是 `appIOSSource == "app-ios"`，该值不在服务端 source allowlist 内
+    /// （E2：线上 400 `播放来源无效`），故按更正后的契约改写为 `PlayReportSource` 的默认值。
+    func testPlayReportRequestIsConstructibleAndDefaultsToPlayerSource() throws {
         let request = try PlayReportRequestDto(
             trackId: "library-1",
             token: token(.playReport)
         )
-        XCTAssertEqual(PlayReportRequestDto.appIOSSource, "app-ios")
-        XCTAssertEqual(request.source, "app-ios")
+        XCTAssertEqual(PlayReportSource.player.rawValue, "player")
+        XCTAssertEqual(request.source, .player)
         try XCTAssertEncodedJSONEqual(
             JSONEncoder().encode(request),
             fixture: "requests/play-report-request"
         )
+    }
+
+    /// 模块外也必须能显式指定语境来源（`track_detail` 的线格式拼写是这条的价值所在）。
+    func testPlayReportRequestAcceptsAnExplicitContextSource() throws {
+        let request = try PlayReportRequestDto(
+            trackId: "library-1",
+            source: .trackDetail,
+            token: token(.playReport)
+        )
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request))
+        let source = try XCTUnwrap((object as? [String: Any])?["source"] as? String)
+        XCTAssertEqual(source, "track_detail")
     }
 
     func testDownloadCheckoutRequestIsConstructibleAndDefaultsToMp3() throws {

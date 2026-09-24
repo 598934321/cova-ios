@@ -196,6 +196,8 @@ public struct PlaylistDetailView: View {
 public struct TrackDetailSheet: View {
     @Environment(AppSession.self) private var session
     @Environment(\.dismiss) private var dismiss
+    /// 07 §6：AX 档下 sheet 高度、封面尺寸都换档（内容优先，别让放大的字把图挤出可视区）。
+    @Environment(\.covaAXLayout) private var axLayout
     private let trackID: String
     @State private var phase: Phase = .loading
     @State private var track: TrackDto?
@@ -208,7 +210,6 @@ public struct TrackDetailSheet: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            Capsule().fill(CovaColor.line).frame(width: 36, height: 5).padding(.top, CovaSpace.sm)
             topBar
             ScrollView {
                 switch phase {
@@ -224,7 +225,48 @@ public struct TrackDetailSheet: View {
             }
         }
         .covaPage()
+        // 07 §2/§43：sheet 默认高 = 屏高 60%，上滑到 92%（**两档吸附**）。
+        // 呈现机制这里先钉死一句：本屏**不是**自绘 overlay，也不是 fullScreenCover ——
+        // 它是 `CovaRootView.mainShell` 上那个 `.sheet(item: $detailTrackID)` 的内容
+        // （`TrackSheetID` 只带 trackID，页面自己取数），所以 `.presentationDetents`
+        // 这条正路是**可用**的（此前"机制未确认"的记录到此为止）。
+        // TG-15（sheet 高度档）未入 tokens ⇒ 60%/92% 按 spec 施工。
+        .presentationDetents(detents)
+        // §6：AX 档（≥ AX1）下默认高**自动接近全屏**（内容优先）—— 放大档 60% 高会把
+        // 封面/操作行挤出可视区，那才是"AX5 把内容挤没"。这里给单一 `.large` 档：
+        // 近全屏、无第二吸附点（吸附点本身在放大档没有意义，用户要的是整屏内容）。
+        // §3.A 的拖拽指示条改由系统给：自绘那根 36×5 胶囊 + 两档吸附会画成**两根**条，
+        // 而系统指示条正是"可拖到下一档"的官方语汇（TG-16 指示条几何档未入库）。
+        .presentationDragIndicator(.visible)
+        // §3.A/§5 要 sheet 底 `color.elevated`；本屏沿用的是公共 `covaPage()` 的 canvas
+        // —— 那是既有偏差、不属于本批 AX 判据，留在这里说明而不是顺手改掉。
         .task { await session.refreshCollections(); await load() }
+    }
+
+    private var detents: Set<PresentationDetent> {
+        axLayout ? [.large] : [.fraction(0.6), .fraction(0.92)]
+    }
+
+    /// C 区大封面。**非 AX 档与改造前逐字一致**（同一支 frame/aspectRatio/圆角/内边距）。
+    /// AX 档（07 §6）：封面从"满宽"缩到容器宽的 **60%** 并居中 —— 放大档那张 1:1 方块
+    /// 若保持满宽，会把操作行/标签/歌词整段顶出可视区，正是 §9 判据「AX5 无内容被挤出」
+    /// 要抓的东西。比例 60% 是 spec 写的，不是自造；宽度参照用 `containerRelativeFrame`
+    /// 拿**真实容器宽**（sheet 里就是 sheet 宽），不写死 point。
+    @ViewBuilder
+    private func cover(_ track: TrackDto) -> some View {
+        let art = CovaArtwork(url: URL(string: track.cover), title: track.title)
+        if axLayout {
+            art.containerRelativeFrame(.horizontal) { length, _ in length * 0.6 }
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, CovaSpace.pageGutter)
+        } else {
+            art.frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
+                .padding(.horizontal, CovaSpace.pageGutter)
+        }
     }
 
     private var topBar: some View {
@@ -257,10 +299,7 @@ public struct TrackDetailSheet: View {
     private var content: some View {
         if let track {
             VStack(alignment: .leading, spacing: CovaSpace.lg) {
-                CovaArtwork(url: URL(string: track.cover), title: track.title)
-                    .frame(maxWidth: .infinity).aspectRatio(1, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
-                    .padding(.horizontal, CovaSpace.pageGutter)
+                cover(track)
 
                 HStack(alignment: .top, spacing: CovaSpace.md) {
                     VStack(alignment: .leading, spacing: 2) {

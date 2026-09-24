@@ -56,8 +56,12 @@ public enum CovaDependencies {
     }
 }
 
-/// 播放上报提交器（NEEDS-2 未解锁时服务端可能拒 `app-ios`）：**不静默丢包** ——
-/// 失败进未决队列，可经 `retryPending()` 补发（P5 幂等键复用）。
+/// 播放上报提交器：`POST /api/tracks/play` 的唯一生产出口（`CovaAPIClient` ⇒ 只有
+/// `https://covalink.cn`，D10）。`source` 的可接受取值由 `PlayReportSource` 类型钉死
+/// （服务端 allowlist 是闭合的），这里只负责发，不再自行决定来源标识。
+///
+/// 失败**不静默丢包**：错误原样抛给 `PlayReportCoordinator`，由其转入未决队列，
+/// 经 `retryPending()` 以同一幂等键补发（P5 幂等键复用）。
 public struct PlayReportSubmitter: PlayReportSubmitting {
     private let client: CovaAPIClient
     public init(client: CovaAPIClient) { self.client = client }
