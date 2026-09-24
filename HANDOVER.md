@@ -1210,3 +1210,30 @@ conform to 'Decodable'`。这就是我 23:07 那次 `check.sh` 红在 4/10 的�
   并收窄成三件后端要答的事：键集/枚举进契约、`fullMediaReady` 至今无字段、有无字节级进度）。
 - **仍未发生、不许被引用的**：`check.sh` 端到端 EXIT=0、基线抬高（`CORE_MIN 418` / `PLAYER_MIN 415`
   仍低于实测）、版本递增（仍 `0.2.65(76)`）、tag `g3e-r16`、第 16 轮、本轮次的验收截图。
+
+### 16.5 追加（23:18，收口时最长的那根针）：**曲库播放整体坏了 —— 我自己复核过，不是转述**
+
+E3 实例报完之后我独立验了两头：
+
+- **线上侧**（只读 curl，只印布尔与首段路径，不印签名值）：`GET /api/tracks?limit=3` 回来的
+  **20/20 条 `audioUrl` 都以 `/api/tracks/…` 开头（相对路径）、0 条以 `http` 开头、都不带 `sig=`**。
+  ⇒ "曲目带绝对播放地址"这个假设**已经不成立**。
+- **客户端侧**：`AppSession.swift:532-534`（`playbackItem(from:)`，`similar` 那一版在 `:549`）写的是
+  `guard let audio = URL(string: track.audioUrl), let audioURL = try? AudioURL(https: audio) else { return nil }`
+  —— 相对路径**没有 scheme**，过不了 `AudioURL(https:)` ⇒ 整个函数返回 `nil`
+  ⇒ **点任何一首库内曲目都起不来**，而且不报错：静默没有播放项。`cover` 那一行同理（ artwork 也没了）。
+- **修法已知、不复杂**：CovaCore 里已有 `CovaEnvironment.makeAPIURL(path:queryItems:)`
+  （`CovaEnvironment.swift:34`），把相对路径补成同源绝对 URL 再过 `AudioURL(https:)`；
+  解析该**下沉到 CovaCore**（E3 已为收藏条目这么做过一次），不要只在 UI 层补。
+  ⚠️ 这一改**同时是安全口径问题**：拼出来的仍是 covalink.cn 同源，别顺手放宽成任意 host。
+- **为什么之前所有"真实播放"验收没抓到它**：我那次 M2 真机跑通的是 **AI 候选**私有音频链路
+  （走 `.privateCandidate` + 沙盒下载），**库内曲目**这条腿从来没被真机验证过 ⇒
+  §15 矩阵里凡是拿"播放过"当证据的行，都要重新标成"只在候选链路上验证过"。
+
+**当前字节状态（收口时的真话）**：E3 落地 `5f730f2`（补上 `FavoriteItemDto: Decodable` ⇒ `7257b6b`
+那笔 checkpoint 造成的"HEAD 编译不过"已被它自己关闭）、E5 落地 `f02be0c`；
+E3 报工作树全树 **472 tests / 0 failures EXIT=0**（**这笔数不是我跑的**，接手请自己重跑）。
+仍然没发生、也不许引用的：`check.sh` 端到端 EXIT=0、基线抬高（`CORE_MIN 418`/`PLAYER_MIN 415` 仍偏低）、
+版本递增（仍 `0.2.65(76)`）、tag `g3e-r16`、第 16 轮、本轮次的验收截图。
+NEEDS 侧还欠两条文字：`FAVORITES-NOTE-ITEMS`(#11) 按 E3 的结论收窄（端点存在，不是后端缺口），
+以及新增一条"曲目的 `audioUrl` 是相对还是绝对"要后端写进契约（否则这类静默断裂会复发）。
