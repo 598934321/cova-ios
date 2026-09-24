@@ -1122,3 +1122,23 @@ Accept-Ranges），**302 只发生在该账号对某一条有 full access 时**�
   （userinfo、IDN 同形、尾点、`:8443`、`:0443`、十进制回环、前后缀近似域、换区换桶…），
   合法形态全部存活；`Tests/` 命名的目录在生产根里仍会被扫；生成物 `.xcodeproj` 不污染判定。
   只有**故意规避类**过了（`"购"+"买"` 拆字、base64）。
+
+### §T 补充：第 28 批落地（`a2cdd53`）与它交回给我的东西
+
+一处判定面：`CovaEnvironment` 新增 `redirectLanding` / `decideCredentialedRedirect` / `egressHostLabel`
+（**只给 host，绝不给出站地址里的查询串或签名**），三个调用点共用：API 腿、SSE 腿、音频腿
+（`MediaEgressHop.landing` 收敛成一行委托）。只跟"同 authority"，5 跳封顶，307/308 保留方法体，
+**名单永远不是搬动凭证的理由**。拒绝类型是独立的 `CovaEgressRefusal`，并在 `normalize` 里显式归到
+`.invalidRequestURL`（不可重试）—— 少了这一支就会掉进 `.transport` 变成**无限重试**，这条它测了。
+
+实测：CovaCore **513/0**（488→513，+25 用例；未修形时 513 条 31 红 EXIT=65）、
+CovaPlayer **448/0**（442→448）、app build EXIT=0。
+⚠️ 它诚实标了两处不完美：还原时 4 个文件 md5 逐字一致，另有 2 个只差在它随后自己加的
+`hopsRemaining` 参数（不是复原失败，但也不是"零差异还原"，我不替它圆）；
+它跑的红里 CovaPlayer 有 9 条是**既有的**音频跳测试 ⇒ 共享解析器是承重的，这是好事也是耦合面。
+
+**它要求我改的（不在它权限内，已转第 30 批）**：`AVPlayerEngine.swift:213`、`:227-230` 应改调
+`PlayerEgress.decide/isPlayable`（把 D23 的判定真正做到交给 AVPlayer 之前）；音频腿要带 host 需
+`PlayerError.swift:20,47` + `PlaybackCoordinator.swift:1475` + `PrivateAudioFetcher.swift:101,104` 三处配合；
+`CovaAPIClient.swift:110-116` 目前把拒绝拍平成 `.invalidRequestURL`，丢掉了"是哪个 host"。
+（`CovaStates.swift` 出名单返回 nil 那条，美术腿那批正在改。）
