@@ -186,6 +186,8 @@ public struct PlaylistsPlazaView: View {
 /// 外链条款、版本号 —— 唯一需要的端点是登出 `POST /api/auth/logout`。
 /// 按 spec：无骨架、无空态、无整屏错误态、无下拉刷新；离线全可用。
 public struct SettingsView: View {
+    /// 15 §Dynamic Type：AX 档下「标签 + 右值」的行改成两行堆叠。
+    @Environment(\.covaAXLayout) private var axLayout
     @Environment(AppSession.self) private var session
     @State private var cacheBytes: Int64?
     @State private var notifyStatus = "未设置"
@@ -214,11 +216,7 @@ public struct SettingsView: View {
                 .foregroundStyle(CovaColor.fg)
             }
             Section("通知") {
-                HStack {
-                    Text("生成完成通知").foregroundStyle(CovaColor.fg)
-                    Spacer()
-                    Text(notifyStatus).foregroundStyle(CovaColor.secondary)
-                }
+                labeledRow("生成完成通知", notifyStatus)
             }
             Section("条款与说明") {
                 link("隐私政策", "https://covalink.cn/privacy")
@@ -234,11 +232,7 @@ public struct SettingsView: View {
                 }
             }
             Section("关于") {
-                HStack {
-                    Text("版本").foregroundStyle(CovaColor.fg)
-                    Spacer()
-                    Text(Self.versionString).foregroundStyle(CovaColor.secondary)
-                }
+                labeledRow("版本", Self.versionString)
                 // I′ 开源许可：零第三方依赖 ⇒ 这一行**不渲染**（不是"暂无内容"）。
             }
         }
@@ -295,6 +289,24 @@ public struct SettingsView: View {
                     .font(.system(size: 13)).foregroundStyle(CovaColor.muted)
                     .accessibilityHidden(true)
             }
+    }
+
+    /// 15 §Dynamic Type：AX 档下右值移到标签**下方第二行**（与 11 §6 E 行同一条规则），
+    /// 免得放大后标签和右值在同一行里互相挤到截断。
+    @ViewBuilder
+    private func labeledRow(_ label: String, _ value: String) -> some View {
+        if axLayout {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).foregroundStyle(CovaColor.fg)
+                Text(value).foregroundStyle(CovaColor.secondary)
+            }
+        } else {
+            HStack {
+                Text(label).foregroundStyle(CovaColor.fg)
+                Spacer()
+                Text(value).foregroundStyle(CovaColor.secondary)
+            }
+        }
     }
 
     private static var versionString: String {
