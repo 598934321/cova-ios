@@ -59,22 +59,27 @@ public enum CovaRadius {
     public static let capsule: CGFloat = 9999
 }
 
-/// 字阶（SF Pro / SF Mono）。**Dynamic Type 全量适配**：用相对 textStyle 映射而非固定 point，
-/// 令牌里的 size 作为 `@ScaledMetric` 的基准值（tokens.json `type.note`）。
+/// 字阶（SF Pro / SF Mono）。**每档映射到同名 Apple textStyle ⇒ 整站跟随 Dynamic Type**：
+/// 默认档（Large）下与 `tokens.json` 的 point 一字不差 —— largeTitle 34 / title 28 /
+/// headline 17 semibold / body 17 / callout 15 / subhead→footnote 13 / caption→caption2 11 /
+/// mono→footnote 等宽 13；系统调到 AX 档时随之一并放大。
+///
+/// 这里刻意不用 `Font.system(size:)`：固定 point **不跟随 Dynamic Type**，
+/// 而原先的实现正是"注释说全量适配、代码按死字号"的那种不一致（M3 可访问性审计抓到）。
+///
+/// `tokens.json` 里 largeTitle/title 的 `tracking: -0.01` **仍未落地**：SwiftUI 的字距是 `Text`
+/// 侧修饰符，`Font` 上没有对应能力；原先那个 `tracking:` 形参是个从不读取的死参数（本次删掉），
+/// 所以观感与既有验收截图一致 —— 字距保真留给 G2 逐屏验收按屏补，不在这里谎称已做。
 public enum CovaType {
-    public static func font(size: CGFloat, weight: Font.Weight, mono: Bool = false, tracking: CGFloat? = nil) -> Font {
-        let base = mono ? Font.system(size: size, weight: weight, design: .monospaced)
-                        : Font.system(size: size, weight: weight)
-        return base
-    }
-    public static let largeTitle = font(size: 34, weight: .bold, tracking: -0.01)
-    public static let title = font(size: 28, weight: .bold, tracking: -0.01)
-    public static let headline = font(size: 17, weight: .semibold)
-    public static let body = font(size: 17, weight: .regular)
-    public static let callout = font(size: 15, weight: .regular)
-    public static let subhead = font(size: 13, weight: .regular)
-    public static let caption = font(size: 11, weight: .regular)
-    public static let mono = font(size: 13, weight: .regular, mono: true)
+    public static let largeTitle = Font.system(.largeTitle).weight(.bold)
+    public static let title = Font.system(.title).weight(.bold)
+    public static let headline = Font.system(.headline)
+    public static let body = Font.system(.body)
+    public static let callout = Font.system(.callout)
+    public static let subhead = Font.system(.footnote)
+    /// 设计档 `caption` 是 11pt ⇒ Apple `.caption2`（`.caption` 为 12pt，不是这一档）。
+    public static let caption = Font.system(.caption2)
+    public static let mono = Font.system(.footnote, design: .monospaced)
 
     /// 全局 tabular-nums：时间/余额/进度一律等宽数字。
     public static func digits(_ text: String) -> Text {
