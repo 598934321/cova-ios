@@ -120,6 +120,7 @@ public struct PlaylistsPlazaView: View {
                             .font(.system(size: 12))
                             .foregroundStyle(CovaColor.accent)
                             .padding(CovaSpace.xs)
+                            .accessibilityLabel("已收藏")
                     }
                 }
                 Text(playlist.titleCn ?? playlist.title)
@@ -288,6 +289,7 @@ public struct SettingsView: View {
             .overlay(alignment: .trailing) {
                 Image(systemName: "arrow.up.right.square")
                     .font(.system(size: 13)).foregroundStyle(CovaColor.muted)
+                    .accessibilityHidden(true)
             }
     }
 

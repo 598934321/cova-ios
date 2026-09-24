@@ -121,6 +121,8 @@ public struct FavoritesView: View {
                 Image(systemName: selected.contains(track.id) ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 22)).foregroundStyle(
                         selected.contains(track.id) ? CovaColor.accent : CovaColor.muted)
+                    .accessibilityLabel("选择本曲")
+                    .accessibilityValue(selected.contains(track.id) ? "已选择" : "未选择")
             } else {
                 Button {
                     Task { await session.toggleFavorite(track.id); await load(silent: true) }
@@ -128,6 +130,7 @@ public struct FavoritesView: View {
                     Image(systemName: "heart.fill").foregroundStyle(CovaColor.accent)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("取消收藏")
             }
         } action: {
             if editing {
@@ -349,8 +352,11 @@ public struct MyPlaylistsView: View {
                     Image(systemName: selected.contains(playlist.id) ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: 22))
                         .foregroundStyle(selected.contains(playlist.id) ? CovaColor.accent : CovaColor.muted)
+                        .accessibilityLabel("选择本歌单")
+                        .accessibilityValue(selected.contains(playlist.id) ? "已选择" : "未选择")
                 } else {
                     Image(systemName: "chevron.right").foregroundStyle(CovaColor.muted)
+                        .accessibilityHidden(true)
                 }
             } action: {
                 if editing {

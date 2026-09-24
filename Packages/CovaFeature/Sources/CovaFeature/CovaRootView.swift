@@ -163,6 +163,7 @@ public struct CovaRootView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(session.tab == tab ? .isSelected : [])
             }
         }
         .padding(.top, CovaSpace.sm)

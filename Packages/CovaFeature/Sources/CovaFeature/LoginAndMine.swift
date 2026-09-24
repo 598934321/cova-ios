@@ -121,6 +121,7 @@ public struct MineView: View {
             ForEach(["收藏", "我的歌单", "我的创作", "下载管理"], id: \.self) { title in
                 CovaListRow(title: title, subtitle: nil, artwork: nil) {
                     Image(systemName: "chevron.right").foregroundStyle(CovaColor.muted)
+                        .accessibilityHidden(true)
                 } action: {
                     switch title {
                     case "收藏":

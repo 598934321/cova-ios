@@ -34,6 +34,7 @@ public struct LibraryView: View {
     private var searchBar: some View {
         HStack(spacing: CovaSpace.sm) {
             Image(systemName: "magnifyingglass").foregroundStyle(CovaColor.muted)
+                .accessibilityHidden(true)
             TextField("搜索曲目 / 风格 / 情绪", text: $query)
                 .font(CovaType.callout)
                 .foregroundStyle(CovaColor.fg)
@@ -49,6 +50,7 @@ public struct LibraryView: View {
                 Button { query = ""; Task { await reload() } } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(CovaColor.muted)
                 }
+                .accessibilityLabel("清除搜索")
             }
         }
         .padding(CovaSpace.md)
@@ -134,6 +136,7 @@ public struct LibraryView: View {
                                     .foregroundStyle(on ? CovaColor.accent : CovaColor.muted)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel(on ? "取消收藏" : "收藏")
                         } action: {
                             Task { await session.play(tracks: tracks, at: index) }
                         }

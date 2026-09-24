@@ -161,6 +161,7 @@ public struct PlaylistDetailView: View {
                 .foregroundStyle(on ? CovaColor.accent : CovaColor.muted)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(on ? "取消收藏" : "收藏")
     }
 
     private static func kind(_ failure: CatalogFailure) -> CovaErrorState.Kind {
@@ -230,6 +231,7 @@ public struct TrackDetailSheet: View {
                 Image(systemName: "xmark").font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(CovaColor.secondary)
             }
+            .accessibilityLabel("关闭")
             Spacer()
             Menu {
                 Button("查看艺人") {
@@ -243,6 +245,7 @@ public struct TrackDetailSheet: View {
                 Image(systemName: "ellipsis").font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(CovaColor.secondary)
             }
+            .accessibilityLabel("更多操作")
         }
         .padding(.horizontal, CovaSpace.pageGutter)
         .padding(.vertical, CovaSpace.sm)
@@ -279,6 +282,7 @@ public struct TrackDetailSheet: View {
                             .foregroundStyle(on ? CovaColor.accent : CovaColor.muted)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(on ? "取消收藏" : "收藏")
                 }
                 .padding(.horizontal, CovaSpace.pageGutter)
 
@@ -336,6 +340,7 @@ public struct TrackDetailSheet: View {
                     .foregroundStyle(CovaColor.accent)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(lyricsExpanded ? "收起歌词" : "展开全文")
             } else {
                 Text("纯音乐 · 无歌词").font(CovaType.subhead).foregroundStyle(CovaColor.muted)
             }

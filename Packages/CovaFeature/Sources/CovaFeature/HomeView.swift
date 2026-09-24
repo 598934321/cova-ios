@@ -185,6 +185,7 @@ public struct HomeView: View {
                         artwork: CovaArtwork(url: URL(string: track.coverURLString ?? ""), title: track.title)
                     ) {
                         Image(systemName: "play.circle").foregroundStyle(CovaColor.muted)
+                            .accessibilityHidden(true)
                     } action: {
                         Task { await replay(track) }
                     }

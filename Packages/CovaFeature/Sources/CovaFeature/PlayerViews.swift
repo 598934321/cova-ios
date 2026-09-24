@@ -30,12 +30,14 @@ public struct MiniPlayerView: View {
                             .foregroundStyle(CovaColor.fg)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(snap?.state == .playing ? "暂停" : "播放")
                     Button { Task { await session.next() } } label: {
                         Image(systemName: "forward.fill")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(CovaColor.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("下一首")
                 }
                 .padding(.horizontal, CovaSpace.md)
                 .padding(.vertical, CovaSpace.sm)
@@ -82,6 +84,7 @@ public struct PlayerView: View {
                 Button { dismiss() } label: {
                     Image(systemName: "chevron.down").font(.headline).foregroundStyle(CovaColor.secondary)
                 }
+                .accessibilityLabel("收起播放器")
                 Spacer()
                 Text(snap?.loopMode.description ?? "").font(CovaType.caption).foregroundStyle(CovaColor.muted)
             }
@@ -182,6 +185,7 @@ public struct PlayerView: View {
                     HStack(spacing: CovaSpace.sm) {
                         Image(systemName: "speaker.wave.2.fill")
                             .foregroundStyle(CovaColor.accent)
+                            .accessibilityHidden(true)
                         Text(item.title).font(CovaType.callout).foregroundStyle(CovaColor.fg)
                         Text(item.artist).font(CovaType.caption).foregroundStyle(CovaColor.muted)
                     }
@@ -226,14 +230,17 @@ public struct PlayerView: View {
             Button { Task { await session.previous() } } label: {
                 Image(systemName: "backward.fill").font(.system(size: 26, weight: .semibold))
             }
+            .accessibilityLabel("上一首")
             Button { Task { await session.toggle() } } label: {
                 Image(systemName: snap?.state == .playing ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 64, weight: .regular))
                     .foregroundStyle(CovaColor.accent)
             }
+            .accessibilityLabel(snap?.state == .playing ? "暂停" : "播放")
             Button { Task { await session.next() } } label: {
                 Image(systemName: "forward.fill").font(.system(size: 26, weight: .semibold))
             }
+            .accessibilityLabel("下一首")
         }
         .buttonStyle(.plain)
         .foregroundStyle(CovaColor.fg)
@@ -244,12 +251,16 @@ public struct PlayerView: View {
             Button { Task { await session.seek((snap?.position ?? 0) - 15) } } label: {
                 Label("15", systemImage: "gobackward.15").font(CovaType.callout)
             }
+            .accessibilityLabel("后退 15 秒")
             Button { Task { await session.cycleLoop() } } label: {
                 Image(systemName: loopSymbol(snap?.loopMode)).font(CovaType.headline)
             }
+            .accessibilityLabel("循环模式")
+            .accessibilityValue(snap?.loopMode.description ?? "")
             Button { Task { await session.seek((snap?.position ?? 0) + 15) } } label: {
                 Label("15", systemImage: "goforward.15").font(CovaType.callout)
             }
+            .accessibilityLabel("前进 15 秒")
         }
         .buttonStyle(.plain)
         .foregroundStyle(CovaColor.secondary)
