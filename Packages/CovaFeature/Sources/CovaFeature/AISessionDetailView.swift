@@ -264,6 +264,13 @@ public struct AISessionDetailView: View {
             candidates = result.generationJobs.last?.candidates() ?? []
             creditsBalance = try? await session.catalog.me().entitlements.creditsBalance
             phase = .ready
+            // 首页输入卡带过来的一句话：进屏后自动发一次（01 §2「提交后跳转创作会话详情」）。
+            if let pending = session.pendingPrompt {
+                session.pendingPrompt = nil
+                deepThinking = session.pendingDeepThinking
+                draft = pending
+                await send()
+            }
         } catch {
             phase = .failed(StudioService.classify(error))
         }
@@ -400,6 +407,7 @@ public struct AISessionDetailView: View {
         switch failure {
         case .network: return .network
         case .server: return .server
+        case .unauthenticated: return .unauthenticated
         case .backendGap(let id): return .backendGap(id)
         }
     }

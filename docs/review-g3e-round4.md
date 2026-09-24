@@ -499,3 +499,58 @@ R11-4/R11-5 两处账实一致、R11-6 按评审给的修法（重播腿带装�
 `closeEpisode`）、R11-7 阈值口径。然后派**第 12 轮**。
 评审还留了两条它自己没打的靶子（`PlayerEngine` 契约补「换件时机」+ 永久用例；
 `PrivateAudioFetcher` 的 D7 硬顺序与并发合流），下一轮任务书要带上。
+
+---
+
+## §M 第 12 轮隔离验收复审：判词「不放行 0C/2M/5m」——但**两条 Major 的证据都不在本仓 HEAD 上**（协调者实测否证）
+
+评审实例：全新隔离，指定基线 `2529c56`。报告 `/tmp/r12-report.md`（+ 耐久副本
+`$TMPDIR/cova-r12/r12-report.md`）。它自己声明的第一份工作副本 `/tmp/r12-clone`
+**于 12:27:38 被环境整体清除**，之后改用 `$TMPDIR/cova-r12/clone`。
+
+### 它报的两条 Major，协调者在真 HEAD（`e6d1982`）上逐条重跑
+
+| 评审的变异 | 它在旧快照上的结果 | 协调者在 HEAD 上重跑 |
+|---|---|---|
+| **M3** 补摁去掉「同一代交付」那一半（退化成 superseded 就 `engine.pause()`，即 R9-1 旧写法） | `Executed 405 tests, 0 failures` ⇒ SURVIVED | **KILLED**：红在 `testStalePlayAfterSameItemReloadMustNotTouchTheEngine` |
+| **M4** epoch 比对退回 `lastLandedItemID == claimed` | 未跑 | **KILLED**：同一条用例红 |
+
+⇒ **R12-2「约束②判别力为零」在本仓 HEAD 上不成立**，且它要求的「互杀对」第 ① 条
+（同件 + 跨代 ⇒ 断言补摁不得发生）**已经存在**并正是杀掉 M3/M4 的那条。
+
+### R12-1「同一 40 位哈希解析出两棵树」的真相：那棵树上不是本仓
+
+评审列出的"旧快照"特征是**本仓从来没有过的**：模块拓扑 `Sources/{CovaPlayer,CovaFoundation,CovaData,
+CovaKernelKnowledge,CovaKernelLanding}` + 顶层 `Tests/`、`TaskRepository.swift`、`LandingCoordinator`、
+`CanonicalLandingCoordinator`、`TaskValueConsumptionTrial.swift`、`testUndoOwnSoundLeg…` 这类用例名。
+本仓实测：
+
+- `git ls-files | grep -cE 'CovaKernelLanding|CovaKernelKnowledge|CovaFoundation|CovaData|TaskLedgerStore|TaskRepository'` ⇒ **0**
+- 布局只有 `Packages/{CovaCore,CovaFeature,CovaPlayer,CovaUI}`；`Sources/` 顶层不存在
+- R12-5/R12-6 点名的文档断言（「唯一超时驱动」「不钉死任何 await」）与用例名
+  `testStaleLoadLegMustCompleteOnlyByTimeout` ⇒ 在本仓 `docs/` 与 `Packages/CovaPlayer/Tests/` 里
+  **全部 0 命中**
+
+⇒ R12-1 的**现象是真的**（评审确实拿到过一棵与本仓不同的树，且它的 §③ 全程标注
+「以下全部跑在旧快照；对 HEAD 未复核」），但**归因不对**：不是"作者在轮中替换基线"——
+`2529c56` 这个提交在本仓的对象库里从未被改写（`git log` 可见它仍是 `e6d1982` 的父提交）。
+真实原因是评审实例读到了**另一个仓库/失效副本**，而它把那份快照的数字当成了本仓的证据。
+
+### 这一轮仍然要认的账（不因为它打偏就一笔勾掉）
+
+1. **R12-1 里可采纳的那一半**：评审窗口内基线**没有钉 tag**，且 `/tmp` 工作副本可被环境清除。
+   从本轮起：派审前先 `git tag` 钉住被审提交，任务书里要求实例**先验树指纹**
+   （`ls Packages/`、`git rev-parse <tag>:Packages/CovaPlayer/Sources/CovaPlayer/PlaybackCoordinator.swift`、
+   `wc -l` 与 `md5`）再动手；指纹不符立即停手报告，而不是继续在错树上取证。
+2. **R12-7 是真账**：第 11 轮报告写「×1000 全量 = 410 tests」，实测是 405。评审报告的数字也要可复核，
+   这条更正照收。
+3. **R12-3 / R12-4 / R12-5 / R12-6 全部指向不存在的文件**（`CovaKernelLanding/*`），
+   对 HEAD **不成立**；但 R12-4 提的那个形状（在 `withTaskGroup` 已登记之后取消 ⇒
+   去重表项可能永不回收）在**本仓**对应的是 `PrivateAudioFetcher` 的并发合流与
+   `PlayReportCoordinator` 的待重试队列 —— 这条**留给第 13 轮当靶子**，不能因为树错了就丢掉。
+
+### 对 G3-e 状态的影响
+
+**仍不验收**，但阻断理由从"评审发现的 2 条 Major"改成"**没有一轮在正确基线上给出过 0C/0M**"。
+第 13 轮的任务书 = 本报告 §L 的约束集 + §M 的树指纹前置 + 上面第 3 条留下的靶子。
+被审提交：**钉在 tag 上**（见 `git tag --list 'g3e-*'`），不再用裸哈希。

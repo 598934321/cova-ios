@@ -150,7 +150,8 @@ public struct AISessionsView: View {
         guard session.requireLoginForCollections() else { return }
         do {
             let id = try await session.studio.createSession()
-            session.pendingPrompt = nil
+            // pendingPrompt 由 09 进屏后消费并清空（示例 chip 点进来时带着那句话）；
+            // 这里不清，否则 chip 白点。
             session.path.append(.aiSession(id))
         } catch {
             session.showToast("会话没建起来：\(StudioService.classify(error).uiMessage)", isError: true)
@@ -161,6 +162,7 @@ public struct AISessionsView: View {
         switch failure {
         case .network: return .network
         case .server: return .server
+        case .unauthenticated: return .unauthenticated
         case .backendGap(let id): return .backendGap(id)
         }
     }
@@ -247,6 +249,7 @@ public struct MyCreationsView: View {
         switch failure {
         case .network: return .network
         case .server: return .server
+        case .unauthenticated: return .unauthenticated
         case .backendGap(let id): return .backendGap(id)
         }
     }
@@ -268,6 +271,7 @@ extension CatalogFailure {
         switch self {
         case .network: return "网络不通"
         case .server(let detail): return detail
+        case .unauthenticated: return "登录状态已过期，请重新登录"
         case .backendGap(let id): return "后端字段缺口（\(id) 已登记）"
         }
     }

@@ -7,6 +7,7 @@ import Foundation
 public enum CatalogFailure: Error, Equatable {
     case network
     case server(String)
+    case unauthenticated
     case backendGap(String)
 }
 
@@ -90,6 +91,9 @@ public struct CatalogService: Sendable {
             switch api {
             case .offline, .timeout, .transport, .cancelled: return .network
             case .httpStatus(let code, _):
+                // 401/403 是「你能自己解决」的一类：spec 要求说「登录状态已过期」，
+                // 不混进服务端故障。
+                if code == 401 || code == 403 { return .unauthenticated }
                 if code == 404 || code == 501 { return .backendGap("NEEDS-14…22") }
                 return .server("HTTP \(code)")
             case .decoding: return .backendGap(decodingNeeds)

@@ -149,6 +149,7 @@ public struct PlaylistsPlazaView: View {
         switch failure {
         case .network: return .network
         case .server: return .server
+        case .unauthenticated: return .unauthenticated
         case .backendGap(let id): return .backendGap(id)
         }
     }

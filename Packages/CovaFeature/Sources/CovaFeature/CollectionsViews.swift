@@ -214,6 +214,7 @@ public struct FavoritesView: View {
         switch failure {
         case .network: return .network
         case .server: return .server
+        case .unauthenticated: return .unauthenticated
         case .backendGap(let id): return .backendGap(id)
         }
     }
@@ -430,6 +431,7 @@ public struct MyPlaylistsView: View {
         switch failure {
         case .network: return .network
         case .server: return .server
+        case .unauthenticated: return .unauthenticated
         case .backendGap(let id): return .backendGap(id)
         }
     }

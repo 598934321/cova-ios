@@ -81,7 +81,9 @@ public struct CovaEmptyState: View {
 /// 错误态（design §17）：区分「网络/服务端/后端缺口」三类文案；后端缺口直接点名 NEEDS 编号，
 /// 让用户看到的和登记在册的是同一句话，不伪装成普通网络错误。
 public struct CovaErrorState: View {
-    public enum Kind { case network, server, backendGap(String) }
+    /// `unauthenticated` 单独立一种：design 08/09 要求 401 说「登录状态已过期，请重新登录」，
+    /// 而不是混进通用的「服务暂时不可用」—— 用户能自己解决的事，不该长得像服务端故障。
+    public enum Kind { case network, server, unauthenticated, backendGap(String) }
     private let kind: Kind
     private let retry: (() -> Void)?
     public init(kind: Kind, retry: (() -> Void)? = nil) {
@@ -104,12 +106,14 @@ public struct CovaErrorState: View {
     private var symbol: String {
         if case .network = kind { return "wifi.slash" }
         if case .server = kind { return "server.rack" }
+        if case .unauthenticated = kind { return "person.crop.circle.badge.xmark" }
         return "wrench.and.screwdriver"
     }
     private var title: String {
         switch kind {
         case .network: return "网络不可用"
         case .server: return "服务暂时不可用"
+        case .unauthenticated: return "登录状态已过期"
         case .backendGap: return "该能力尚未上线"
         }
     }
@@ -117,6 +121,7 @@ public struct CovaErrorState: View {
         switch kind {
         case .network: return "检查连接后重试；播放中的曲目不受影响。"
         case .server: return "稍后再试。已登记在服务端待办中。"
+        case .unauthenticated: return "请重新登录后继续。本机不会替你保留未同步的写操作。"
         case .backendGap(let id): return "后端契约缺口 \(id) 已登记（NEEDS.md），上线后此处自动可用。"
         }
     }
