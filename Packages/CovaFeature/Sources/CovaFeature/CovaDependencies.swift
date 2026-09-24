@@ -33,6 +33,15 @@ public enum CovaDependencies {
         )
     }
 
+    /// agent 流式会话（09）：SSE 传输 + 5s 计划卡轮询降级，走同一个受守卫的出口。
+    public static func makeStudioStream() -> OneStepStreamCoordinator {
+        OneStepStreamCoordinator(
+            clock: SystemClock(),
+            transport: URLSessionSSETransport(),
+            poller: HTTPOneStepPlanPoller(transport: URLSessionTransport())
+        )
+    }
+
     /// 播放器装配：私有音频走 D7 硬顺序（Bearer 下载 → 沙盒校验非空 → `file://`）。
     @MainActor
     public static func makePlayer(auth: CovaAuthSession) -> CovaPlayer {

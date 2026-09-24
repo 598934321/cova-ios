@@ -120,6 +120,8 @@ public final class AppSession {
         case myPlaylists
         case plaza
         case settings
+        case aiSessions
+        case aiSession(String)
     }
     public var path: [Route] = []
 
@@ -139,6 +141,29 @@ public final class AppSession {
     public private(set) var savedPlaylistIDs: Set<String> = []
 
     public var catalog: CatalogService { CatalogService(client: client) }
+    public var studio: StudioService { StudioService(client: client) }
+
+    /// 首页/列表带过来的待说内容（08 的三条示例 chip 用它预填新会话）。
+    public var pendingPrompt: String?
+
+    /// 本次运行的 agent 流协调器（**一次发送一个**，`OneStepStreamCoordinator` 是单次使用的）。
+    private var studioStream: OneStepStreamCoordinator?
+
+    /// 发一句话给 agent，拿回流帧。旧流一定先被有界取消（D16），不留并发尾巴。
+    public func beginStudioStream(
+        sessionID: String, request: HTTPRequest
+    ) async throws -> AsyncStream<CovaSSEFrame> {
+        await cancelStudioStream()
+        let coordinator = CovaDependencies.makeStudioStream()
+        studioStream = coordinator
+        return try await coordinator.start(sessionId: sessionID, agentRequest: request)
+    }
+
+    public func cancelStudioStream() async {
+        let current = studioStream
+        studioStream = nil
+        await current?.cancel()
+    }
 
     /// 刷新两本收藏账。**游客一律清空**：游客的收藏态恒「未知」，按未收藏显示而不是报错
     /// （design 06/07 登录态口径），所以这里不是失败而是正常形态。

@@ -127,9 +127,11 @@ public struct MineView: View {
                         if session.requireLoginForCollections() { session.path.append(.favorites) }
                     case "我的歌单":
                         if session.requireLoginForCollections() { session.path.append(.myPlaylists) }
+                    case "我的创作":
+                        if session.requireLoginForCollections() { session.path.append(.aiSessions) }
                     default:
-                        // 我的创作 = M2（AI 会话），下载管理 = M3 且受 D12 合规门控。
-                        session.showToast("\(title)：该页在 M2/M3 接入（当前仅登记入口）")
+                        // 下载管理 = M3 且受 D12 合规门控。
+                        session.showToast("\(title)：该页在 M3 接入（当前仅登记入口）")
                     }
                 }
             }

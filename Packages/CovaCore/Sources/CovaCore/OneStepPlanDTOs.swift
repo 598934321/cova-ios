@@ -273,3 +273,18 @@ public struct MediaRetentionRequestDto: Codable, Equatable, Sendable {
         case favorite
     }
 }
+
+/// 同一端点的响应。**契约只写了请求体，没写响应字段** ⇒ 这里全部可选：
+/// 取不到就当「请求已发出、回显状态未知」，由调用方回读列表，而不是相信一个猜出来的值。
+/// 缺口登记在 `docs/NEEDS.md`（NEEDS-23）。
+public struct MediaRetentionResponseDto: Decodable, Equatable, Sendable {
+    public let favorite: Bool?
+    public let message: String?
+    public let id: String?
+
+    enum CodingKeys: String, CodingKey {
+        case favorite
+        case message
+        case id
+    }
+}
