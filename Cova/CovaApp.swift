@@ -19,8 +19,9 @@ struct CovaApp: App {
         case "ax3": return .accessibility3
         case "ax4": return .accessibility4
         case "ax5": return .accessibility5
-        case "xl": return .extraLarge
-        case "xxl": return .extraExtraLarge
+        case "xl": return .xLarge
+        case "xxl": return .xxLarge
+        case "xxxl": return .xxxLarge
         default: return nil
         }
     }

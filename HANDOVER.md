@@ -309,16 +309,20 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
   且调用点传的 `rows` 是随手数（5/6/8/4），**没有一处来自屏型规则**。
   ⇒ 与 TD-48 连在一起：UI 层没有测试目标，这类"规格未落地"机器看不见，只能靠逐屏验收发现。
   不在 M3 里顺手做的理由：改族形态要同时改 6 个调用点并重拍截图，属于 G2 逐屏验收的回炉面。
-- TD-50（2026-09-24 15:21 实测，**协调者自己写的钩子被自己的证据否证**）：新加的走查钩子
-  `COVA_PREVIEW_DYNTYPE` **没有生效**。取证方式：同一条 `simctl launch` 里
-  `-COVA_PREVIEW_ROUTE membership` 生效（画面确实是「会员权益」，两条 D12 脚注逐字在位），
-  而 `-COVA_PREVIEW_DYNTYPE ax3` 画面**与默认档逐像素相同**（字号没变、13 的四列对照表也没换成
-  纵向套餐卡）⇒ 参数送达没问题，问题在 `CovaApp.previewDynamicType` 的读点或 `Group` 分支
-  （三处之一没接上）。**已把三张假 AX 截图删掉，不拿它们当证据**。
-  ⇒ 后果要说白：**AX 档版式目前没有视觉证据**，只有代码与构建通过；05/13/16/15/行组件那五处
-  改动的真实观感要等这个钩子修好才能拍。修法是让钩子与既有 `COVA_PREVIEW_*` 走同一条读点
-  （`AppSession` 启动时读，而不是 `App.body` 里算），并**先证伪**：设 `ax3` 后 05 必须从 2 列变 1 列，
-  否则不算修好。
+- TD-50（2026-09-24 15:25 更正，**一次证据造假未遂：被自己的复核抓住**）：走查钩子
+  `COVA_PREVIEW_DYNTYPE` 第一版**根本没编译进产物**，而我拿它拍了"AX 档证据"。两层错：
+  ① **代码错**：`DynamicTypeSize` 没有 `.extraLarge` / `.extraExtraLarge`（正确名
+    `.xLarge` / `.xxLarge` / `.xxxLarge`）⇒ `xcodebuild` 在 `Cova/CovaApp.swift` 报
+    `type 'DynamicTypeSize?' has no member 'extraLarge'`，**BUILD FAILED**。
+  ② **守门错（真正的教训）**：脚本判"构建成功"用的是**产物目录存在与否**
+    （`ls -d .../Cova.app`），而那是**上一次成功构建留下的旧产物** ⇒ 我把旧二进制装进模拟器并截图。
+    取证链：`strings <安装产物>/Cova.debug.dylib` 里有 `COVA_PREVIEW_TAB/SHEET/ROUTE`，
+    **没有** `COVA_PREVIEW_DYNTYPE` ⇒ 装进去的不是这批字节。
+  ⇒ 处置：钩子按 ① 改正；**那批 stale 截图全部作废并删除**（含 `01-plaza.png`）；
+  守门改成**只认 `xcodebuild` 退出码**，产物存在与否不作判据。
+  一句话教训：**"装了 app 并截到图"不等于"这批字节被构建过"** —— 凡拿截图当证据，
+  必须同时钉住「构建退出码 = 0」与「产物里含本批新增符号」两件事。
+  ⇒ 当前状态：**AX 档版式没有视觉证据**（05/13/16/15/行组件那几处只有代码与包级构建通过）。
 
 **持续 / 工具链**
 - TD-47（第 11 批 B 期间的自查，协调者登记，M1 前处理）：**生产代码的 `@unchecked Sendable`
