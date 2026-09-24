@@ -1,0 +1,23 @@
+# D12 文案门禁的**自检诱饵**（Scripts/d12-copy-check.sh 读它；不是产品代码、不进 App 包）。
+#
+# 为什么单独成文：判据的自检必须**沿着真实违规会走的路**植入 —— 往 app target 的源文件、
+# 往包源码、往多行字面量、往 Info.plist 的显示名、往未被解析的资源载体各塞一次诱饵，
+# 看门禁会不会红。这些文本因此**必然含禁词**，是刻意的；它们只在工作树里存在几百毫秒
+# （脚本用反向社会操作复原，并逐字节比对 md5，没销账的还会被 EXIT 兜底清掉）。
+#
+# 格式：一行 `CASE <名字>` 开启一段，到下一个 CASE / 文件结束之前的原文按字节取用。
+# 每段里的 `[d12selftest:<名字>]` 是该段**独有**的记号 —— 自检靠它确认
+# 「红的那一条正是这次种下的那条」，而不是被别处的命中蒙对。
+# 缩进有语义（plist 那段必须保持行首制表符，它是整行替换的诱饵）。
+CASE app_line
+private let __d12SelftestAPP = "立即开通享优惠 [d12selftest:app_line]"
+CASE package_line
+private let __d12SelftestPkg = "限时优惠报价 [d12selftest:package_line]"
+CASE block_literal
+private let __d12SelftestBlock = """
+    这行写在多行字面量里，禁词藏在里面：立即开通 免费试用申请 [d12selftest:block_literal]
+    """
+CASE plist_copy
+	<string>Cova 购买 [d12selftest:plist_copy]</string>
+CASE carrier_strings
+"__d12_selftest" = "用于展示 充值 [d12selftest:carrier_strings]";
