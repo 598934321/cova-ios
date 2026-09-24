@@ -740,3 +740,63 @@ R14-5 同批处理（默认按"补复核"，除非能证明那四处不可能换
 **仍不验收**。第 21 批要修 R15-1/2/3 + 四条 Minor，之后重钉基线派第 16 轮。
 **新增一条流程规矩**：凡是写下"某主张已在 X 文件更正"，必须**当场 grep 那个文件确认在文** ——
 R15-3 就是我没这么做的直接代价。
+
+## §Q 第 21 批落地 + 第 22 批（web 对照查出的四处入口缺陷，live 实证）
+
+### 第 21 批（R15-1…R15-7）结果
+
+| finding | 处置 | 证据 |
+|---|---|---|
+| R15-1 提交前不复核 | `d755275`：判据只取 `sessionEpoch` 的**同步**复核；**否证了评审的修法方向**（不并 generation，见 D22①） | 撤修法 ⇒ 本文件 **6 条 11 处断言红**（exit 65），红字就是 P1 描述的形状（状态复活、两 token 留库、指针留着、`/logout` 零次）；补上后 6/0（exit 0） |
+| R15-2 两条边零测试 | `db9f940`：两条镜像用例 | 变异 A（`pause` 里加清空）⇒ 417 条 **1 红**（实测 1.0）；变异 B（删 `play` 的清空）⇒ **1 红**（实测 2.0）；md5 还原逐字一致 |
+| R15-3 门禁记录未改 | `8fbab6e`：第 18 批两处假主张在原处标注否证 + 补齐第 19 批来源 + R15-2 欠账登记 | `grep -c "第 19 批"` 0 ⇒ 3 |
+| R15-4 回滚吞清理失败 | `d755275`：`invalidateSession` 返回 `SessionCleanupFailure?`，回滚失败时改抛它 | 红字是"实得 `.unauthorized`"，绿后为 `[credentials]` |
+| R15-5 凭证写序危险侧 | `d755275`：登录与刷新统一**先 refresh 后 access**（原子做不到 ⇒ 半态落在可恢复侧） | 次序用记录型存储钉死，红字 `[access, refresh]` |
+| R15-6 消息合成键撞车 | `4b78451`：整段正文 FNV-1a/64 指纹 + 同响应内 `#2/#3`；登记 NEEDS-28 | 修前 15 条 **5 红**（实测两条同键），修后 15/0；一次"去重只挂平铺分支"的变异 ⇒ 1 红 |
+| R15-7 死重复 | `db9f940`：删零调用点的 `discardPendingRate()` | 全仓 grep 先证零调用 |
+
+R15-1 收尾时自查出一处**没被 finding 点到的同族残留**：定点回滚只删了凭证与 owner 指针，
+`lifecycle.activeOwner` 还指着已被放弃的那次登录 ⇒ 三个归属面各说一套。先加断言看它红
+（1 failure，line 50），再补实现看它绿。另一个流程教训：**park 型探针在被测实现根本没走到
+复核时会挂死而不是变红**（第一次跑白烧 6 分钟），已改成钩子内重入。
+
+### 第 22 批：对照 web 又查出四处「入口用错」，全部打到线上取证
+
+用户要求的「对照 web 代码确认正确入口」在登录那一处已证明有效；本轮把同样的读法铺到其余
+接口面（`多端/web/src/app/api/**` 就是 covalink.cn 的后端实现，可读不可改）。**下面每一条
+都有我对生产接口跑出来的实测**（只取键名/计数/HTTP 码，token 与签名 URL 不进日志），
+并且都在 2026-09-24 复验过：
+
+| # | 缺陷 | 线上实测（我跑的） | 后果 |
+|---|---|---|---|
+| E1 | 新建创作会话的响应键读错：`POST /api/find-my-song/sessions` 回 `{session:{sessionId,…}}`，**没有 `id` 键**，而 iOS 的 `SessionKeys` 只声明 `id` | `top-level keys = session`；`has session.id = false`；`has session.sessionId = true` | 解码必抛 ⇒ **无法开新会话**。本周那次 M2 真机跑通是因为该账号已有旧会话可复用，掩盖了它 |
+| E2 | 播放上报的 `source` 用了后端闭集白名单之外的 `app-ios` | 同一条 track：`source=app-ios` ⇒ **HTTP 400** `error=播放来源无效`；`source=discover` ⇒ **200** keys `authenticated,idempotentReplay,message,play,recorded` | **iOS 的播放历史一条都没记上**。旧注释把它写成"NEEDS-2 待后端放行"——那是把客户端选错值记成了后端缺口 |
+| E3a | 目录筛选参数名全错：iOS 发 `q=`/`dimension=`/`term=` | `search=zzzz`⇒0、`mood=zzzz`⇒0、`scene=`⇒0、`energy=`⇒0、`type=`⇒0（**被识别**）；`q=zzzz`⇒20、`keyword=`⇒20、`tag=`/`tags=`⇒20、`dimension=&term=`⇒20（**被忽略**，基线 20） | 广场/曲库的搜索与维度筛选**静默无效**，永远是不筛选的第 1 页 |
+| E3b | 收藏列表是混排的：`GET /api/favorites` 会把生成曲目以 note 形态混进来，字段集与库内 track 不同，而 iOS 用严格 `TrackDto` 解整个数组 | 我给一个公开 note 加了收藏再还原（账号已回到 0）：该条目 `source="note"`、`id="note:<uuid>"`、`artist=null`、**无** `favoriteCount`/`energy`/`tags`；库内 track 三者齐全且 `artist` 非空。取消收藏走 `DELETE /api/favorites` 用 note id ⇒ **404**；正确端点是 `POST/DELETE /api/notes/:id/favorite` ⇒ 200 `{favorited,…}` | 只要用户收藏过任何一首生成曲目，**整个收藏页报错**；且 note 型条目的取消收藏必然失败 |
+
+E1/E2/E3 的处置已分派（文件域互斥）；NEEDS 侧要跟着更正的是：NEEDS-2 的框法（后端有 documented
+闭集，不是"待放行"）与 NEEDS-11 若被写成"后端缺字段"而实为客户端解码过严，同样要就地更正 ——
+登记制的底线是**不许把客户端的错记到后端账上**（NEEDS-1 那次已经犯过一次）。
+
+### 同一轮里被**否证**与**新发现**的两条（都要留字）
+
+对照 web 的那份报告还提了两条，我按规程逐条取证，一条否证、一条升级成新缺陷：
+
+- **「iOS 丢掉 `resultAudioUrl` / `progressiveCandidates` ⇒ 流式期间候选列表空白」——不成立**。
+  拉真实 job 复验（2026-09-24，账号里那个 `succeeded` 的一步任务）：`metadata` 确实是
+  **JSON 字符串**（iOS 已按字符串保存再 `decodedMetadata()` 二次解，见 `GenerationDTOs.swift:62-92`
+  —— 这条早就踩过了），其键集含 `candidates`，且 `candidates` 长度 **2**，每个候选的键
+  `audioDownloadReferenceId, audioDownloadStatus, audioDownloadUrl, audioUrl, coverDownloadUrl,
+  coverUrl, duration, favorite, id, mediaReferenceId, providerClipId, title` 与 iOS 的
+  `GenerationCandidateDto` 逐一对上。`resultAudioUrl` 存在但不是本产品路径（一步双 Demo）的载体，
+  `progressiveCandidates` 这条 job 根本没有 ⇒ **不改**。`previewOnly` 同理：iOS 用的是
+  `highlightStart/End` + `duration`，非阻塞，登记不修。
+- **NEEDS-25 的框法错了，进度其实有字段 —— 新缺陷 E5**。NEEDS-25 写的是"`OneStepPlanCardDto`
+  与 `GenerationJob` 里没有 progress/percent/fullMediaReady"，这两句各自都对，但
+  **会话详情里有** `workflowState`（同样是 JSON 字符串），实测内容：
+  `completedSteps = [collect, lyrics, style, musician, brief, breakdown]`、`activeStep = "demo"`、
+  `summaries.demo = "一步计划已锁定，正在制作两个 Demo。"`。
+  ⇒ 09 §3-I 的「补充制作进度」不必再靠"契约没有进度字段 ⇒ 条永不填满"这条**已被事实推翻的**前提。
+  本批 09 屏那根永不填满的进度条要改成吃 `workflowState` 的真实推进序列，`summaries[activeStep]`
+  做文案。排第 23 批：它要动 `StudioSessionDTOs.swift`（第 22 批 E1 的域），必须等 E1 落地再做，
+  否则两个实例改同一文件。
