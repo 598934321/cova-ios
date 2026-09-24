@@ -1196,3 +1196,17 @@ conform to 'Decodable'`。这就是我 23:07 那次 `check.sh` 红在 4/10 的�
 - **谁把 HEAD 弄绿的，请在 commit message 里带上这一句**：`7257b6b` 是一笔**明知编译不过**的
   checkpoint，它的唯一目的是不让并行实例的未提交工作随会话一起没了 —— 它**不是**里程碑，
   也不该被 `git log` 的任何 ✅ 读法引用。
+
+### 16.4 追加（23:15，E5 落地后 —— 修正 §16.3 的适用范围）
+
+- **E5 自己提交了 `f02be0c`**（门禁记录 + 三处注释更正；它的代码字节是被我的 `7257b6b` 先收进去的）。
+  它报的实测：它自己那批类 **41 tests / 0 failures EXIT=0**、app build **EXIT=0**、
+  **全树 472 tests / 1 failure**，唯一那一条红是 `IdempotencyTests.testPlayReportSourceIsCarriedVerbatimOnRetries`
+  —— 属 **E2 的地盘**（并行实例在途），它按规程只上报不改。
+- ⇒ **§16.3 的"编译不过"现在只适用于 HEAD，不适用于工作树**：既然 CovaCore 全树能跑起来，
+  `CollectionDTOs.swift` 在**工作树里**已经被 E3 自己补好了（还没提交）。
+  接手时别去"修"一个已经好了的东西 —— 先看 `git status`，再直接 `bash Scripts/check.sh`。
+- NEEDS-25 已按 E5 给的口径就地更正（条目改名为 `WORKFLOW-PROGRESS-SHAPE`，原文保留作历史，
+  并收窄成三件后端要答的事：键集/枚举进契约、`fullMediaReady` 至今无字段、有无字节级进度）。
+- **仍未发生、不许被引用的**：`check.sh` 端到端 EXIT=0、基线抬高（`CORE_MIN 418` / `PLAYER_MIN 415`
+  仍低于实测）、版本递增（仍 `0.2.65(76)`）、tag `g3e-r16`、第 16 轮、本轮次的验收截图。
