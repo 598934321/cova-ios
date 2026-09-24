@@ -107,8 +107,13 @@ SETTINGS_SDKS="iphonesimulator iphoneos"
 
 # 覆盖率阈值：常量基准，环境变量只允许抬高（防止把门禁调到 0 绕过）
 COVERAGE_FLOOR=80
-CORE_COVERAGE_MIN="$COVERAGE_FLOOR"
-PLAYER_COVERAGE_MIN="$COVERAGE_FLOOR"
+# R11-7（第 11 轮）：文档过去把**实测值**写成阈值（「CovaPlayer 94.80%，≥94.80% 达标」），
+# 而脚本阈值其实是 `COVERAGE_FLOOR` = 80 ⇒ 行覆盖掉到 80.01% 照样 EXIT=0，
+# 「只允许抬高」那条逻辑没有持久落点（抬阈值只能靠一次性环境变量）。
+# 现在把两层各钉到 94（实测 CovaCore 95.31% / CovaPlayer 94.79% 之下，远高于基准 80）：
+# 文档与门禁说的是同一件事，且阈值只能再往上抬。
+CORE_COVERAGE_MIN=94
+PLAYER_COVERAGE_MIN=94
 
 # 钉死的关键配置（D1 / D13 / AGENTS 版本规则）
 REQUIRED_APP_BUNDLE_ID="cn.covalink.ios"

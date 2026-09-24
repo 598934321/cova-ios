@@ -1938,33 +1938,173 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(snap.item?.id, "b")
     }
 
-    /// 缺陷 R9-1（**Major**，第 9 轮验收轮；本批修）：被取代的重播腿**无条件** `engine.pause()`，
+    /// 缺陷 R9-1（**Major**，第 9 轮验收轮；第 14 批修）：被取代的重播腿**无条件** `engine.pause()`，
     /// 把用户刚刚起播的另一首摁停（用户从未暂停），且读数仍 `.playing`、那次 ⏭ 还回 `.advanced`。
-    /// 构造：单元素 `.one` 正在响时发 ⏭（重播腿在 `engine.seek` 的 actor hop 上挂起），
-    /// 挂起窗口里用户另起一播（新一代装载，`inFlightLoad` 同步置位）⇒ 重播腿恢复时必须**看见**
-    /// 新一代在途而不摁引擎。
+    ///
+    /// **本用例第 14 批的版本是一把空炮（第 11 轮 R11-3）**：它写的是 `.one` + 单元素，
+    /// 而 `PlayQueue` 只在 `wrapsToFirst`（**只有 `.all` 为真**）时才回绕重播 ⇒ `next()` 直接落
+    /// `.held`，从未进过重播腿、从未挂在 `engine.seek` 上。把 R9-1 的修法还原成
+    /// 「无条件 `engine.pause()`」，全量 400 条 0 失败 —— 对主题不叫、对无关改动反倒叫。
+    /// 这一版按评审指认重写三处：① 循环模式取 `.all`（真的进 `.repeated`）；
+    /// ② 「这条腿确实 park 在引擎里」做成**可断言的前置**（`OrderingGatedEngine.enteredSeek`）；
+    /// ③ 正向对照：被取代之后引擎调用序里不得出现陈旧的 `pause`。
     func testSupersededReplayLegMustNotPauseTheUsersNewPlayback() async {
-        let engine = ScriptedEngine()
+        let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 1)
         let subject = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: nowPlaying)
-        await subject.setLoopMode(.one)
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r9-1")))
+        await subject.setLoopMode(.all)
         _ = await subject.start(items: TestItems.makeMany(["a"]))
         var snap = await subject.currentSnapshot()
         XCTAssertEqual(snap.state, .playing, "前置：正在响")
         let pausesBefore = engine.count(of: "pause")
 
         let replay = Task { await subject.next() }
-        // 重播腿此刻挂在 `engine.seek` 的 actor hop 上；协调器 actor 空出来 ⇒ 用户另起一播。
+        await assertSignalReached(
+            target: 1, counter: engine.enteredSeek, what: "重播腿确实 park 在 engine.seek 上"
+        )
+        XCTAssertEqual(engine.count(of: "play"), 1, "前置：重播腿尚未出声（play 只许是首次起播那次）")
+
+        // park 窗口里用户另起一播（新一代装载）。同一件也要能测：R9-1 的伤害正是
+        // 「把用户刚刚起播的那一摁停」，与曲目身份无关（第 11 轮约束 ②）。
         let restarted = Task { await subject.start() }
         _ = await restarted.value
+        // 「重播腿恢复之后引擎又被碰了几次」必须是**可数的**：先记下此刻的调用序长度。
+        let callsBeforeRelease = engine.calls.count
+        engine.releaseSeek()
         _ = await replay.value
+        let tail = Array(engine.calls.dropFirst(callsBeforeRelease))
 
         snap = await subject.currentSnapshot()
         XCTAssertEqual(snap.state, .playing, "R9-1：被取代的 ⏭ 不得把新起播摁成暂停/停止")
         XCTAssertEqual(
             engine.count(of: "pause"), pausesBefore,
-            "R9-1：被取代的重播腿不许碰引擎（用户从未暂停）"
+            "R9-1：被取代的重播腿不许碰引擎（用户从未暂停）；calls=\(engine.calls)"
         )
-        XCTAssertEqual(snap.isFailureTerminal, false, "R9-1")
+        XCTAssertFalse(snap.isFailureTerminal, "R9-1：良性导航不得开终态闸门")
+        XCTAssertFalse(
+            tail.contains("pause"),
+            "正向对照（R9-1 的伤害面）：重播腿恢复之后引擎不得再收到 pause；tail=\(tail)"
+        )
+        XCTAssertFalse(
+            tail.contains("play"),
+            "正向对照（R11-1 的伤害面）：重播腿恢复之后也不得替用户出声；tail=\(tail)"
+        )
+    }
+
+    /// 缺陷 R11-6（Minor，= 第 10 轮 R10-2 / 第 9 轮 R9-3 的独立定级；第 17 批修）：
+    /// 陈旧重播腿在「新一代把**同一件**重新装回引擎」时过去能通过对账复核 ⇒
+    /// 继续执行 `closeEpisodeIfNeeded()` + `reportEpisodeIfNeeded()` ⇒ 一次连续收听记成
+    /// 两个集次（第一集次 ≈0 秒）。评审否证了协调者「改这里会动 P5 既有裁决」这句：
+    /// 两个幂等键各自对应一次真实的「从头起播」命令，P5 字面与去重语义都没失守。
+    /// 修法：把**归属闸并入出声后的那条复核** —— 被取代的腿不再有权记账。
+    func testStaleReplayLegAfterSameItemReloadMustNotSplitTheEpisode() async {
+        let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 1)
+        let submitter = StubPlayReportSubmitter()
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock,
+            reporter: PlayReportCoordinator(submitter: submitter), nowPlaying: nowPlaying
+        )
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r11-6")))
+        await subject.setLoopMode(.all)
+        _ = await subject.start(items: TestItems.makeMany(["a"]))
+
+        let replay = Task { await subject.next() }
+        await assertSignalReached(
+            target: 1, counter: engine.enteredSeek, what: "重播腿 park 在 engine.seek"
+        )
+        let restarted = Task { await subject.start() }
+        _ = await restarted.value
+        // 新一代的账已经记完，此刻的计数就是「本条腿恢复之后**不该再增加**」的基线。
+        let submissionsBeforeLegResumes = await submitter.callCount
+        engine.releaseSeek()
+        _ = await replay.value
+
+        let submissionsAfter = await submitter.callCount
+        XCTAssertEqual(
+            submissionsAfter, submissionsBeforeLegResumes,
+            "R11-6：被取代的重播腿不得 closeEpisode + 再起播上报（一次连续收听只记一个集次）"
+        )
+        XCTAssertEqual(
+            engine.count(of: "play"), 2,
+            "R11-6：出声命令只许有「首次起播 + 用户重新起播」两次；calls=\(engine.calls)"
+        )
+    }
+
+    /// 第 11 轮约束 ① 的**最后一寸**（第 17 批补上可杀性）：陈旧腿那句 `play()` 若在入口摁声
+    /// 之后才真正落地，那一声音是它自己造成的 —— 只有它能摁掉。
+    /// 构造不用运气：把第 2 次 `play`（第 1 次是首次起播）挂在引擎里，
+    /// 挂起期间让换件装载完成认领 + 入口摁声，再放行 ⇒ 「出声落在摁声之后」是**排出来的事实**。
+    func testStalePlayLandingAfterTheEntryPauseMustUndoItsOwnSound() async {
+        let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 0, gatedPlayFromTurn: 2)
+        let preparer = GatedSourcePreparer(gating: ["b"])
+        let subject = PlaybackCoordinator(
+            engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
+        )
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r17-a")))
+        await subject.setLoopMode(.all)
+        _ = await subject.start(items: TestItems.makeMany(["a"]))
+        let pausesBefore = engine.count(of: "pause")
+
+        let replay = Task { await subject.next() }
+        await assertSignalReached(
+            target: 1, counter: engine.enteredPlay, what: "陈旧腿的 play 已进到引擎并挂起"
+        )
+        // 出声之前换件已经起步：新一代认领引擎 + 入口摁掉旧声（一次）。
+        let switched = Task { await subject.start(items: TestItems.makeMany(["a", "b"]), at: 1) }
+        await assertSignalReached(target: 2, counter: preparer.requestSignal, what: "b 的装载进入在途")
+        XCTAssertEqual(
+            engine.count(of: "pause"), pausesBefore + 1, "前置：入口摁声恰好发生一次"
+        )
+
+        engine.releasePlay()
+        _ = await replay.value
+
+        XCTAssertEqual(engine.count(of: "play"), 2, "前置：陈旧腿确实把旧项又按响过一次")
+        XCTAssertEqual(
+            engine.calls.last, "pause",
+            "约束 ①：自己造成的那一声必须由自己摁掉，否则 a 会一直响到 b 下载完；calls=\(engine.calls)"
+        )
+        XCTAssertEqual(engine.count(of: "pause"), pausesBefore + 2, "摁声 = 入口一次 + 本腿补摁一次")
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .loading, "补摁不得越权改写读数：b 仍在装载")
+        XCTAssertEqual(snap.item?.id, "b")
+
+        await preparer.release("b")
+        _ = await switched.value
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "收尾：b 照常起播，没被这次补摁卡住")
+        XCTAssertEqual(snap.item?.id, "b")
+    }
+
+    /// 同一把责任的**另一半**（第 11 轮约束 ②）：新一代重装的恰好是**同一件**时，
+    /// 陈旧腿**绝不许**补摁 —— 那一摁停掉的是用户刚刚起播的同一首，正是 R9-1 原伤害面。
+    /// 这条用例同时是 `lastLandedEpoch`（而不是 `lastLandedItemID == claimed`）的唯一杀手：
+    /// 换回 itemID 比对，这里就会多出一个 pause。
+    func testStalePlayAfterSameItemReloadMustNotTouchTheEngine() async {
+        let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 0, gatedPlayFromTurn: 2)
+        let subject = PlaybackCoordinator(engine: engine, clock: clock, nowPlaying: nowPlaying)
+        await subject.bindSession(PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r17-b")))
+        await subject.setLoopMode(.all)
+        _ = await subject.start(items: TestItems.makeMany(["a"]))
+        let pausesBefore = engine.count(of: "pause")
+
+        let replay = Task { await subject.next() }
+        await assertSignalReached(
+            target: 1, counter: engine.enteredPlay, what: "陈旧腿的 play 已进到引擎并挂起"
+        )
+        let restarted = Task { await subject.start() }
+        _ = await restarted.value
+        var snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "前置：同一件已被新一代重新起播")
+        engine.releasePlay()
+        _ = await replay.value
+
+        XCTAssertEqual(
+            engine.count(of: "pause"), pausesBefore,
+            "约束 ②：同一件被新一代重装时不得补摁（itemID 比对的旧写法在这里会多一个 pause）；calls=\(engine.calls)"
+        )
+        snap = await subject.currentSnapshot()
+        XCTAssertEqual(snap.state, .playing, "R9-1：良性导航不得把新起播摁停")
     }
 
     /// 缺陷 R8B-1（**Major**，第 8 轮 b 复审；第 13 批修）：「引擎装着当前项 + 正在响 +

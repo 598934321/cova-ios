@@ -315,6 +315,14 @@ public actor PlaybackCoordinator {
     /// 摁旧声」需要的是物理语义 —— 引擎此刻还持有谁。只在引擎真被停/释放时清。
     private var lastLandedItemID: String?
 
+    /// `lastLandedItemID` 是**哪一代装载**交付进引擎的。
+    ///
+    /// 为什么需要它（第 11 轮约束 ②）：光比 itemID 分不开「引擎里还是我那一件」与
+    /// 「新一代把**同一件**重新装了一遍」。陈旧重播腿在后者里补摁一次，就会重演 R9-1
+    /// ——把用户刚刚起播的同一首摁停。epoch 让「谁此刻拥有引擎」这个事实只由引擎侧的
+    /// 交付记录回答，与曲目身份无关。
+    private var lastLandedEpoch: UInt64?
+
     /// **引擎命令权**的归属代际：谁最后一次以「装载」认领了引擎，就只有它那条腿可以命令出声。
     ///
     /// 为什么需要它（R11-1）：入口摁声只此一次，而重播腿是「先 `seek`+`play`、后复核」——
@@ -457,6 +465,10 @@ public actor PlaybackCoordinator {
                 duration = nil
                 position = 0
                 engine.stopAndRelease()
+                // R11-4：引擎已被释放 ⇒ 台账同时作废，否则 `lastLandedItemID` 会继续宣称
+                // 「引擎物理持有 X」而它其实是空的（注释、日志与代码不许两处各说一套）。
+                lastLandedItemID = nil
+                lastLandedEpoch = nil
                 await publishNowPlaying(force: true)
                 return change
             }
@@ -795,6 +807,7 @@ public actor PlaybackCoordinator {
         tornDown = true
         invalidateInFlightLoad()
         lastLandedItemID = nil
+        lastLandedEpoch = nil
         detachFromEngine()
         await closeEpisodeIfNeeded()
         await discardPendingReports()
@@ -874,20 +887,27 @@ public actor PlaybackCoordinator {
             await engine.play()
             // 两个 await 之后再复核一次（F-1 的同一把守卫）：期间用户完全可能已经暂停或
             // 换曲，此时状态必须交还给事实，而不是把 `.playing` 补写在用户的暂停之后。
-            // 此处两条腿仍然合并：走到这里说明重播**已经**发起，落点一律按当下事实投影，
-            // 不需要（也不允许）再判一次「该不该停止」。
-            guard continuationIsCurrent(
-                generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: true
-            ) else {
+            // 归属闸**并入同一条复核**（R11-6）：被取代的腿既不能声称 `.playing`，
+            // 也不能去 `closeEpisode` + 再报一次 —— 那正是「一次连续收听记成两个集次」
+            // （R10-2 / R9-3 / R11-6）的唯一通路。
+            guard engineCommandGeneration == ownedGeneration,
+                  continuationIsCurrent(
+                    generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: true
+                  ) else {
                 // R9-1 + R10-1 的合流修法：**被取代的重播腿一律不碰引擎**。
-                // 摁引擎的责任在三处各自闭环 —— 用户暂停由 `pause()` 摁；换件/另起一播由
-                // `loadCurrent` 入口摁旧声（R10-1 根因修法）；移除当前曲由 `removeItem` 停。
-                // 这里再摁一次只会重演 R9-1（把用户刚起播的摁停）或 R10-1（摁错对象）。
+                // 摁引擎的责任在四处各自闭环（第 11 轮 R11-5 要求写全，别在两处各说一套）：
+                //   · 用户暂停 → `pause()`；
+                //   · 换件 / 另起一播 → `loadCurrent` 入口摁旧声（R10-1 根因修法）；
+                //   · 移除当前项 / 队列见底 → `removeItem` 与 `clearQueueAndStop` 停引擎，
+                //     并**同时**作废 `lastLandedItemID` / `lastLandedEpoch`（R11-4：台账必须
+                //     等于物理事实）；
+                //   · 取消导致的装载停滞 → `convergeStalledLoad` 收 `.stopped`。
                 //
-                // 只留一条例外（R11-1 的最后一寸）：归属确实已换，**且引擎至今仍装着
-                // 我那一件** ⇒ 刚才那一声是我造成的，只有我能摁掉。而「引擎还装着我的项」
-                // 恰好保证这一摁不可能伤到用户的新曲（那才是 R9-1 的伤害面）。
-                if engineCommandGeneration != ownedGeneration, lastLandedItemID == claimed {
+                // 只留一条例外（R11-1 的最后一寸）：归属确实已换，**且引擎里那一件仍是我
+                // 那一代交付的** ⇒ 刚才的出声是我造成的，只有我能摁掉。用 epoch 而不是 itemID
+                // 比对，正是为了在「新一代重装了同一件」时**不**摁 —— 那一摁会停掉用户的新播放
+                // （约束 ②，第 11 轮实测 ①② 互斥的那一半）。
+                if engineCommandGeneration != ownedGeneration, lastLandedEpoch == ownedGeneration {
                     await engine.pause()
                 }
                 return advanceOutcome(wrapped: false)
@@ -1176,6 +1196,7 @@ public actor PlaybackCoordinator {
         // 引擎账本先落，再谈播放状态（R1）。
         engineEpisodeItemID = prepared.id
         lastLandedItemID = prepared.id
+        lastLandedEpoch = generation
         // 引擎确实装着当前项 = 「自动推进的失败连击」已被用户的处置打断（F-6）。
         isFailureTerminal = false
         if autoplay && userWantsPlayback {
@@ -1235,8 +1256,11 @@ public actor PlaybackCoordinator {
         state = .stopped
         position = 0
         await closeEpisodeIfNeeded()
-        // 装载入口没有先摁住引擎（换件由 `engine.load` 顶替旧项）：取消意味着永远不会有那次
-        // 顶替，此刻响着的可能是**上一件**。不暂停就是「读数说停止了，耳朵里却还在播」。
+        // 这条腿仍然必须摁（R11-5 改的就是这句注释，旧版写「装载入口没有先摁住引擎」——
+        // 第 15 批之后那已是假陈述）。准确的责任划分在 `apply(.repeated)` 的归属腿注释里，
+        // 本腿的理由与它无关：**取消意味着根本不会有交付引擎的那一次 `load`**，
+        // 而入口摁声只在「换的是另一件已落地曲目」时才响 —— 同一件重装载被取消时没人摁过。
+        // 此刻响着的可能是上一件，不暂停就是「读数说停止了，耳朵里却还在播」。
         await engine.pause()
         await publishNowPlaying(force: true)
     }
@@ -1475,6 +1499,7 @@ public actor PlaybackCoordinator {
         // 队列清空 = 在途装载全部作废，引擎账本同步归零（R1 / R2 / F-7）。
         invalidateInFlightLoad()
         lastLandedItemID = nil
+        lastLandedEpoch = nil
         lastTimeSyncStamp = nil
         position = 0
         duration = nil

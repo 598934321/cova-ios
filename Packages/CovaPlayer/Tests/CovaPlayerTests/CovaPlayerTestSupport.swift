@@ -1349,10 +1349,19 @@ actor CancellablePrivateAudioTransport: PrivateAudioTransport {
 final class OrderingGatedEngine: PlayerEngine, @unchecked Sendable {
     let enteredPause = SignalCounter()
     let enteredSeek = SignalCounter()
+    /// 第 N 次起的 `play` 真挂起（第 17 批加）：为了把「出声命令落在入口摁声之后」这段
+    /// 竞态做成**可确定性复现**的前置，而不是靠调度运气。
+    let enteredPlay = SignalCounter()
+    private let playReleases = SignalCounter()
     private let pauseReleases = SignalCounter()
     private let seekReleases = SignalCounter()
     private let gatedPauses: Int
     private let gatedSeeks: Int
+    private let gatedPlayFromTurn: Int
+    /// 只挂起**有限几次** play：新一代的起播也必须出声，
+    /// 全部门控会把测试自己锁死。
+    private let gatedPlayCount: Int
+    private var playsSeen = 0
 
     private let lock = NSLock()
     private let pairing = AsyncStream.makeStream(of: PlayerEvent.self)
@@ -1364,9 +1373,13 @@ final class OrderingGatedEngine: PlayerEngine, @unchecked Sendable {
     private var _duration: Double?
     private var _releaseCount = 0
 
-    init(gatedPauses: Int, gatedSeeks: Int) {
+    init(
+        gatedPauses: Int, gatedSeeks: Int, gatedPlayFromTurn: Int = 0, gatedPlayCount: Int = 1
+    ) {
         self.gatedPauses = gatedPauses
         self.gatedSeeks = gatedSeeks
+        self.gatedPlayFromTurn = gatedPlayFromTurn
+        self.gatedPlayCount = gatedPlayCount
     }
 
     var events: AsyncStream<PlayerEvent> { pairing.stream }
@@ -1376,7 +1389,20 @@ final class OrderingGatedEngine: PlayerEngine, @unchecked Sendable {
         mutate { _loads.append(item) }
     }
 
-    func play() async { record("play") }
+    func play() async {
+        record("play")
+        let turn: Int = mutate {
+            playsSeen += 1
+            return playsSeen
+        }
+        guard gatedPlayFromTurn > 0,
+              turn >= gatedPlayFromTurn,
+              turn < gatedPlayFromTurn + gatedPlayCount else { return }
+        enteredPlay.bump()
+        _ = await Signals.wait(
+            target: turn - gatedPlayFromTurn + 1, counter: playReleases, timeout: 10
+        )
+    }
 
     func pause() async {
         record("pause")
@@ -1416,6 +1442,7 @@ final class OrderingGatedEngine: PlayerEngine, @unchecked Sendable {
 
     func releasePause() { pauseReleases.bump() }
     func releaseSeek() { seekReleases.bump() }
+    func releasePlay() { playReleases.bump() }
 
     var calls: [String] { snapshot { _calls } }
     var loads: [PlaybackItem] { snapshot { _loads } }
