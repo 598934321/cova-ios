@@ -187,7 +187,9 @@ public struct CovaErrorState: View {
     }
 }
 
-/// 骨架屏（design §17 / Reduce Motion 退化为静态灰块）：shimmer 仅在动效开启时跑。
+/// 骨架屏。**这里是"整块呼吸"，不是 shimmer** —— design §17 §S1「不做的事」明令不做高光扫过
+/// （与克制基调冲突，且低值机型掉帧），Reduce Motion 下退化为静态灰块。
+/// 与 §S1 的完整"骨架族"仍有差距，已登记 TD-49（分族、行数与文本条长度档）。
 public struct CovaSkeleton: View {
     public var rows: Int = 3
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
