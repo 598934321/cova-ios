@@ -747,7 +747,7 @@ R15-3 就是我没这么做的直接代价。
 
 | finding | 处置 | 证据 |
 |---|---|---|
-| R15-1 提交前不复核 | `d755275`：判据只取 `sessionEpoch` 的**同步**复核；**否证了评审的修法方向**（不并 generation，见 D22①） | 撤修法 ⇒ 本文件 **6 条 11 处断言红**（exit 65），红字就是 P1 描述的形状（状态复活、两 token 留库、指针留着、`/logout` 零次）；补上后 6/0（exit 0） |
+| R15-1 提交前不复核 | `d755275`：判据只取 `sessionEpoch` 的**同步**复核；**否证了评审的修法方向**（不并 generation，见 D22①） | 撤修法 ⇒ 本文件 **6 条 11 处断言红（**此数夸大**：第 16 轮独立复跑实测为"执行 6 条、2 条用例红、9 处断言点"，见 §R R16-5）**（exit 65），红字就是 P1 描述的形状（状态复活、两 token 留库、指针留着、`/logout` 零次）；补上后 6/0（exit 0） |
 | R15-2 两条边零测试 | `db9f940`：两条镜像用例 | 变异 A（`pause` 里加清空）⇒ 417 条 **1 红**（实测 1.0）；变异 B（删 `play` 的清空）⇒ **1 红**（实测 2.0）；md5 还原逐字一致 |
 | R15-3 门禁记录未改 | `8fbab6e`：第 18 批两处假主张在原处标注否证 + 补齐第 19 批来源 + R15-2 欠账登记 | `grep -c "第 19 批"` 0 ⇒ 3 |
 | R15-4 回滚吞清理失败 | `d755275`：`invalidateSession` 返回 `SessionCleanupFailure?`，回滚失败时改抛它 | 红字是"实得 `.unauthorized`"，绿后为 `[credentials]` |
@@ -816,3 +816,71 @@ E1/E2/E3 的处置已分派（文件域互斥）；NEEDS 侧要跟着更正的�
   本批 09 屏那根永不填满的进度条要改成吃 `workflowState` 的真实推进序列，`summaries[activeStep]`
   做文案。排第 23 批：它要动 `StudioSessionDTOs.swift`（第 22 批 E1 的域），必须等 E1 落地再做，
   否则两个实例改同一文件。
+
+## §R 第 16 轮隔离验收复审（tag `g3e-r16` = `00c1823`）：不放行 —— **1 Critical / 1 Major / 3 Minor**
+
+预检 **8/8 全过**（克隆 detach 在被审提交、自有 derivedData、端到端 `check.sh` EXIT=0、
+三个下限**恰好相等** 2/472/422、覆盖 94.69%/95.23% 且降级注入 5 种全被拒 EXIT=1 而 `=95` 抬高被认真执行、
+产物 `0.2.66(77)` 与 `project.yml` 一致、实验后 `git status` 空、四个被改文件 md5 与 HEAD 逐字一致）。
+**抬头计数与正文条数一致**（1+1+3=5，它自己做了这项自检）。
+
+### R16-2（Major）—— 打在我自己第 21 批修脸上的真洞
+
+**失败的并发登录会毁掉赢家的凭证。** 我加的是"提交前复核"，但**破坏性重绑**发生在复核**之前**：
+`AuthSession.swift:246-254` 的 `switchAccount` → `SessionLifecycle.swift:106-122` →
+`removeAllSecrets(for: previousOwner)`。评审用确定性探针（把败者停在 `/login` 里、胜者提交、再放行败者）
+证出三条红：胜者的 `accessToken()` 为 `nil` 而 `state == .authenticated(B)`、owner 指针 `nil`、
+`lifecycle.currentOwner()` `nil` —— 而败者**正确地**抛了 `.sessionChanged`。
+后果比 P1/P2 更坏：`currentPrincipal()` 读 `state.user` ⇒ UI 显示已登录，而 `currentSession()` 返回 nil ⇒
+**每个请求都不带 Authorization**，直到重启才自愈。
+**为什么我的用例钉不住**：`testConcurrentLoginsCommitExactlyOneAccountAndKeepTheWinner` 把败者的
+重绑排在胜者提交**之前**（嵌套钩子的形状决定的），恰好是这个顺序让破坏性动作在窗口外完成。
+⇒ 我修 R15-1 时只补了"判定"，没清点"判定之前谁已经动了别人的东西" —— **回滚/重绑要按归属面逐处清点**，
+这条已在第 19/21 批各犯过一次，第 16 轮是第三次。
+
+### R16-1（Critical）—— 曲库播放整体坏（与我 §16.5 同一条，但它把修法的坑也挖出来了）
+
+5 个调用点：`AppSession.swift:410`（`compactMap` ⇒ **空队列且无声**）、`DetailViews.swift:337/:398`、
+`CollectionsViews.swift:220/:224`（收藏页对每一条库内曲目都显示"这首暂时不能播"）。
+`cover` 是 20/20 绝对地址 ⇒ 图形正常，**只有声音坏了**，这就是它藏住的原因。
+`CollectionsViews.swift:275-284` 已经在用 `makeAPIURL` 解相对路径，注释还写着"既不能播也不能取"
+⇒ 同一份事实两处代码口径不一。
+**评审对我准备的修法做了自我否证**（这是它做过的一件对的事）：`makeAPIURL` 不放宽出口（同源、
+对 `//`、`://`、`?`、`#`、`\`、穿越 fail-close），**但** `/api/tracks/:id/preview-stream` 对**有权益用户**
+会 302 到 `…cos.<region>.myqcloud.com`，而 `AudioAuthorityMatch.matches`
+（`PrivateAudioTransport.swift:75-92`）拒跨源落地 ⇒ **naive 一行修会把"播不了"变成"有权益的人被宿主拒"**。
+它明确**不建议删那道 guard**（那道 guard 关的是上一轮"字节来自出口之外"的发现）——
+第 14/15 轮"评审给的修法也要证伪"这条规矩，第一次被评审自己执行了。
+⇒ 修法要连带决定 302 之后的归属口径（NEEDS-15 那一族），不是一行。
+
+### 三条 Minor
+- **R16-3**：`Scripts/d12-copy-check.sh:15` 的 `TARGETS` 只扫两个包目录 ⇒ **整个 app target（`Cova/`）是盲区**；
+  它把禁词种进 `Cova/CovaApp.swift` 后门禁仍 EXIT=0 而自检照印"抓到 2 处"。
+  **我自己复查过这一条**：`TARGETS=(Packages/CovaFeature/Sources Packages/CovaUI/Sources)` 确实没有 `Cova/`。
+  今天潜伏（`CovaApp.swift` 没有用户文案），但判据有洞就是洞。
+- **R16-4**：§14 E 里 `presentationDetents 全仓零命中` 在标签字节上已是假的（M3 落了 `DetailViews.swift:234`），
+  更正只写在 §16.2 没写在原处 —— 而 §16 恰恰说"排期从 §14 E 起"。**已就地改**（本次提交）。
+  它同时抽了 13 条审计引文：**审计整体可信**（`LoginAndMine.swift:112`、`MembershipAndEnterprise.swift:175`、
+  `AISessionDetailView.swift:361`、`AppSession.swift:183/186`、`CovaRootView.swift:126` 逐字命中；
+  `waveformPeaks`/「邮箱或密码不正确」零命中、`drawerOpen` 唯一真写入、`body(for:)` 零调用点全部证实），
+  只有引文行号漂移两处。
+- **R16-5**：我写的"6 条 11 处断言红"是**夸大**，实测 2 条用例红、9 处断言点。**已就地改**，
+  并且这是本会话我第四次被同一个家族抓到（记录与字节分家 / 数字凭印象写）。
+
+### 它独立复跑了我报的变异（5 条）
+`pause()` 清空 ⇒ 被杀；`play()` 不取走 ⇒ 被杀 ⇒ **R15-2 那两条欠账是真的闭了**；
+恒等取自 `/login` ⇒ 被杀（1 条，与主张一致）；`/me` 失败不回滚 ⇒ 被杀（3 条/4 failures，与"红 4 条"一致）；
+提交 guard 撤掉 ⇒ 被杀但**数量被我写高**（就是 R16-5）。
+另外它核了服务端事实：`playSources` 闭集与 `PlayReportSource` 一字对齐、`{session: created}` 与 E1 一致、
+`(trackId, source)` 同键 409 那条规则在 `play-history.ts:52-53` 成立。
+
+### 它自报未覆盖（照登，不替它遮）
+没跑可变 API ⇒ 线上 409/`recorded` 路径未测；~15 条变异主张只复跑 5 条；
+零 flake 的 1000×/200× 批次没跑（只过了单次门禁）；§14 E 的总数（78/34/11）只抽样不核总数；
+E5 的词表没与 `WORKFLOW_STEPS` 逐字对齐；无真机/锁屏；302→COS 的后果是**读服务端源码推出来的，没实测**。
+
+### 对 G3-e 的影响
+**仍不放行**（1 Critical + 1 Major）。第 17 轮之前要修：R16-1（连带 302 归属口径）、
+R16-2（重绑之前的复核 + 一条按"胜者已提交"形状写的用例）、R16-3（把 `Cova/` 纳入 D12 扫描面）、
+R16-5 那类数字按实测写。`g3e-r16` 保留作为"门禁已绿但验收未过"的那一颗钉 ——
+**绿门禁和放行是两件事，这一轮把它们各自的位置标清楚了。**
