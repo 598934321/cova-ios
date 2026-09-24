@@ -320,8 +320,15 @@ public struct StudioSessionDetailDto: Decodable, Equatable, Sendable {
     }
 }
 
-/// `POST /api/find-my-song/sessions` 响应。契约没写信封 ⇒ 两种都接：
-/// `{session:{id}}` 或 `{id}`。取不到 id 就是**失败**（不能凭空造一个会话号去开流）。
+/// `POST /api/find-my-song/sessions` 响应。契约没写信封 ⇒ 已知形态都接，
+/// 但**一个可用的会话号都取不到就是失败**（不能凭空造一个会话号去开流）。
+///
+/// **真实响应**（2026-09-24 真实账号实测）：顶层**只有 `session` 一个键**，
+/// 而那个对象给的会话号叫 **`sessionId`、没有 `id`** ——
+/// 与 `StudioSessionDto` 遇到的同一处漂移（列表行 `id` / 详情与这里的 `sessionId`）。
+/// 旧实现的嵌套容器只声明 `id` ⇒ 三条分支全落空 ⇒ 直接抛错，
+/// 「新建创作」在真机上永远建不出会话（从 08 点已有会话进 09 走的是 GET 详情、
+/// 不发这个 POST ⇒ 一直没暴露）。首页那条"发一句话"的入口同样是 POST，同样挂着。
 public struct StudioCreateSessionResponseDto: Decodable, Equatable, Sendable {
     public let sessionId: String
 
@@ -330,26 +337,43 @@ public struct StudioCreateSessionResponseDto: Decodable, Equatable, Sendable {
         case id
         case sessionId
     }
+    /// `session` 那一层的号**两个键名都读**（同 `StudioSessionDto.SessionIdAliasKey` 的口径）：
+    /// 实测给 `sessionId`，契约文档写 `id`。
     private enum SessionKeys: String, CodingKey {
         case id
+        case sessionId
     }
 
+    /// 判定规则（四处号键一次看完，再按集合裁决）：
+    /// · **只有一个值** ⇒ 用它。`session.sessionId`（实测）、`session.id`（契约文档）、
+    ///   顶层 `sessionId`、顶层 `id` 四个位置谁给都行，**不看优先级** —— 只给一个时它没有对手。
+    /// · **一个都没有** ⇒ 抛错。空串与缺失同一口径（`StudioSessionDto` 对 `id` 的同一判据）：
+    ///   旧实现里 `{"session":{"id":""}}` 会**静默**解出空号，那比抛错坏得多 ——
+    ///   用户下一句 prompt 会打进一个不存在的会话（`sessionId 缺失不得猜路由`）。
+    /// · **两个及以上互不相同的值** ⇒ **也抛错**，而不是「嵌套优先」。这是刻意取的最严答案：
+    ///   服务端自己给出两个号时客户端没有裁决依据，挑一个 = 把会话开在**另一个真实存在的**
+    ///   会话上，症状是「消息发进了别的创作」，比「建不出来」更难被发现；抛错至少是可解释的失败。
+    ///   两处键给的是**同一个值**时只算一个值 ⇒ 那种接（`testCreateSessionAcceptsConsistentIds…`
+    ///   钉着），实测未见过两个不同值的响应，真遇到就是 NEEDS-23 要回答的问题。
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: ObjectKeys.self)
-        if let nested = try? container.nestedContainer(keyedBy: SessionKeys.self, forKey: .session),
-           let id = try? nested.decode(String.self, forKey: .id) {
-            sessionId = id
-            return
+        // 「键在但值不是字符串」与「键不在」同等对待（都不入候选池）：值不合法时不猜。
+        var candidates: [String?] = []
+        if let nested = try? container.nestedContainer(keyedBy: SessionKeys.self, forKey: .session) {
+            candidates.append((try? nested.decodeIfPresent(String.self, forKey: .sessionId)) ?? nil)
+            candidates.append((try? nested.decodeIfPresent(String.self, forKey: .id)) ?? nil)
         }
-        for key in [ObjectKeys.id, ObjectKeys.sessionId] {
-            if let id = try? container.decode(String.self, forKey: key) {
-                sessionId = id
-                return
-            }
+        candidates.append((try? container.decodeIfPresent(String.self, forKey: .sessionId)) ?? nil)
+        candidates.append((try? container.decodeIfPresent(String.self, forKey: .id)) ?? nil)
+        let usable = Set(candidates.compactMap { $0 }.filter { !$0.isEmpty })
+        guard usable.count == 1, let resolved = usable.first else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: usable.isEmpty
+                    ? "建会话响应里没有可用的 sessionId（NEEDS-23）"
+                    : "建会话响应给了两个互不相同的会话号，客户端不猜（NEEDS-23）"
+            ))
         }
-        throw DecodingError.dataCorrupted(DecodingError.Context(
-            codingPath: decoder.codingPath,
-            debugDescription: "建会话响应里没有可用的 sessionId（NEEDS-23）"
-        ))
+        sessionId = resolved
     }
 }

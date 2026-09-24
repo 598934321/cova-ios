@@ -219,6 +219,78 @@ final class StudioSessionDTOTests: XCTestCase {
         )
     }
 
+    /// **真实账号实测形态**（2026-09-24）：`POST /api/find-my-song/sessions` 返 200，
+    /// 顶层**只有 `session` 一个键**，而那个对象里的会话号叫 `sessionId`、**没有 `id`**
+    /// （键名逐个取自实测响应；值是造的 —— 真实号与 userId 不入 fixture）。
+    /// 旧实现的嵌套容器只声明了 `id` ⇒ 三条分支全落空 ⇒ 抛错 ⇒
+    /// 「新建创作」在真机上**永远**建不出会话（08 列表点旧会话不发消息，所以一直掩盖着）。
+    func testCreateSessionAcceptsTheRealCapturedShape() throws {
+        let json = Data(
+            #"""
+            {"session":{"archived":false,"briefApproved":false,
+            "createdAt":"2026-09-24T12:30:47.313Z","inProductionMode":false,
+            "lastRecommendationIds":[],"messages":[],"pinned":false,
+            "proposedTitle":null,"round":0,
+            "sessionId":"3f2a5c88-1d47-4f62-9a0b-7c5e8d1b2a44",
+            "title":null,"titleLocked":false,
+            "updatedAt":"2026-09-24T12:30:47.313Z",
+            "userId":"91b7d2e4-aaaa-4c1a-8f3a-2e5b7c9d1f02",
+            "workflowMode":"one-step"}}
+            """#.utf8
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(StudioCreateSessionResponseDto.self, from: json).sessionId,
+            "3f2a5c88-1d47-4f62-9a0b-7c5e8d1b2a44",
+            "真实响应的会话号是 session.sessionId，读不到就是整条建会话链路挂掉"
+        )
+    }
+
+    /// 契约文档写的是 `{session:{id}}` ⇒ 旧口径不能因为支持 `sessionId` 而退化掉。
+    func testCreateSessionStillAcceptsNestedIdOnlyShape() throws {
+        let json = Data(#"{"session":{"id":"s-11","workflowMode":"one-step"}}"#.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(StudioCreateSessionResponseDto.self, from: json).sessionId, "s-11"
+        )
+    }
+
+    /// 两处号**一致** ⇒ 用那个号（同一件事的两种写法，不该因此报错）。
+    func testCreateSessionAcceptsConsistentIdsAcrossBothKeyNames() throws {
+        let json = Data(#"{"session":{"sessionId":"s-12","id":"s-12"},"sessionId":"s-12"}"#.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(StudioCreateSessionResponseDto.self, from: json).sessionId, "s-12"
+        )
+    }
+
+    /// 一个号都取不到 ⇒ **报错**：空串号会让用户下一句 prompt 打进一个不存在的会话
+    /// （`sessionId 缺失不得猜路由`）。空串尤其要拦 —— 它是"看起来成功"的那种失败。
+    func testCreateSessionWithoutAnyUsableIdFails() {
+        let noKey = Data(#"{"session":{"title":"没有号的会话","workflowMode":"one-step"}}"#.utf8)
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(StudioCreateSessionResponseDto.self, from: noKey),
+            "套在 session 里而两处号键都缺 ⇒ 不能退化成空号"
+        )
+        let emptyIds = Data(#"{"session":{"sessionId":"","id":""}}"#.utf8)
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(StudioCreateSessionResponseDto.self, from: emptyIds),
+            "空串不是会话号，与「没有号」同一口径"
+        )
+    }
+
+    /// 两处号**不一致** ⇒ 抛错（比"嵌套优先"更严）。理由：客户端没有裁决权 ——
+    /// 猜哪一个都会把用户这句话发进另一个真实存在的会话，那比建不出会话更难发现。
+    func testCreateSessionWithConflictingIdsFailsInsteadOfGuessing() {
+        let sameLevel = Data(#"{"session":{"sessionId":"s-13","id":"s-14"}}"#.utf8)
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(StudioCreateSessionResponseDto.self, from: sameLevel),
+            "session.id 与 session.sessionId 打架 ⇒ 不挑一个用"
+        )
+        let acrossLevels = Data(#"{"session":{"sessionId":"s-13"},"id":"s-14"}"#.utf8)
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(StudioCreateSessionResponseDto.self, from: acrossLevels),
+            "嵌套与顶层各给一个号 ⇒ 同上"
+        )
+    }
+
     /// 取不到会话号 = 失败。**不凭空造一个号**去开流（那会让整条会话链挂在一个假 id 上）。
     func testCreateSessionWithoutIdFails() {
         XCTAssertThrowsError(
