@@ -31,6 +31,8 @@ public struct AISessionDetailView: View {
     /// 计划启动的幂等键账本（D8）：同一 `(会话, 计划卡, revision)` 的**重试复用同一个键**，
     /// 这样"提交成功但响应没读出来"的情形不会被用户的第二次点击变成第二次扣费。
     @State private var startTokens = PlanStartTokenLedger()
+    /// 09 §Dynamic Type：AX 档下气泡放到整行、候选卡组纵向堆叠。
+    @Environment(\.covaAXLayout) private var axLayout
     @State private var creditsBalance: Int?
     @State private var runLabel: String?
     @State private var degradeLabel: String?
@@ -101,8 +103,11 @@ public struct AISessionDetailView: View {
     private func row(_ line: TranscriptLine) -> some View {
         switch line.kind {
         case .user(let text):
+            // 09 §3-B / §Dynamic Type：用户气泡**最大宽 78%**，AX 档放到整行（屏宽 − 2×页边距）。
+            // 外层容器取容器的 78%/100%，内层 Text 仍是固有宽度 + 右对齐 ⇒ 是"最大宽"而不是"固定宽"。
+            // 原先写的是 `Spacer(minLength: 40)`：那只是"至少留 40pt"，长句照样铺满整行，不是 78%。
             HStack {
-                Spacer(minLength: 40)
+                Spacer(minLength: 0)
                 Text(text)
                     .font(CovaType.body).foregroundStyle(CovaColor.accentText)
                     .padding(CovaSpace.md)
@@ -111,6 +116,9 @@ public struct AISessionDetailView: View {
                             .fill(CovaColor.accentSoft)
                     )
             }
+            .containerRelativeFrame(
+                .horizontal, count: 100, span: axLayout ? 100 : 78, spacing: 0, alignment: .trailing
+            )
         case .agentText(let text):
             Text(text)
                 .font(CovaType.body).foregroundStyle(CovaColor.fg)
