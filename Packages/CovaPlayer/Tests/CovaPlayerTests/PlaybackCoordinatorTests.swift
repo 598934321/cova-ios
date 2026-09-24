@@ -2146,11 +2146,19 @@ final class PlaybackCoordinatorTests: XCTestCase {
         let switched = Task { await subject.start(at: 1) }
         await assertSignalReached(target: 2, counter: preparer.requestSignal, what: "b 的装载进入在途")
         let ratesWhileLoading = engine.count(of: "setRate")
+        let callsWhileLoading = engine.calls.count
 
         _ = await subject.setPlaybackRate(2)
         XCTAssertEqual(
             engine.count(of: "setRate"), ratesWhileLoading,
             "R13-1：装载在途（引擎没装着当前项）时改速不得下发；calls=\(engine.calls)"
+        )
+        // R14-4（第 19 批）：光断 `setRate` 一种命令，等于把「没下令」这件事只钉在
+        // 一个名字上 —— 守卫拆掉后哪怕只多发了一条 `play`/`pause` 也照样全绿。
+        // 这一条把「装载在途期间本调用对引擎零操作」变成整体事实（靶子=r1 的变异形状）。
+        XCTAssertEqual(
+            engine.calls.count, callsWhileLoading,
+            "R14-4：装载在途时改速对引擎零命令（任何种类都不许）；calls=\(engine.calls)"
         )
 
         await preparer.release("b")
