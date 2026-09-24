@@ -684,3 +684,59 @@ R14-5 同批处理（默认按"补复核"，除非能证明那四处不可能换
 **保留 `:1217`**，把它变成可杀的 —— 给那条用例补**引擎命令侧断言**（`ScriptedEngine` 记得到
 `setRate` 调用次数）：在 `engine.play()` 挂起窗口里换件 ⇒ 陈旧腿**一次 `setRate` 都不许多发**。
 同时如实更正第 18 批的两处记录主张（m8 与 r1 的双覆盖），并把这条"评审修法也要证伪"记进规程。
+
+## §P 第 15 轮隔离验收复审（tag `g3e-r15` = `06200bab`）：不放行 —— 0 Critical / **3 Major** / 4 Minor
+
+预检 **8/8 通过**（克隆 detach 在被审提交、自有 derivedData；10 次变异 + 5 个探针之后
+`git status --porcelain` 为空、三个 md5 与指纹逐字一致）。**它自查了第 14 轮那条计数自相矛盾的账**：
+抬头 0C/3M/4m 与正文条数一字一致。并**补跑了端到端门禁**（第 14 轮 R14-6 的自报缺口）：
+`bash Scripts/check.sh` EXIT=0、`CovaTests 2/0`、`CovaCoreTests 414/0`、`CovaPlayerTests 415/0`、
+覆盖 95.94% / 95.00%、D12 命中 0、产物保真 `0.2.65(76)` ⇒ 协调者的"全绿"主张成立。
+
+### 三条 Major
+
+- **R15-1（真，是 D21 那次修复自己引入的新洞）**：`AuthSession.signIn` 在 `fetchMe` 返回后
+  **直接提交** `state = .authenticated(me.user)`，没有按同文件 `restoreSession` 已有的口径复核
+  epoch / generation / 期望 principal。两个确定性探针（把 `/me` 卡在闸上，零网络）：
+  **P1** 显式登出被在途登录推翻（状态复活成 `authenticated`、凭证仍在，且 `signOut()` 取到
+  nil principal ⇒ **既没发 `/api/auth/logout` 也没做本地清理**）；**P2** 并发登录两个账号 ⇒
+  状态写甲、`currentSession()` 返回 nil（此后每个请求都不带 Authorization）、owner 指针是乙
+  ⇒ 冷启动身份又翻成乙。⇒ 我修"入口用错"时把这条路径上原本存在的提交纪律漏掉了，
+  是「修 A 引入 B」的又一例。
+- **R15-2（真）**：`pendingRate` 声明了五边生命周期，实测**两边零测试且都不是等价变异**：
+  `pause()` 保留（加一行清空 ⇒ 415/0 存活）、`play()` 取走并清空（删掉清空 ⇒ 415/0 存活）。
+  两边都可观测（用户选的倍速静默回 1× / 旧值盖掉新值）。与第 14 轮 R14-2「只钉负向一半」同族，
+  而且**这次没像 R14-5 那样如实登记为欠账**。
+- **R15-3（真，打的是我自己的记录）**：`Scripts/test-count-baseline.env` 里第 18 批注记**一字未改**，
+  仍写着「r1 ⇒ 2 条红；m8 ⇒ 1 条红」，而 `HANDOVER.md` §16 声称这两条假主张"已在该文件更正"
+  —— **那句话是假的：我只改了评审文档，没改门禁记录**（就是本节上面那句"同时如实更正…"）。
+  另外 `grep -c "第 19 批"` ⇒ 0，而 `g3e-r14..g3e-r15` 新增 6 条用例里 5 条来自第 19 批
+  ⇒ `PLAYER_MIN 409 → 415` 的来源在记录里缺了 5/6。按 §L R11-3 / §O R14-1 的先例算 Major。
+
+### 四条 Minor（全部登记）
+
+**R15-4** 登录回滚用 `try?` 吞掉清理失败（凭证可能留在库里，与 `SessionLifecycle` 自己写的
+"清理失败必须可观测"相反）；**R15-5** 刷新旋转**不是成对落盘**且写序是危险的一侧（先写 access ⇒
+库里可能留下新 access + 已被单次消费的 refresh）；**R15-6** `StudioMessageDto` 的合成 id
+**会撞**（两条不同消息同一 id，探针实测）也会换身份（正文增长 ⇒ id 变）；
+**R15-7** `AVPlayerEngine` 里并存两条同义的"清空待用速率"，其中 `discardPendingRate()` 零调用点。
+
+### 它同时证实了两件事
+
+- **R14-1 的否证成立**：删掉 `PlaybackCoordinator.swift:1267` ⇒ `415 tests, 2 failures`，
+  两条都红在 `testSupersededLoadLegMustNotIssueRateCommandAfterItsPlayLands`
+  （实测 `calls=[…"setRate","setRate"]`）⇒ 第 14 轮"这道闸不可达、应删"的修法方向被字节否证。
+- **R14-5 的欠账口径是诚实的**：它试图反驳"那一寸挂不住"，失败了 ——
+  `closeEpisodeIfNeeded` 唯一挂起点是 `await reporter.playbackEnded(...)`，而 `reporter` 是
+  **具体 actor 类型**（协议都还没有，夹具无从替换）、`playbackEnded` 体内零 await ⇒ 无法构造
+  确定性 park；四站点退回裸 pause ⇒ 415/0 存活，与登记一致。
+- 其它核过为 sound：R14-3 锁纪律枚举（10 处读写全在锁内辅助区、`player.*` 在锁外）；
+  零 flake 28,200 次执行 0 失败；覆盖下限降级通道逐项关死；`g3e-r14..r15` 测试期望只改了 1 行且是
+  加强措辞、未删任何 `func test`；凭证走查钩子确实只读进程环境；未知 SSE 事件"刻意忽略"是真的
+  （不丢名字、不臆造语义、不会静默结束流）。
+
+### 对 G3-e 状态的影响
+
+**仍不验收**。第 21 批要修 R15-1/2/3 + 四条 Minor，之后重钉基线派第 16 轮。
+**新增一条流程规矩**：凡是写下"某主张已在 X 文件更正"，必须**当场 grep 那个文件确认在文** ——
+R15-3 就是我没这么做的直接代价。
