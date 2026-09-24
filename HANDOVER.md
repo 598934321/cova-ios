@@ -322,7 +322,12 @@ xcodebuild -scheme CovaCore -destination 'platform=iOS Simulator,name=iPhone 17 
   守门改成**只认 `xcodebuild` 退出码**，产物存在与否不作判据。
   一句话教训：**"装了 app 并截到图"不等于"这批字节被构建过"** —— 凡拿截图当证据，
   必须同时钉住「构建退出码 = 0」与「产物里含本批新增符号」两件事。
-  ⇒ 当前状态：**AX 档版式没有视觉证据**（05/13/16/15/行组件那几处只有代码与包级构建通过）。
+  ⇒ 当前状态：**AX 档版式已有视觉证据**（`docs/acceptance/m3-20260924/`，15:28–15:29 重拍：
+  01 广场默认档 vs 02 广场 AX3 ⇒ 双列降为**单列**、标题换两行；03 会员 AX3 ⇒ 四列对照表换成
+  **逐套餐纵向卡片**）。这批的前提两件事都钉住了：`xcodebuild` **退出码 0**（全新
+  `-derivedDataPath /tmp/dd-shots2`，不给旧产物任何机会）+ 安装产物 `Cova.debug.dylib` 里
+  **含 `COVA_PREVIEW_DYNTYPE` 符号**。TD-50 的两处错（`.extraLarge` 不存在的字号档名、
+  拿"产物存在"当构建成功）都已改：守门只认退出码。
 
 **持续 / 工具链**
 - TD-47（第 11 批 B 期间的自查，协调者登记，M1 前处理）：**生产代码的 `@unchecked Sendable`
