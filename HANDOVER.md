@@ -1011,3 +1011,38 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 **一句话结论**：**游客能看到 11 屏**（01/03/05/06/07/10/11/13/14/15/16，含 3 组 AX 对照）；
 **看不到的全部卡在同一个地方 —— 没有账号**（02 的有内容态、08/09/12a/12b/12c），
 外加 04 抽屉缺一个走查键。12d 与 17 是**按裁决不做**，不是漏。
+
+## 16. 现场快照（2026-09-24 07:59，供 `/goal resume` 接手；覆盖 §13 里 09-23 的那一份）
+
+**HEAD 是绿的**：`d2e967f`。干净 clone 实测 `CovaPlayerTests` **410/0/0**、`CovaCoreTests` **408/0**
+（`TEST_EXIT=0`，iPhone 17 Pro，各自自有 derivedData）。`PLAYER_MIN` 仍是 409（**待抬**，见下）。
+
+**工作树里有一份 RED 的在途改动，别提交、别丢弃**：第 19 批实例（R14-2 + R14-3）被我在
+150 轮上限前主动中止，留下 `AVPlayerEngine.swift` +114 / `AVPlayerEngineTests.swift` +156。
+它写得基本完整：`pendingRate` 的生命周期已在契约注释里逐条定死（`play()` 取走并清空 /
+`pause()` 保留 / `stopAndRelease()` 清空 / `load(_:)` 新条目清空 / **被拒绝的装载不清空**），
+并把 `wantsPlayback`+`pendingRate` 收进三个带锁非 async 辅助（`startPlaybackTakingPendingRate` /
+`rateCommandsPlayerNow` / `markReleased`），R14-3 的绕锁读写因此闭合。
+**但它红一条**：
+
+```
+AVPlayerEngineTests.swift:451  testPendingRateDoesNotCrossANewLoadedItem
+XCTAssertEqualWithAccuracy failed: ("2.0") != ("1.0")
+⇒ 新条目不得继承上一个持有者留下的待用速率（实测仍拿到 2.0）
+```
+
+也就是**测试写在前、`load()` 的清空没真正做到**。下一步按顺序：
+1. 让 `AVPlayerEngine.load(_:)` 真的清掉 `pendingRate`（或在论证后改判语义，但**必须同时**
+   改注释与测试，不许只让测试变绿）；重跑 `-scheme CovaPlayer test` 到 **0 失败**。
+2. 自证可杀：把 `load()` 的清空撤掉 ⇒ 上面那条必须红；还原后 `md5` 逐字节一致。
+3. **R14-5 还没动**：四处 `engine.pause()` 跨 actor hop 无归属/epoch 复核
+   （`apply(.stopped)` / `haltBecauseNothingIsLoaded` / `handleFailure` 终态 / `convergeStalledLoad`），
+   与 `:908-920` 那段自称"穷举"的注释二选一处理。
+4. 抬 `PLAYER_MIN` 到实测终值（当前在途态是 414，含红 1 条 ⇒ 修好后至少 414）。
+5. 跑一次全量 `Scripts/check.sh`（十步 + D12 + 三层禁 UI），版本递增 **0.2.65(76)**，
+   钉 tag `g3e-r15`，派第 15 轮（任务书加两条：端到端跑 check.sh 复盖 R14-6；
+   评审须自报"finding 条数 == 判词计数"——第 14 轮抬头 3M、正文 4 条 Major 的那笔账）。
+
+**协调者自己欠的账，也在这里**：第 18 批我写下过两条假主张（m8 被杀、r1 双覆盖），已在
+`docs/review-g3e-round4.md` §O 与 `Scripts/test-count-baseline.env` 更正；第 19 批实例报的每条
+"变异 ⇒ N 条红"仍要**我自己重跑**才算闭合，别引用它的数字。
