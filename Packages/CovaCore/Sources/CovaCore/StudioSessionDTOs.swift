@@ -28,6 +28,38 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
         case updatedAt
     }
 
+    /// 别名键**单独一个容器**去读：`CodingKeys` 必须与属性一一对应，
+    /// 往里塞一个没有属性的键会让合成出的 `Encodable` 编译不过。
+    private enum SessionIdAliasKey: String, CodingKey {
+        case sessionId
+    }
+
+    /// 真实响应的**两种键名**都要接（2026-09-24 用真实账号实测）：
+    /// 列表行给 `id`，而 `…/sessions/:id` 详情里套的那个 session 对象给的是 `sessionId`、
+    /// **没有 `id`**。原先 `id` 是必需键 ⇒ 详情里的 session 解码直接抛错，
+    /// 整个 09 屏在真数据上报「读不到」，而不是退化成空会话。
+    /// 两个键都取不到时照旧**报错**：会话号是路由与归属的根，不许猜一个。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let direct = try container.decodeIfPresent(String.self, forKey: .id)
+        let aliased = try decoder.container(keyedBy: SessionIdAliasKey.self)
+            .decodeIfPresent(String.self, forKey: .sessionId)
+        guard let resolved = [direct, aliased].compactMap({ $0 }).first(where: { !$0.isEmpty }) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .id, in: container,
+                debugDescription: "会话既没有 id 也没有 sessionId（NEEDS-23）"
+            )
+        }
+        id = resolved
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        titleCn = try container.decodeIfPresent(String.self, forKey: .titleCn)
+        summary = try container.decodeIfPresent(String.self, forKey: .summary)
+        workflowMode = try container.decodeIfPresent(String.self, forKey: .workflowMode)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+    }
+
     /// design 08：标题取不到 ⇒ 「未命名会话」（这是 spec 指定的兜底文案，不是编造数据）。
     public var displayTitle: String {
         if let titleCn, !titleCn.isEmpty { return titleCn }
@@ -91,6 +123,34 @@ public struct StudioMessageDto: Codable, Equatable, Sendable, Identifiable {
         case createdAt
     }
 
+    /// 真实响应的消息**没有 `id` 键**，时间戳叫 `timestamp` 而不是 `createdAt`
+    /// （2026-09-24 真实账号实测：`{role, content, timestamp, attachments}`）。
+    private enum MessageAliasKey: String, CodingKey {
+        case timestamp
+    }
+
+    /// 缺 `id` 时拼一个**确定性视图标识**（角色 + 时间戳 + 正文前缀）：同一条消息每次解码
+    /// 都得到同一个键，SwiftUI 不会重排气泡；它只用于列表身份，**不冒充后端给过消息号**。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let alias = try decoder.container(keyedBy: MessageAliasKey.self)
+        let decodedRole = try container.decodeIfPresent(String.self, forKey: .role)
+        let decodedText = try container.decodeIfPresent(String.self, forKey: .text)
+        let decodedContent = try container.decodeIfPresent(String.self, forKey: .content)
+        let ownCreated = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        let aliasStamp = try alias.decodeIfPresent(String.self, forKey: .timestamp)
+        let decodedId = try container.decodeIfPresent(String.self, forKey: .id)
+        // 先算完局部值再一次性赋给 self：在 init 里让闭包读 self.xxx 会撞上
+        // 「所有存储属性初始化完成之前不得使用 self」。
+        let body = decodedText ?? decodedContent ?? ""
+        let viewId = "view:\(decodedRole ?? "-"):\(ownCreated ?? aliasStamp ?? "-"):\(body.prefix(12))"
+        role = decodedRole
+        text = decodedText
+        content = decodedContent
+        createdAt = ownCreated ?? aliasStamp
+        id = decodedId ?? viewId
+    }
+
     public var displayText: String? {
         if let text, !text.isEmpty { return text }
         if let content, !content.isEmpty { return content }
@@ -114,11 +174,29 @@ public struct StudioSessionDetailDto: Decodable, Equatable, Sendable {
         case generationJobs
     }
 
+    private enum NestedKeys: String, CodingKey {
+        case messages
+        case generationJobs
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: ObjectKeys.self)
         session = try container.decodeIfPresent(StudioSessionDto.self, forKey: .session)
-        messages = try container.decodeIfPresent([StudioMessageDto].self, forKey: .messages) ?? []
-        generationJobs = try container.decodeIfPresent([GenerationJobDto].self, forKey: .generationJobs) ?? []
+        var decodedMessages = try container.decodeIfPresent([StudioMessageDto].self, forKey: .messages) ?? []
+        var decodedJobs = try container.decodeIfPresent([GenerationJobDto].self, forKey: .generationJobs) ?? []
+        // 真实响应把内容**套在 `session` 里面**（2026-09-24 真实账号实测：
+        // `{session:{messages[2], generationJobs[], …}}`）。只读顶层不会报错 ——
+        // 它会把「有 2 条消息」悄悄解码成「0 条消息」，屏幕上就是一片空白。
+        // 那不是失败，是撒谎，所以两处都看一遍。
+        if decodedMessages.isEmpty || decodedJobs.isEmpty,
+           let nested = try? container.nestedContainer(keyedBy: NestedKeys.self, forKey: .session) {
+            decodedMessages = try nested.decodeIfPresent([StudioMessageDto].self, forKey: .messages)
+                ?? decodedMessages
+            decodedJobs = try nested.decodeIfPresent([GenerationJobDto].self, forKey: .generationJobs)
+                ?? decodedJobs
+        }
+        messages = decodedMessages
+        generationJobs = decodedJobs
     }
 }
 
