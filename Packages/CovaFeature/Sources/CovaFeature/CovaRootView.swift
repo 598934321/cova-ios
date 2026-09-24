@@ -53,6 +53,14 @@ public struct CovaRootView: View {
         }
     }
 
+    /// 走查钩子 4（同一性质）：`COVA_PREVIEW_DRAWER=1` 启动即展开抽屉。
+    /// 04 抽屉没有 Tab 入口、只能点按钮到达，而 `simctl` 不提供点击（引入 idb/appium 会破零依赖）
+    /// ⇒ 没有这个键，04 就永远进不了逐屏走查的截图集合。
+    private static func previewDrawer() -> Bool {
+        (ProcessInfo.processInfo.environment["COVA_PREVIEW_DRAWER"]
+            ?? UserDefaults.standard.string(forKey: "COVA_PREVIEW_DRAWER")) == "1"
+    }
+
     /// 与钩子 3 同批：`COVA_PREVIEW_ROUTE=track:<id>` 走的是 sheet 而不是路由栈。
     private static func previewTrackID() -> String? {
         guard let raw = previewSheetValue() else { return nil }
@@ -83,6 +91,7 @@ public struct CovaRootView: View {
             default: break
             }
             if let route = Self.previewRoute() { session.path.append(route) }
+            if Self.previewDrawer() { session.drawerOpen = true }
             if let trackID = Self.previewTrackID() { session.detailTrackID = trackID }
         }
         .overlay(alignment: .top) { toastOverlay }

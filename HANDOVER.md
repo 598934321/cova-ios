@@ -986,7 +986,7 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 | 01 首页 | `HomeView` | `m1-20260922/01-home.png`、`09-home-prompt-card.png` | 「继续聆听」段需登录 |
 | 02 全屏播放器 + MiniPlayer | `PlayerView` / `MiniPlayerView` | `03-player.png`（游客空态） | **有内容的一屏要登录**（未登录不播放是红线）；歌词面板与候选徽标只能在登录后看到 |
 | 03 曲库 | `LibraryView` | `02-library.png`（搜索 + chips + 时长/BPM/♡） | 收藏心需登录 |
-| 04 抽屉 | `CovaRootView` 内 | **无截图** | 走查钩子只有 `TAB/SHEET/ROUTE` 三个，**没有开抽屉的键**；`simctl` 不能点击（引入 idb/appium 违反零依赖）⇒ 要么加 `COVA_PREVIEW_DRAWER`，要么你手动开一下 |
+| 04 抽屉 | `CovaRootView` 内 | `m1-20260922/12-drawer.png`（新加 `COVA_PREVIEW_DRAWER=1` 才拍得到） | **这屏离 spec 很远，照片就是证据**：只有 6 行纯列表，没有 04 §B/D/F 的分组标题、没有 G 区账号卡（头像/名字/余额胶囊）、没有关闭钮与遮罩样式。⇒ 归 G2 逐屏验收，不是可访问性欠账。**另这张图暴露一处 D12 问题**：抽屉里出现了「下载管理」入口（点了给一句"该页在 M3 接入"的 Toast），而 15 设置里同一行是按 D12 **不渲染**的 —— 两处口径不一致，要么都不出现，要么明写"仅登记入口"的差别是设计意图（见 D′ 第 10 行） |
 | 05 歌单广场 | `PlaylistsPlazaView` | `06-plaza.png` + **AX 对照** `m3-20260924/01↔02`（双列→单列） | — |
 | 06 歌单详情 | `PlaylistDetailView` | `04-playlist-detail.png` | 收藏角标是 NEEDS-9 的「未知」形态，不是缺陷 |
 | 07 曲目详情 | `DetailViews` 内半屏 | `05-track-detail.png` | — |
