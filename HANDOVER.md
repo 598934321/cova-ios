@@ -1025,6 +1025,17 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 1. **R14-5 还没动**：四处 `engine.pause()` 跨 actor hop 无归属/epoch 复核
    （`apply(.stopped)` / `haltBecauseNothingIsLoaded` / `handleFailure` 终态 / `convergeStalledLoad`），
    与 `:908-920` 那段自称"穷举"的注释二选一处理 —— 补复核，或把注释收窄到实际强制的范围。
+   **08:32 已把设计定死，接手不必重推**：照 `apply(.repeated)` 的形状，在每处
+   `await closeEpisodeIfNeeded()` **之前**取 `let ownedGeneration = engineCommandGeneration`，
+   hop 之后 `guard engineCommandGeneration == ownedGeneration else { 不碰引擎; return }`；
+   并保留参考实现里那条**唯一例外**（归属已换、但 `lastLandedEpoch == ownedGeneration`
+   ⇒ 声音是这条腿自己造成的，只有它能摁）。四处共用一个私有辅助（例如
+   `pauseEngineIfStillOwned(_ owned: UInt64?) async -> Bool`），别在四处各写一套 ——
+   `:908-920` 那段"穷举"注释届时应改为**指向这个辅助**，让注释与代码同一处真相。
+   ⚠️ **必须带前置为红的测试**：用 `OrderingGatedEngine`（`CovaPlayerTestSupport.swift`，
+   有 `entered*`/`release*` 会合信号）把 hop 卡住，期间起一播新代际，断言
+   ①新播放不被摁停、②"声音是自己造成的"那一侧仍然摁得到。两条各自可杀，
+   否则就是第 14 轮 R14-1 那个"恒真对手测试"的重演。
 2. 抬 `PLAYER_MIN` 409 → 实测终值（当前 414）。
 3. 跑一次全量 `Scripts/check.sh`（十步 + D12 + 三层禁 UI），版本递增 **0.2.65(76)**，
    钉 tag `g3e-r15`，派第 15 轮（任务书加两条：端到端跑 check.sh 复盖 R14-6；
