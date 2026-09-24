@@ -51,8 +51,28 @@ public struct PlayerFailure: Error, Equatable, Sendable, CustomStringConvertible
     /// 是否计入「连续失败」计数（取消不算失败）。
     public var countsTowardFailureStreak: Bool { kind != .cancelled }
 
+    /// 上屏用的中文标签。
+    ///
+    /// 为什么标签必须在这一层，而不是由 UI 自己拼：`PlayerViews` 直接把 `failure.description`
+    /// 印到屏上，而 `description` 原先用的是 `kind.rawValue` ⇒ **每一条播放失败都会把英文枚举名
+    /// 送上屏**（`invalidSourceURL`、`mediaInvalid`、`localizationRequired`…）。
+    /// 本仓已经为同一形状登记过四处（`plan.rawValue`、参数胶囊的 `weirdness`、`status.rawValue`、
+    /// 登录错误直出），而「英文态名不得外溢」这条判据原先只钉在状态机那一层 ⇒ **判据留在下一层，
+    /// UI 层就会反复出现同族**。这一层补上，并由用例钉死"全部 case 都不许外溢"。
+    public var userLabel: String {
+        switch self {
+        case .localizationRequired: return "音频还没准备好"
+        case .missingFile: return "本地音频文件缺失"
+        case .invalidSourceURL: return "这个音频地址用不了"
+        case .network: return "网络有问题"
+        case .mediaInvalid: return "音频格式不支持"
+        case .engine: return "播放器出错了"
+        case .cancelled: return "已取消"
+        }
+    }
+
     public var description: String {
-        message.isEmpty ? kind.rawValue : "\(kind.rawValue): \(message)"
+        message.isEmpty ? userLabel : "\(userLabel)：\(message)"
     }
 }
 

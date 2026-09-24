@@ -29,6 +29,31 @@ final class AVPlayerEngineTests: XCTestCase {
     ///
     /// 「接受公开直链」这一腿的夹具主机从 `cdn.covalink.example` 换成了生产出口 ——
     /// 不是弱化：断言数量只增不减，且新增了三条拒绝腿（异主机 / 显式非规范端口 / 注入非法出口）。
+    /// 「英文态名不得外溢」这条判据在播放器层的落点（R16-1 顺带查出：`description` 原先印的是
+    /// `kind.rawValue`，而 `PlayerViews` 直接把它上屏 ⇒ **每一条**播放失败都会露出英文枚举名）。
+    /// 逐 case 钉，而不是只钉那一条：只补当前暴露的那一个，下一个 case 上屏时又会漏。
+    func testEveryFailureKindSurfacesChineseLabelAndNeverTheEnumName() {
+        for kind in PlayerFailure.Kind.allCases {
+            let bare = PlayerFailure(kind: kind)
+            XCTAssertFalse(
+                bare.description.contains(kind.rawValue),
+                "\(kind) 的文案露出了枚举名：\(bare.description)"
+            )
+            XCTAssertFalse(
+                bare.description.rangeOfCharacter(from: .asciiLetters) != nil,
+                "\(kind) 的空文案上屏串里不该有拉丁字母：\(bare.description)"
+            )
+            XCTAssertEqual(bare.description, kind.userLabel)
+
+            let detailed = PlayerFailure(kind: kind, message: "出站守卫拒绝")
+            XCTAssertFalse(
+                detailed.description.contains(kind.rawValue),
+                "\(kind) 带诊断文本时露出了枚举名：\(detailed.description)"
+            )
+            XCTAssertTrue(detailed.description.hasPrefix(kind.userLabel), detailed.description)
+        }
+    }
+
     /// 全程零网络：这里断言的是纯映射结果，没有任何 `AVPlayerItem` 真的去装载这条地址。
     func testPlayableURLRefusesBearerItemsAndAcceptsDirectAndLocalized() {
         guard case .failure(let failure) = AVPlayerEngine.playableURL(for: bearerItem()) else {
