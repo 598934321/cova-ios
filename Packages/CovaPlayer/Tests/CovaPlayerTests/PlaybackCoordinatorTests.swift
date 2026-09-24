@@ -2107,6 +2107,157 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(snap.state, .playing, "R9-1：良性导航不得把新起播摁停")
     }
 
+    // MARK: - 环 4 · 第 20 批：R14-5（四条收敛腿跨 hop 的归属复核）
+
+    /// R14-5 的**可达性前置 + 判据的两半各自可杀**，一并写在这里，免得下一个人把
+    /// 那条复核当「不可能分支」删掉（第 14 轮 R14-1 就是这个形状养出来的）。
+    ///
+    /// 四处现场（`apply(.stopped)` / `haltBecauseNothingIsLoaded` / `handleFailure` 终态 /
+    /// `convergeStalledLoad`）的捕获点与复核点之间只挂着一次
+    /// `await closeEpisodeIfNeeded()` —— 那是一次真 hop（打进 `PlayReportCoordinator`）。
+    /// **但它钉不住**：`playbackEnded` 是 actor 上的**同步**方法，实测（本批探针）即使上报正挂在
+    /// 闸门里的 `submit` 上它照样立刻返回 —— actor 可重入 ⇒ 没有任何夹具能把腿停在这条 hop 里
+    /// ⇒ 「hop 期间归属换了」这个交错在单测层面**不可确定性复现**
+    /// （第 14 轮评审 400 次压测 0 违例，是同一件事的另一面）。
+    ///
+    /// 因此本批按「两处各钉一半」落地，而不是一条假绿的 park 测试：
+    ///   · **判据本身**只有一个实现（`pauseEngineIfStillOwned`），四条收敛腿与 `.repeated`
+    ///     的归属例外**共用它**，而 `.repeated` 那条腿的窗口是**引擎 hop**（可 park）⇒
+    ///     约束 ①「归属已换且声音不是本腿造成的 ⇒ 一条 pause 都不许多发」由
+    ///     `testStalePlayAfterSameItemReloadMustNotTouchTheEngine` 钉住
+    ///     （把判据改成恒摁 ⇒ 该用例红）；
+    ///     约束 ②「归属已换但 `lastLandedEpoch` 是本腿 ⇒ 必须补摁」由
+    ///     `testStalePlayLandingAfterTheEntryPauseMustUndoItsOwnSound` 钉住
+    ///     （判据里撤掉 epoch 那一半 ⇒ 该用例红）。
+    ///   · **四个调用点**在这批字节上只能钉正向那一半：见下面这条用例
+    ///     （把判据改成永不摁、或把某一处漏掉 ⇒ 对应那一段红）。
+    ///     剩下那一半 ——「某处把复核删回裸 `engine.pause()`」—— **不可杀**，已如实登记为欠账
+    ///     （HANDOVER §16 第 1 步据此收口）。
+    ///
+    /// 另一件要钉的事实：这条 hop **只在集次账上还挂着一集未关时才是真 hop**。①（`.off` 队尾
+    /// 播完）是那种形态（前置里断「上报恰好 1 次」）；②④ 那两条链路上账本已被上游关掉 ⇒
+    /// `closeEpisodeIfNeeded()` 同腿直落、根本不挂起 ⇒ 窗口本来就更窄。这是第 14 轮压不出
+    /// 后果的第二层原因，也是本批不敢把「park 在 hop 里」写进测试主张的理由。
+    func testEachConvergingLegStillPausesThroughTheOwnershipRuleWhenNothingTookOver() async {
+        // ---- ① `apply(.stopped)`：`.off` 走到队尾 → 收停止，引擎必须真的被摁 ----
+        do {
+            let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 0)
+            let submitter = StubPlayReportSubmitter()
+            let subject = PlaybackCoordinator(
+                engine: engine, clock: clock,
+                reporter: PlayReportCoordinator(submitter: submitter), nowPlaying: nowPlaying
+            )
+            await subject.bindSession(
+                PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r14-5-stopped"))
+            )
+            _ = await subject.start(items: TestItems.makeMany(["a"]))
+            let reported = await submitter.callCount
+            XCTAssertEqual(
+                reported, 1, "前置：这一集次报过 ⇒ 下面那句 hop 是真 hop（不是同腿直落）"
+            )
+            let pausesBefore = engine.count(of: "pause")
+
+            await subject.receive(.ended)
+            let snap = await subject.currentSnapshot()
+            XCTAssertEqual(snap.state, .stopped, "前置：这一腿走的就是 `.stopped` 收敛")
+            XCTAssertEqual(
+                engine.count(of: "pause"), pausesBefore + 1,
+                "R14-5 ①：归属没换时这一腿仍然必须摁（判据不得把它改成永不摁）；calls=\(engine.calls)"
+            )
+        }
+
+        // ---- ② `haltBecauseNothingIsLoaded`：无处可跳 + 计数账有失败 → 终态收停止 ----
+        do {
+            let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 0)
+            let submitter = StubPlayReportSubmitter()
+            let subject = PlaybackCoordinator(
+                engine: engine, clock: clock,
+                reporter: PlayReportCoordinator(submitter: submitter), nowPlaying: nowPlaying
+            )
+            await subject.bindSession(
+                PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r14-5-halt"))
+            )
+            let pausesBefore = engine.count(of: "pause")
+            // 需要本地化而没注入本地化器 → `.localizationRequired`（计数形态），
+            // 单元素 `.off` 队列无处可跳 → `.repeated` 的闸门把它收敛成 halt。
+            let outcome = await subject.start(items: [
+                TestItems.make("a", source: .bearerRequired(TestItems.audioURL()))
+            ])
+            let snap = await subject.currentSnapshot()
+            XCTAssertEqual(outcome, .stopped, "前置：这一腿走的就是 halt（停止 + 终态）")
+            XCTAssertTrue(snap.isFailureTerminal, "前置：计数侧有账 ⇒ 终态合法")
+            XCTAssertEqual(snap.state, .stopped)
+            let reported = await submitter.callCount
+            XCTAssertEqual(reported, 0, "前置：从未报过集次 ⇒ 本段的 hop 不是真 hop（只钉「还会摁」那一半）")
+            XCTAssertEqual(
+                engine.count(of: "pause"), pausesBefore + 1,
+                "R14-5 ②：halt 仍然必须摁（撤掉判据里的归属那一半不会改变这条，把判据改成永不摁会红）；"
+                    + "calls=\(engine.calls)"
+            )
+        }
+
+        // ---- ③ `handleFailure` 终态腿：第 3 次计数失败 → 停止 + 摁 ----
+        do {
+            let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 0)
+            let submitter = StubPlayReportSubmitter()
+            let subject = PlaybackCoordinator(
+                engine: engine, clock: clock,
+                reporter: PlayReportCoordinator(submitter: submitter), nowPlaying: nowPlaying
+            )
+            await subject.bindSession(
+                PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r14-5-terminal"))
+            )
+            _ = await subject.start(items: TestItems.makeMany(["a", "b", "c", "d"]))
+            await subject.receive(.failed(PlayerFailure(kind: .network)))
+            await subject.receive(.failed(PlayerFailure(kind: .mediaInvalid)))
+            let beforeTerminal = engine.count(of: "pause")
+            let beforeTerminalSnap = await subject.currentSnapshot()
+            XCTAssertFalse(
+                beforeTerminalSnap.isFailureTerminal, "前置：才 2 次，未达上限"
+            )
+
+            await subject.receive(.failed(PlayerFailure(kind: .mediaInvalid)))
+            let snap = await subject.currentSnapshot()
+            XCTAssertTrue(snap.isFailureTerminal, "前置：第 3 次进入终态腿")
+            XCTAssertEqual(snap.state, .stopped)
+            XCTAssertEqual(
+                engine.count(of: "pause"), beforeTerminal + 1,
+                "R14-5 ③：终态这一腿仍然必须摁；calls=\(engine.calls)"
+            )
+        }
+
+        // ---- ④ `convergeStalledLoad`：不计数的取消收场 → 交还给事实（停止 + 摁） ----
+        do {
+            let engine = OrderingGatedEngine(gatedPauses: 0, gatedSeeks: 0)
+            let submitter = StubPlayReportSubmitter()
+            let preparer = GatedSourcePreparer(gating: ["a"], failing: ["a": .cancelled])
+            let subject = PlaybackCoordinator(
+                engine: engine, clock: clock,
+                reporter: PlayReportCoordinator(submitter: submitter),
+                nowPlaying: nowPlaying, sourcePreparer: preparer
+            )
+            await subject.bindSession(
+                PlaybackSessionContext(owner: PrincipalID(rawValue: "p-r14-5-converge"))
+            )
+            let started = Task { await subject.start(items: TestItems.makeMany(["a"])) }
+            await assertSignalReached(
+                target: 1, counter: preparer.requestSignal, what: "a 的装载进入在途（本腿的归属在此认领）"
+            )
+            let pausesBefore = engine.count(of: "pause")
+            await preparer.release("a")
+            let outcome = await started.value
+
+            let snap = await subject.currentSnapshot()
+            XCTAssertEqual(snap.state, .stopped, "前置：取消收场交还给事实 = 停止")
+            XCTAssertFalse(snap.isFailureTerminal, "MAJ-4：取消不是故障，不得开终态闸门")
+            XCTAssertNotEqual(outcome, .advanced(to: 0, item: TestItems.make("a"), wrapped: false))
+            XCTAssertEqual(
+                engine.count(of: "pause"), pausesBefore + 1,
+                "R14-5 ④：这一腿仍然必须摁（否则「读数停止了、耳朵里还在播」回来）；calls=\(engine.calls)"
+            )
+        }
+    }
+
     // MARK: - 环 4 · 第 18 批：R13-1（速率腿）与 m8（并入复核的归属那一半）
 
     /// 缺陷 R13-1（**Major**，第 13 轮）：`setPlaybackRate` 是无条件 `engine.setRate`，

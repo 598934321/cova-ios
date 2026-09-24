@@ -905,21 +905,17 @@ public actor PlaybackCoordinator {
                   continuationIsCurrent(
                     generation: nil, claimingEngineItem: claimed, requiresPlaybackIntent: true
                   ) else {
-                // R9-1 + R10-1 的合流修法：**被取代的重播腿一律不碰引擎**。
-                // 摁引擎的责任在四处各自闭环（第 11 轮 R11-5 要求写全，别在两处各说一套）：
-                //   · 用户暂停 → `pause()`；
-                //   · 换件 / 另起一播 → `loadCurrent` 入口摁旧声（R10-1 根因修法）；
-                //   · 移除当前项 / 队列见底 → `removeItem` 与 `clearQueueAndStop` 停引擎，
-                //     并**同时**作废 `lastLandedItemID` / `lastLandedEpoch`（R11-4：台账必须
-                //     等于物理事实）；
-                //   · 取消导致的装载停滞 → `convergeStalledLoad` 收 `.stopped`。
+                // R9-1 + R10-1 + R14-5 的合流修法：**被取代的重播腿一律不碰引擎**，
+                // 唯一的例外也只在「声音是本腿造成的」时成立。
                 //
-                // 只留一条例外（R11-1 的最后一寸）：归属确实已换，**且引擎里那一件仍是我
-                // 那一代交付的** ⇒ 刚才的出声是我造成的，只有我能摁掉。用 epoch 而不是 itemID
-                // 比对，正是为了在「新一代重装了同一件」时**不**摁 —— 那一摁会停掉用户的新播放
-                // （约束 ②，第 11 轮实测 ①② 互斥的那一半）。
-                if engineCommandGeneration != ownedGeneration, lastLandedEpoch == ownedGeneration {
-                    await engine.pause()
+                // 「谁该摁引擎」**不再在这里穷举**（R14-5：那段清单曾声称完备，而四条收敛腿
+                // 各有一句 `engine.pause()` 根本没问过归属）。责任划分只住在一处：
+                // `pauseEngineIfStillOwned(_:)` —— 判据、例外、注释都在那一个函数里。
+                // 本腿只是在它之上多问一句「归属换了没有」：归属没换却复核失败的情形
+                // （用户在 `play()` 的挂起里按了暂停）不该由本腿去补摁，那一声已经是
+                // `pause()` 的责任；归属换了才轮到那条判据回答「这一声是不是我造成的」。
+                if engineCommandGeneration != ownedGeneration {
+                    _ = await pauseEngineIfStillOwned(ownedGeneration)
                 }
                 return advanceOutcome(wrapped: false)
             }
@@ -938,11 +934,15 @@ public actor PlaybackCoordinator {
         case .held:
             return .held
         case .stopped:
+            // R14-5：`closeEpisodeIfNeeded()` 是一次真 hop（`PlayReportCoordinator`），
+            // 期间另一条腿完全可以认领引擎 ⇒ 归属必须在跨越它之后**重新问一次**，
+            // 判据不许在这里各写一份（见 `pauseEngineIfStillOwned`）。
+            let ownedGeneration = engineCommandGeneration
             await closeEpisodeIfNeeded()
             // `.off` 末项播完：用户「继续听」的意图随队列尾结束（守卫条件 (c) 的复位点）。
             userWantsPlayback = false
             state = .stopped
-            await engine.pause()
+            _ = await pauseEngineIfStillOwned(ownedGeneration)
             await publishNowPlaying(force: true)
             return .stopped
         case .rejected(let failure):
@@ -953,6 +953,40 @@ public actor PlaybackCoordinator {
             case .indexOutOfRange, .unknownItem, .invalidDestination: return .rejected(.emptyQueue)
             }
         }
+    }
+
+    /// **谁有权摁停引擎**：唯一一条判据（R14-5）。
+    ///
+    /// 四条「收 `.stopped`」的腿（`apply(.stopped)` / `haltBecauseNothingIsLoaded` /
+    /// `handleFailure` 终态 / `convergeStalledLoad`）与 `.repeated` 的归属例外**共用本函数**，
+    /// 于是「摁引擎的责任」只有一处实现、一份口径 —— 过去它是四段注释加四处裸
+    /// `engine.pause()`，注释声称穷举而代码从没问过归属（第 14 轮 R14-5）。
+    ///
+    /// 调用形状（缺一不可）：
+    ///   1. 在跨出 `await closeEpisodeIfNeeded()` **之前**读 `engineCommandGeneration`；
+    ///   2. hop 之后把它交给本函数复核，然后**不再自己碰引擎**。
+    /// 判据对着的是**事实**（引擎命令权的归属 + 引擎物理上最后一次被交给的是哪一代），
+    /// 不是症状态（`state == .loading` 一类）：用户在 hop 窗口里的一个手势可以把症状折叠成
+    /// 别的值，而这两本账不会因用户的按暂停而改口。
+    ///
+    /// 两条成立分支：
+    ///   · **归属未换** ⇒ 引擎仍归本腿命令，照常摁；
+    ///   · **归属已换、但 `lastLandedEpoch == owned`** ⇒ 引擎里此刻响着的还是本腿那一代
+    ///     交付的那一件（新一代只是认领了命令权、还没交付）⇒ 声音是本腿造成的，只有本腿
+    ///     能摁掉（R11-1 的最后一寸 / 约束 ①）。
+    ///
+    /// 为什么比的是 **epoch 而不是曲目身份**：新一代完全可能把**同一件**重新装进引擎，
+    /// 那时响着的是用户刚起播的那一趟声音，陈旧腿补摁一次就是 R9-1 的原伤害面（约束 ②）。
+    /// 用 `lastLandedItemID` 比对分不开「引擎里还是我那一件」与「同一件被新一代重装了一遍」，
+    /// epoch 让「此刻谁拥有引擎」只由引擎侧的交付记录回答。
+    ///
+    /// - Parameter owned: 跨越那次 actor hop **之前**的引擎命令权归属。
+    /// - Returns: 是否真的对引擎下了 `pause`（`false` = 归属已换且声音不是本腿造成的，没碰引擎）。
+    @discardableResult
+    private func pauseEngineIfStillOwned(_ owned: UInt64?) async -> Bool {
+        if engineCommandGeneration != owned, lastLandedEpoch != owned { return false }
+        await engine.pause()
+        return true
     }
 
     /// `.one` 重播的自洽投影（F-3）：`at:` 与 `item:` 取**同一时刻**的队列快照，
@@ -987,8 +1021,10 @@ public actor PlaybackCoordinator {
         state = .stopped
         position = 0
         engineEpisodeItemID = nil
+        // R14-5：下面那句 hop 之后归属可能已经换走（用户在这寸里换曲 / 另起一播）。
+        let ownedGeneration = engineCommandGeneration
         await closeEpisodeIfNeeded()
-        await engine.pause()
+        _ = await pauseEngineIfStillOwned(ownedGeneration)
         await publishNowPlaying(force: true)
         return .stopped
     }
@@ -1086,8 +1122,11 @@ public actor PlaybackCoordinator {
             isFailureTerminal = true
             userWantsPlayback = false
             state = .stopped
+            // R14-5：终态这一腿跨 `closeEpisodeIfNeeded()` 之后才碰引擎，而失败到达时
+            // 用户完全可能已经另起一播（那一趟在 hop 里认领了命令权）⇒ 归属要重新问。
+            let ownedGeneration = engineCommandGeneration
             await closeEpisodeIfNeeded()
-            await engine.pause()
+            _ = await pauseEngineIfStillOwned(ownedGeneration)
             await publishNowPlaying(force: true)
             return
         }
@@ -1268,13 +1307,16 @@ public actor PlaybackCoordinator {
         userWantsPlayback = false
         state = .stopped
         position = 0
+        // R14-5：本腿的守卫（上面那条）查的是「台账还是我」，而它到下面那句摁声之间
+        // 还跨着一次 hop —— 归属要在 hop 之后重新问，判据在 `pauseEngineIfStillOwned`。
+        let ownedGeneration = engineCommandGeneration
         await closeEpisodeIfNeeded()
         // 这条腿仍然必须摁（R11-5 改的就是这句注释，旧版写「装载入口没有先摁住引擎」——
-        // 第 15 批之后那已是假陈述）。准确的责任划分在 `apply(.repeated)` 的归属腿注释里，
-        // 本腿的理由与它无关：**取消意味着根本不会有交付引擎的那一次 `load`**，
-        // 而入口摁声只在「换的是另一件已落地曲目」时才响 —— 同一件重装载被取消时没人摁过。
-        // 此刻响着的可能是上一件，不暂停就是「读数说停止了，耳朵里却还在播」。
-        await engine.pause()
+        // 第 15 批之后那已是假陈述）。本腿的理由与归属无关：**取消意味着根本不会有交付引擎的
+        // 那一次 `load`**，而入口摁声只在「换的是另一件已落地曲目」时才响 —— 同一件重装载被
+        // 取消时没人摁过。此刻响着的可能是上一件，不暂停就是「读数说停止了，耳朵里却还在播」。
+        // （「谁还有权摁」这一半不在这里说，见 `pauseEngineIfStillOwned`。）
+        _ = await pauseEngineIfStillOwned(ownedGeneration)
         await publishNowPlaying(force: true)
     }
 
