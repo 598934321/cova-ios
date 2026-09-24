@@ -600,3 +600,61 @@ CovaKernelKnowledge,CovaKernelLanding}` + 顶层 `Tests/`、`TaskRepository.swif
 并发合流（含 R12-4 那个「取消后去重表项未回收」的形状）、`PlayReportCoordinator` 的待重试队列、
 `MPNowPlayingController` 的所有权票据、`PlayQueue`、`PlayerEngine` 协议里「换件时机」那条契约、
 以及阈值只能抬高这道判据。被审提交：**`g3e-r14` = `a47e44f`**。
+
+## §O 第 14 轮隔离验收复审（tag `g3e-r14` = `a47e44f`）：不放行 —— 0 Critical / **4 条 Major 编号** / 2 Minor
+
+树指纹预检 **8/8 通过**（全新命名 clone、自有 derivedData、每步实验后 `git status` 为空且 md5 与指纹
+逐字一致）⇒ 这一轮全部算在 `a47e44f` 的字节上。它的独立复跑：全 target **409 tests / 0 failures**
+（与 `PLAYER_MIN=409` 恰好相等）、`r2` 变异按主张杀掉那一条、覆盖下限的降级通道逐项实测拒绝
+（80/50/abc/3.5 全部 exit 7，95/96 接受并印真实阈值）、R12-4 那个形状判**已闭合**并给出字节依据
+（`performTransfer` 的 `defer` 在包括 MAJ-1 预出口取消在内的每条出口之上，且按 token 回收）。
+
+**判词计数自相矛盾，本仓按保守读**：报告抬头写「0C/3M/2m」，正文却把 **R14-1/2/3/4 四条**都标成
+Major。协调者不替评审挑软的修 —— 四条全部当阻断项处理，同时把这条计数不一致登记为对评审报告本身
+的账（第 12 轮之后，评审报告的数字与判词也要可复核，见 §M 第 2 条 R12-7 的同类更正）。
+
+### 四条 Major：其中两条直接否证第 18 批的主张
+
+- **R14-1（真，且是对我自己主张的否证）**：m8（删 `PlaybackCoordinator.swift:1217` 的
+  `guard engineCommandGeneration == generation`）在全量 409 条里 **0 失败**，而第 18 批的落档
+  （`Scripts/test-count-baseline.env` 与本仓提交信息）主张它杀掉 `testPlayLandingAfterOwnershipChangeMustNotReportSecondEpisode`。
+  评审给的不是猜测而是**可达性证明**：`engineCommandGeneration` 只有两个写入点（`:1120 = generation`、
+  `:1408 = nil`），而 `:1118` 写 `inFlightLoad` 与 `:1120` 之间**没有 await**，`invalidateInFlightLoad`
+  同时清两者，`continuationIsCurrent` 的台账腿（`:1313`）读的就是同一个 generation
+  ⇒ 对带 generation 的腿，「台账腿为真 ⟹ 归属必等」，那道 guard 永远不可能是决定条件。
+  也就是说：**我上一轮为了补 R13-3 而写的那条"对手测试"，验的仍然不是它自称的那件事**（盲区 #7 死码
+  + #17 前提静默失效 + #21 断言恒真，三条同时中）。
+- **R14-2（真）**：新引擎契约「改速 ≠ 起播」**只钉了负向一半**，正向一半（暂停时设速 → `play()`
+  落地时应用）**零测试**；且 `pendingRate` 活过 `stopAndRelease()` —— 实测
+  `pause → setRate(2.0) → stopAndRelease → play → currentRate() == 2.0`，
+  一台已释放、无条目的引擎被下一个持有者以**上一个持有者的速率**启动。
+  另：第 18 批改写 `testRateAndTimeAreReadableWithoutAnyItem` 时删掉了唯一能证明"`setRate` 真的到达过
+  player"的断言（改写方向本身评审判其**正当** —— 断言更严，不是护短，问题只在缺另一头的镜像）。
+- **R14-3（真）**：本批新增的 `pendingRate` 与它读取的 `wantsPlayback` 都**在 `NSLock` 之外**
+  （`play()` 的 `:106/:108`、`setRate()` 的 `:130/:131`，两个都是 async 方法），
+  而同一文件 `:255` 自己声明「所有加锁段落都收敛在这些非 async 的辅助方法里」。
+  `play()` 与 `setRate()` 可被不同协调器腿并发触达 —— 这正是 `engineCommandGeneration` 存在的前提。
+  评审如实标注：**没有** TSan 实证（`-sanitize=thread` 被 xcodebuild 接受但没出现在编译行里），
+  判据是源码字节。
+- **R14-4（真，也是对第 18 批记录的否证）**：`r1` 主张"两条红"，实测只有
+  `testRateChangeWhilePausedNeverCommandsTheEngine` 红；`testRateChangeDuringInFlightLoadDefersUntilTheLoadPlays`
+  **通过** —— 它从未断言"引擎命令没被下发"，只是恰好因为 `loadCurrent():1218` 会重新应用
+  `playbackRate` 才保住。守卫是单覆盖，记录写成了双覆盖。
+
+### 两条 Minor（登记）
+
+- **R14-5**：`apply(.stopped):941→945`、`haltBecauseNothingIsLoaded:990→991`、
+  `handleFailure 终态:1089→1090`、`convergeStalledLoad:1271→1277` 四处 `engine.pause()`
+  跨一次 actor hop 后**没有**归属/epoch 复核，而同文件 `:908-920` 的注释穷举「谁该摁引擎」并声称完备。
+  评审自报**没能复现出后果**（400 迭代压测 0 违例），故按潜在形态定级 Minor，不按缺陷。
+  ⇒ 这条的正解是二选一：要么补复核，要么把那段"穷举"注释收窄。让注释继续声称代码没做的完备性，
+  就是 R14-1 那个死 guard 的成因。
+- **R14-6**：它没跑端到端 `check.sh`，所以 ~95% 覆盖率数字这轮**未被独立复核**（自报的证据缺口，
+  不是缺陷）。第 15 轮要求补跑。
+
+### 协调者处置
+
+第 19 批必修：R14-1（删死 guard + 更正第 18 批的两处记录主张）、R14-2（`pendingRate` 生命周期 +
+正向镜像测试）、R14-3（两处 async 无锁访问收敛进带锁辅助）、R14-4（给在途装载那条补引擎命令计数断言）。
+R14-5 同批处理（默认按"补复核"，除非能证明那四处不可能换主）。第 15 轮任务书另加两条：
+端到端跑 `check.sh` 复盖 R14-6，以及**要求评审先自报判词计数与 finding 条数一致**。
