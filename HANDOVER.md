@@ -1014,32 +1014,19 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 
 ## 16. 现场快照（2026-09-24 07:59，供 `/goal resume` 接手；覆盖 §13 里 09-23 的那一份）
 
-**HEAD 是绿的**：`d2e967f`。干净 clone 实测 `CovaPlayerTests` **410/0/0**、`CovaCoreTests` **408/0**
-（`TEST_EXIT=0`，iPhone 17 Pro，各自自有 derivedData）。`PLAYER_MIN` 仍是 409（**待抬**，见下）。
+**工作树里那份 RED 在途件已被协调者收尾并提交（`62ef3e8`）—— 本节下面关于"红一条、别提交"的描述已作废**：
+补了 `AVPlayerEngine.discardPendingRateForNewItem()`（`load()` 接受新件时在锁内清空待用槽），
+同一条测试从红转绿，**414 tests / 0 failures，TEST_EXIT=0**。这条红→绿本身就是"撤掉清空必红"的自证。
 
-**工作树里有一份 RED 的在途改动，别提交、别丢弃**：第 19 批实例（R14-2 + R14-3）被我在
-150 轮上限前主动中止，留下 `AVPlayerEngine.swift` +114 / `AVPlayerEngineTests.swift` +156。
-它写得基本完整：`pendingRate` 的生命周期已在契约注释里逐条定死（`play()` 取走并清空 /
-`pause()` 保留 / `stopAndRelease()` 清空 / `load(_:)` 新条目清空 / **被拒绝的装载不清空**），
-并把 `wantsPlayback`+`pendingRate` 收进三个带锁非 async 辅助（`startPlaybackTakingPendingRate` /
-`rateCommandsPlayerNow` / `markReleased`），R14-3 的绕锁读写因此闭合。
-**但它红一条**：
+**HEAD 是绿的**：`62ef3e8`。干净 clone 实测 `CovaPlayerTests` 410/0/0（那是 R14-2/3 落地前的数，
+现在工作树字节是 **414/0**）、`CovaCoreTests` **408/0**。`PLAYER_MIN` 仍是 **409（待抬到 414）**。
 
-```
-AVPlayerEngineTests.swift:451  testPendingRateDoesNotCrossANewLoadedItem
-XCTAssertEqualWithAccuracy failed: ("2.0") != ("1.0")
-⇒ 新条目不得继承上一个持有者留下的待用速率（实测仍拿到 2.0）
-```
-
-也就是**测试写在前、`load()` 的清空没真正做到**。下一步按顺序：
-1. 让 `AVPlayerEngine.load(_:)` 真的清掉 `pendingRate`（或在论证后改判语义，但**必须同时**
-   改注释与测试，不许只让测试变绿）；重跑 `-scheme CovaPlayer test` 到 **0 失败**。
-2. 自证可杀：把 `load()` 的清空撤掉 ⇒ 上面那条必须红；还原后 `md5` 逐字节一致。
-3. **R14-5 还没动**：四处 `engine.pause()` 跨 actor hop 无归属/epoch 复核
+**剩余步骤（按顺序）**：
+1. **R14-5 还没动**：四处 `engine.pause()` 跨 actor hop 无归属/epoch 复核
    （`apply(.stopped)` / `haltBecauseNothingIsLoaded` / `handleFailure` 终态 / `convergeStalledLoad`），
-   与 `:908-920` 那段自称"穷举"的注释二选一处理。
-4. 抬 `PLAYER_MIN` 到实测终值（当前在途态是 414，含红 1 条 ⇒ 修好后至少 414）。
-5. 跑一次全量 `Scripts/check.sh`（十步 + D12 + 三层禁 UI），版本递增 **0.2.65(76)**，
+   与 `:908-920` 那段自称"穷举"的注释二选一处理 —— 补复核，或把注释收窄到实际强制的范围。
+2. 抬 `PLAYER_MIN` 409 → 实测终值（当前 414）。
+3. 跑一次全量 `Scripts/check.sh`（十步 + D12 + 三层禁 UI），版本递增 **0.2.65(76)**，
    钉 tag `g3e-r15`，派第 15 轮（任务书加两条：端到端跑 check.sh 复盖 R14-6；
    评审须自报"finding 条数 == 判词计数"——第 14 轮抬头 3M、正文 4 条 Major 的那笔账）。
 
