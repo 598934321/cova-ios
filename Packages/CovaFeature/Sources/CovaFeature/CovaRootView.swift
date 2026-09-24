@@ -43,6 +43,8 @@ public struct CovaRootView: View {
         case "plaza": return .plaza
         case "settings": return .settings
         case "aiSessions": return .aiSessions
+        case "membership": return .membership
+        case "enterprise": return .enterprise
         default:
             if raw.hasPrefix("playlist:") { return .playlist(String(raw.dropFirst("playlist:".count))) }
             if raw.hasPrefix("aiSession:") { return .aiSession(String(raw.dropFirst("aiSession:".count))) }
@@ -136,6 +138,8 @@ public struct CovaRootView: View {
                 case .settings: SettingsView()
                 case .aiSessions: AISessionsView()
                 case .aiSession(let id): AISessionDetailView(sessionID: id)
+                case .membership: MembershipView()
+                case .enterprise: EnterpriseView()
                 }
             }
         }
@@ -178,9 +182,7 @@ public struct CovaRootView: View {
                         case "我的创作":
                             if session.requireLoginForCollections() { session.path.append(.aiSessions) }
                         case "会员":
-                            // 13 会员页要展示权益（NEEDS-3 未稳定）⇒ 先落到设置页的账号段，
-                            // 不假装有一个能显示套餐的页面。
-                            session.path.append(.settings)
+                            session.path.append(.membership)
                         case "设置":
                             session.path.append(.settings)
                         default:

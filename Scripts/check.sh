@@ -847,6 +847,13 @@ fi
 [ "$violations" -eq 0 ] || fail "依赖方向 / 平台中立性 / 播放器无 UI 不变量校验未通过"
 echo "    依赖图与不变量校验通过（CovaCore 无字面 #if 与 iOS-only 令牌；CovaPlayer ${PLAYER_SRC_COUNT} 个源文件：G-16 白名单内 ${PLAYER_WHITELIST_FILES} 个文件（含测试 target）的 import 全部允许，G-14 黑名单 ${PLAYER_UI_MODULES} 零命中）"
 
+# 3/10 追加判据（D12 合规文案）：禁词命中必须为 0、逐字脚注必须在册。
+# 为什么放进门禁而不是靠自觉：design 13 §8 把「禁止字样」写成表并规定命中数为 0，
+# 13 §F 的脚注缺失按 Critical 计 —— 这类规则一旦被"记得住"当成保障就会漂移。
+# 脚本自带负例自检（植入禁词必须被抓到），所以它不是一条永绿的空规则。
+echo "==> 3/10 追加：D12 合规文案门禁（Scripts/d12-copy-check.sh）"
+"$ROOT/Scripts/d12-copy-check.sh"
+
 echo "==> 4/10 有效构建设置（配置×SDK）+ clean build + 实际编译语言版本 + 产物保真"
 eff() {
   { grep -E "^[[:space:]]+$2 = " "$1" || true; } | head -1 | sed -E "s/^[[:space:]]+$2 = //"

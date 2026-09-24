@@ -290,15 +290,38 @@ public struct AISessionDetailView: View {
                 sessionID: sessionID, message: text, deepThinking: deepThinking
             )
             let request = try CovaSSERequests.agent(jsonBody: body)
-            for try await frame in try await session.beginStudioStream(sessionID: sessionID, request: request) {
+            let stream = try await session.beginStudioStream(sessionID: sessionID, request: request)
+            for try await frame in stream {
                 await consume(frame)
+                await refreshDegradation()
                 if Task.isCancelled { break }
             }
         } catch {
-            append(.system("这次没有成功：\(StudioService.classify(error).uiMessage)"))
+            // 降级之后仍然拿不到（轮询也失败）⇒ 说「自动刷新也拿不到」，而不是通用报错。
+            let state = await session.studioStreamState()
+            if state.phase == .polling {
+                degradeLabel = "自动刷新也拿不到，检查网络后点重试"
+            } else {
+                append(.system("这次没有成功：\(StudioService.classify(error).uiMessage)"))
+            }
         }
-        degradeLabel = nil
-        runLabel = nil
+        await refreshDegradation()
+        if await session.studioStreamState().phase == .finished { runLabel = nil }
+    }
+
+    /// 降级条的文案**由状态机的事实决定**（09 §B）：阶段 + 触发原因，不靠猜。
+    private func refreshDegradation() async {
+        let state = await session.studioStreamState()
+        guard state.phase == .polling, let trigger = state.trigger else {
+            if state.phase == .streaming || state.phase == nil { degradeLabel = nil }
+            return
+        }
+        switch trigger {
+        case .firstEventTimeout: degradeLabel = "连接较慢，正在等待 Cova 回应"
+        case .silenceTimeout: degradeLabel = "连接中断，已切为自动刷新"
+        case .malformedEvents: degradeLabel = "连接不稳定，已切为自动刷新"
+        case .eofBeforeDone: degradeLabel = "本轮回复未结束，正在继续获取"
+        }
     }
 
     private func consume(_ frame: CovaSSEFrame) async {
@@ -367,6 +390,7 @@ public struct AISessionDetailView: View {
             _ = try await session.studio.startPlan(sessionID: sessionID, plan: plan)
             append(.system("已提交，正在排产"))
             if let cards = try? await session.studio.planCards(sessionID: sessionID) { plans = cards }
+            degradeLabel = "仍在处理刚才那句"
         } catch {
             append(.system("这次没提交成功：\(StudioService.classify(error).uiMessage)"))
         }

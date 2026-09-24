@@ -142,6 +142,8 @@ public final class AppSession {
         case settings
         case aiSessions
         case aiSession(String)
+        case membership
+        case enterprise
     }
     public var path: [Route] = []
 
@@ -169,7 +171,14 @@ public final class AppSession {
     public var pendingDeepThinking = false
 
     /// 本次运行的 agent 流协调器（**一次发送一个**，`OneStepStreamCoordinator` 是单次使用的）。
-    private var studioStream: OneStepStreamCoordinator?
+    public private(set) var studioCoordinator: OneStepStreamCoordinator?
+
+    /// 流式阶段与降级原因（09 的降级条要说真话，所以它得能读到状态机的事实）。
+    public func studioStreamState() async
+        -> (phase: OneStepStreamPhase?, trigger: OneStepDegradationTrigger?) {
+        guard let studioCoordinator else { return (nil, nil) }
+        return (await studioCoordinator.currentPhase(), await studioCoordinator.degradationTrigger())
+    }
 
     /// 发一句话给 agent，拿回流帧。旧流一定先被有界取消（D16），不留并发尾巴。
     public func beginStudioStream(
@@ -177,13 +186,18 @@ public final class AppSession {
     ) async throws -> AsyncStream<CovaSSEFrame> {
         await cancelStudioStream()
         let coordinator = CovaDependencies.makeStudioStream()
-        studioStream = coordinator
-        return try await coordinator.start(sessionId: sessionID, agentRequest: request)
+        studioCoordinator = coordinator
+        do {
+            return try await coordinator.start(sessionId: sessionID, agentRequest: request)
+        } catch {
+            studioCoordinator = nil
+            throw error
+        }
     }
 
     public func cancelStudioStream() async {
-        let current = studioStream
-        studioStream = nil
+        let current = studioCoordinator
+        studioCoordinator = nil
         await current?.cancel()
     }
 
