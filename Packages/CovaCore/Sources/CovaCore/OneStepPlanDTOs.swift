@@ -197,6 +197,39 @@ public struct OneStepPlanCardsResponseDto: Codable, Equatable, Sendable {
 
 // MARK: - 一步模式写请求（api-contracts 4；D8 幂等键）
 
+/// 「一次逻辑操作 = 一个幂等键」（D8）在**计划启动**这条扣费路径上的落地。
+///
+/// 为什么需要它：`StudioService.startPlan` 不传 token 时会现生成一个新键 ——
+/// 对"用户主动重新制作"是对的（那确实是一次新操作），但对"同一次点击的失败重试"是**错的**：
+/// 上一次可能已经 2xx 并扣了费（本仓 2026-09-24 实测到的正是这条：响应形态解不出 ⇒
+/// UI 说"没提交成功" ⇒ 用户再点 ⇒ 换键 ⇒ 第二次扣费）。
+/// 所以按 `(sessionId, planCardId, revision)` 记账：同一三元组**复用同一个键**，
+/// 三元组变了才发新键（改要求会抬 revision ⇒ 新操作，语义正确）。
+public struct PlanStartTokenLedger: Sendable {
+    private var tokens: [String: IdempotentRequestToken] = [:]
+
+    public init() {}
+
+    private static func key(_ sessionID: String, _ planCardID: String, _ revision: Int) -> String {
+        "\(sessionID)|\(planCardID)|\(revision)"
+    }
+
+    /// 取该三元组的键；没有就生成一个并记住。
+    public mutating func token(
+        sessionID: String, planCardID: String, revision: Int
+    ) -> IdempotentRequestToken {
+        let k = Self.key(sessionID, planCardID, revision)
+        if let existing = tokens[k] { return existing }
+        let fresh = IdempotentRequestToken(operation: .planStart)
+        tokens[k] = fresh
+        return fresh
+    }
+
+    /// 该三元组已确认终结、用户要**重新发起一次制作**时才作废（换一次新操作的新键）。
+    public mutating func invalidate(sessionID: String, planCardID: String, revision: Int) {
+        tokens[Self.key(sessionID, planCardID, revision)] = nil
+    }
+}
 /// `POST /api/studio/one-step/plans/start` 请求体
 /// （契约：`{sessionId, planCardId, revision, snapshotHash, idempotencyKey}`）。
 ///

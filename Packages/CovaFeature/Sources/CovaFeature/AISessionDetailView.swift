@@ -28,6 +28,9 @@ public struct AISessionDetailView: View {
     /// 候选 ♡ 的账：键 = `mediaReferenceId`，**每次详情载荷到达都整本重新播种**
     /// （留下未确认的乐观翻转 = 把本地的谎继续显示成后端的谎）。
     @State private var favorites = CandidateFavoriteLedger()
+    /// 计划启动的幂等键账本（D8）：同一 `(会话, 计划卡, revision)` 的**重试复用同一个键**，
+    /// 这样"提交成功但响应没读出来"的情形不会被用户的第二次点击变成第二次扣费。
+    @State private var startTokens = PlanStartTokenLedger()
     @State private var creditsBalance: Int?
     @State private var runLabel: String?
     @State private var degradeLabel: String?
@@ -329,6 +332,26 @@ public struct AISessionDetailView: View {
     ///   这与本屏其余部分的工作方式一致（用户想说的话都是这么发的），也不新增任何键。
     ///   「候选选择需要机器可读载体」记在 **NEEDS-13** 那条补充里（它登记的正是
     ///   agent 请求体 schema 未文档化）；后端补上之前，这里不猜字段名。
+    /// 权威核对：start 的响应没给出任务号时，去读会话详情里的 `generationJobs`
+    /// （它是后端的真账），而不是凭"我没解出来"就断言没提交。
+    private func reconcileStartedJob(sessionID: String, planCardID: String, revision: Int) async {
+        guard let detail = try? await session.studio.session(sessionID) else {
+            degradeLabel = "任务号没读到，稍后下拉核对会话"
+            return
+        }
+        let jobs = detail.generationJobs
+        if let newest = jobs.max(by: { ($0.createdAt ?? "") < ($1.createdAt ?? "") }) {
+            // 核到任务了 ⇒ 这一次逻辑操作已经结束，键可以作废：
+            // 用户之后若真的「重新制作」，那是一次新操作，该拿一个新键。
+            startTokens.invalidate(sessionID: sessionID, planCardID: planCardID, revision: revision)
+            candidates = newest.candidates()
+            degradeLabel = nil
+            append(.system("已核到任务：\(newest.status.rawValue)"))
+        } else {
+            degradeLabel = "会话里还没有任务，若额度已变动请到官网核对"
+        }
+    }
+
     private func chooseVersion(_ candidate: GenerationCandidateDto, index: Int) async {
         // 标题为空回落「未命名版本」：§5 的回落口径是「版本 1 / 版本 2」，这里同一族说法，
         // 不把空字符串印进发给 agent 的话里（那是一句读不通的话）。
@@ -593,13 +616,28 @@ public struct AISessionDetailView: View {
         do {
             // 用户主动点的这一次 = 一次新的逻辑操作 ⇒ 由服务侧生成新 token；
             // 本屏**不做自动重放**（design 09：hash 失配后不得自动重发写操作）。
-            let response = try await session.studio.startPlan(sessionID: sessionID, plan: plan)
+            let response = try await session.studio.startPlan(
+                sessionID: sessionID, plan: plan,
+                token: startTokens.token(
+                    sessionID: sessionID, planCardID: plan.planCardId, revision: plan.revision ?? 0
+                )
+            )
+            // **2xx 但没拿到任务号**：扣费可能已经发生，绝不能说"没提交成功"——
+            // 那句话会诱导用户再点一次，而重试现在复用同一个幂等键（D8），
+            // 所以后端会把它当同一次操作。这里改为去核对权威任务列表。
+            guard let jobID = response.resolvedJobId else {
+                append(.system("任务已提交，但没拿到任务编号，正在核对……"))
+                await reconcileStartedJob(
+                    sessionID: sessionID, planCardID: plan.planCardId, revision: plan.revision ?? 0
+                )
+                return
+            }
             append(.system("已提交，正在排产"))
             // 授权时机：spec 明令**只在开始制作成功之后**索权；被拒不再反复索。
             if await StudioNotifier.requestPermissionAfterPlanStart() {
                 await StudioNotifier.scheduleFallback(
                     sessionID: sessionID,
-                    jobID: response.job.id,
+                    jobID: jobID,
                     planCardID: plan.planCardId,
                     afterMinutes: 30
                 )

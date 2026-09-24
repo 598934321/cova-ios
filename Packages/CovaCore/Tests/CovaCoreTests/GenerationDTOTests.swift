@@ -2,6 +2,55 @@ import CovaCore
 import XCTest
 
 final class GenerationDTOTests: XCTestCase {
+    /// **真实 start 响应**（2026-09-24 真实账号实测）：顶层是 `{result, summary}`，
+    /// 任务号在 `result.jobId` —— 与契约文档写的 `{job:…}` 不是一回事（web 同样读
+    /// `payload.result.jobId`，`useAgentV2Session.ts:127-128`）。这条用例守的是**钱**：
+    /// 旧实现解不出 `{job}` 就抛错 ⇒ UI 说「这次没提交成功」⇒ 用户再点 ⇒ 换幂等键
+    /// ⇒ **第二次扣费**。
+    func testStartResponseAcceptsTheRealResultJobIdShape() throws {
+        let json = Data(#"{"result":{"jobId":"job-77","status":"submitted"},"summary":"已排产"}"#.utf8)
+        let response = try JSONDecoder().decode(GenerationJobResponseDto.self, from: json)
+        XCTAssertEqual(response.resolvedJobId, "job-77")
+        XCTAssertFalse(response.isUnresolvedSubmission)
+    }
+
+    /// 契约文档形态仍然要接（`generation-jobs?id=` 的真实响应就是 `{job}`）。
+    func testStartResponseStillAcceptsTheContractJobShape() throws {
+        let json = Data(#"{"job":{"id":"job-88","status":"submitted","costCredits":100}}"#.utf8)
+        let response = try JSONDecoder().decode(GenerationJobResponseDto.self, from: json)
+        XCTAssertEqual(response.job?.id, "job-88")
+        XCTAssertEqual(response.resolvedJobId, "job-88")
+        XCTAssertFalse(response.isUnresolvedSubmission)
+    }
+
+    /// 2xx 却**没有任何任务号** ⇒ 解码不许抛错，而是给出可区分的状态：
+    /// 提交可能已经发生，调用方必须去核对权威任务列表，而不是断言"没提交"。
+    func testStartResponseWithoutAnyJobIdIsFlaggedNotThrown() throws {
+        let json = Data(#"{"result":{"note":"queued"},"summary":"ok"}"#.utf8)
+        let response = try JSONDecoder().decode(GenerationJobResponseDto.self, from: json)
+        XCTAssertNil(response.resolvedJobId)
+        XCTAssertTrue(response.isUnresolvedSubmission)
+    }
+
+    /// D8「一次逻辑操作 = 一个幂等键」：同一 `(会话, 计划卡, revision)` 的重试复用同一个键，
+    /// 换计划卡 / 抬 revision 才是新操作；显式作废后才允许再发新键。
+    func testPlanStartTokenIsReusedForTheSameLogicalOperation() throws {
+        var ledger = PlanStartTokenLedger()
+        let first = ledger.token(sessionID: "s-1", planCardID: "c-1", revision: 1)
+        let retry = ledger.token(sessionID: "s-1", planCardID: "c-1", revision: 1)
+        XCTAssertEqual(first, retry, "同一次点击的重试必须带同一个键，否则等于允许第二次扣费")
+        XCTAssertNotEqual(
+            ledger.token(sessionID: "s-1", planCardID: "c-2", revision: 1), first, "不同计划卡是不同操作"
+        )
+        let bumped = ledger.token(sessionID: "s-1", planCardID: "c-1", revision: 2)
+        XCTAssertNotEqual(bumped, first, "revision 变了 = 用户改了要求 = 新一次操作")
+        ledger.invalidate(sessionID: "s-1", planCardID: "c-1", revision: 2)
+        XCTAssertNotEqual(
+            ledger.token(sessionID: "s-1", planCardID: "c-1", revision: 2), bumped,
+            "作废后重新发起才允许换新键"
+        )
+    }
+
     func testJobStatusCoversExactlySixContractStates() {
         XCTAssertEqual(GenerationJobStatus.allCases.count, 6)
         XCTAssertEqual(
@@ -28,7 +77,9 @@ final class GenerationDTOTests: XCTestCase {
 
     func testDecodesGenerationJobAndMetadataCandidates() throws {
         let response = try Fixture.decode(GenerationJobResponseDto.self, "generation-job")
-        let job = response.job
+        // `job` 现在是可选的（真实的 start 响应 `{result:{jobId}}` 里根本没有 job 对象），
+        // 所以这条既有用例改为**显式断言该 fixture 里 job 必须在**——比原来更严，不是放宽。
+        let job = try XCTUnwrap(response.job)
         XCTAssertEqual(job.id, "job-test-0001")
         XCTAssertEqual(job.sessionId, "session-test-0001")
         XCTAssertEqual(job.status, .succeeded)

@@ -99,12 +99,83 @@ public struct GenerationJobDto: Codable, Equatable, Sendable {
     }
 }
 
-/// `GET /api/find-my-song/generation-jobs?id=` 单任务响应（真实响应：`{job}`）。
-public struct GenerationJobResponseDto: Codable, Equatable, Sendable {
-    public let job: GenerationJobDto
+/// 生成任务的响应封套。同一个类型服务两个端点：
+/// · `GET /api/find-my-song/generation-jobs?id=` → 真实响应 `{job}`；
+/// · `POST /api/studio/one-step/plans/start` → **真实响应 `{result, summary}`，任务号在
+///   `result.jobId`**（2026-09-24 真实账号实测；web 同样读 `payload.result.jobId`，见
+///   `web/…/agent-v2/useAgentV2Session.ts:127-128`），而契约文档写的是 `{job:…}`。
+///
+/// 为什么这处形态差异必须"容忍"而不是"报错"：**扣费发生在 HTTP 2xx 那一刻**。
+/// 旧实现要求 `{job}`，解不出就抛 ⇒ UI 说「这次没提交成功」⇒ 用户再点一次 ⇒
+/// 换一个新的幂等键 ⇒ **第二次扣费**。所以解码永不因形态失败，
+/// 拿不到任务号时降级成一个可区分的状态（`isUnresolvedSubmission`），
+/// 由调用方去核对权威任务列表，而不是断言"没提交"。
+public struct GenerationJobResponseDto: Decodable, Equatable, Sendable {
+    public let job: GenerationJobDto?
+    /// 只拿到任务号的情形（start 的真实响应就是这种）。
+    public let jobId: String?
 
-    enum CodingKeys: String, CodingKey {
+    public var resolvedJobId: String? {
+        if let id = job?.id, !id.isEmpty { return id }
+        if let jobId, !jobId.isEmpty { return jobId }
+        return nil
+    }
+
+    /// 2xx 却没有任何任务号 ⇒ 提交可能已经发生，**绝不能说"没提交成功"**。
+    public var isUnresolvedSubmission: Bool { resolvedJobId == nil }
+
+    private enum RootKeys: String, CodingKey {
         case job
+        case jobs
+        case result
+        case jobId
+        case id
+    }
+
+    /// 容忍的是**封套形态**（哪一层包着任务），不容忍的是**任务本身缺必要字段**：
+    /// 只要 `job` / `jobs` 键出现了，就严格解码 —— 缺 `status` 必须照旧抛错
+    /// （`testMissingJobStatusFailsDecoding` 钉的就是这条，状态驱动整个交付 UI）。
+    public init(from decoder: Decoder) throws {
+        let root = try decoder.container(keyedBy: RootKeys.self)
+        if root.contains(RootKeys.job) {
+            let full = try root.decode(GenerationJobDto.self, forKey: .job)
+            job = full
+            jobId = full.id
+            return
+        }
+        if root.contains(RootKeys.jobs) {
+            let many = try root.decode([GenerationJobDto].self, forKey: .jobs)
+            job = many.first
+            jobId = many.first?.id
+            return
+        }
+        if root.contains(RootKeys.result) {
+            if let nested = try? root.nestedContainer(keyedBy: RootKeys.self, forKey: .result) {
+                if nested.contains(RootKeys.job) {
+                    let full = try nested.decode(GenerationJobDto.self, forKey: .job)
+                    job = full
+                    jobId = full.id
+                    return
+                }
+                if nested.contains(RootKeys.jobs) {
+                    let many = try nested.decode([GenerationJobDto].self, forKey: .jobs)
+                    job = many.first
+                    jobId = many.first?.id
+                    return
+                }
+                job = nil
+                jobId = ((try? nested.decodeIfPresent(String.self, forKey: .jobId)) ?? nil)
+                    ?? ((try? nested.decodeIfPresent(String.self, forKey: .id)) ?? nil)
+                return
+            }
+            // result 直接是任务号字符串
+            job = nil
+            jobId = try root.decode(String.self, forKey: .result)
+            return
+        }
+        job = nil
+        jobId = ((try? root.decodeIfPresent(String.self, forKey: .jobId)) ?? nil)
+            ?? ((try? root.decodeIfPresent(String.self, forKey: .id)) ?? nil)
     }
 }
 

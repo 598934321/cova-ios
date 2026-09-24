@@ -994,7 +994,7 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 | 06 歌单详情 | `PlaylistDetailView` | `04-playlist-detail.png`（默认档）+ **`m3-20260924/06-playlist-ax3.png`**（AX3，线上真歌单 `ALB-A06-09`） | 收藏角标是 NEEDS-9 的「未知」形态，不是缺陷。**§Dynamic Type 只落了一半**：D 简介折叠行 AX 档 3→5 已做（`9ba174d`）、头图比例固定实测在位；**C 标题 spec 要"换 2 行"而实现是不限行**（更宽松，不截断，但不是它写的形状），**「操作行两钮上下堆叠」未做** ⇒ 这两条是 06 的明确欠账 |
 | 07 曲目详情 | `DetailViews` 内半屏 | `05-track-detail.png` | — |
 | 08 创作会话列表 | `AISessionsView` | `m1-20260922/08-ai-sessions-guest.png`（游客门控）+ **`auth-20260924/03-ai-sessions.png`（登录后真实列表）** | ~~真会话需登录~~ 已用真实账号走通 |
-| 09 会话详情 | `AISessionDetailView` | **`auth-20260924/07-session-detail-real.png`** —— 真实会话：用户气泡「帮我做一首适合咖啡馆下午的轻爵士纯音乐」+ 计划卡「向光而行 / 待确认 / 摘要 / 查看提示词 / weirdness 0.5 · styleWeight 0.5 / 预计消耗 100 co 余额 19,615 / 开始制作 · 修改要求」 | 走的是 `GET /plans` 轮询降级路径（SSE 已单独实测：事件名比契约多出 `reasoning_summary / credits / skill_* / repair_started / verification_completed`，已记 NEEDS-26）。**双 Demo 候选与试听仍未拍** —— 那要先真的「开始制作」（扣 100 co 的写操作），等用户点头再跑 |
+| 09 会话详情 | `AISessionDetailView` | **`auth-20260924/07-session-detail-real.png`**（真实会话 + 计划卡）与 **`08-dual-demo-real.png`（双 Demo 终态：两个候选「可以试听」+ ♡ + 「选一版继续制作」，余额 19,615→19,515 正好扣掉 100）** | 走的是 `GET /plans` 轮询降级路径（SSE 已单独实测：事件名比契约多七个 ⇒ NEEDS-26）。**start 的响应形态与契约不符已修**（`{result.jobId}`，见 NEEDS-27）—— 那是一条扣费路径上的解码失败会诱导二次扣费的缺陷 |
 | 10 登录 | `LoginView` | `03-login.png` | 缺账号 ⇒ 登录后的链路一次都没跑过 |
 | 11 我的 | `MineView` | `02-mine.png`（游客） | 权益/余额需登录 |
 | 12a 我的收藏 | `FavoritesView` | **无截图** | 需登录 |
