@@ -1,4 +1,60 @@
 import SwiftUI
+import ImageIO
+
+/// 封面位图的**内存缓存**（PLAN M3：首屏与滚动 60fps）。
+///
+/// 原实现没有缓存：`CovaArtwork` 每次在列表里重新出现就重跑一次 `.task` ⇒
+/// 「滚一条 20 项的列表」＝「把 20 张封面重下重解 20 遍」；而 `UIImage(data:)` 会把
+/// 后端给的整幅原图（常见 1200–3000px）解出来，那笔解码落在主 actor 上就是掉帧。
+/// 两件事一起补：按 URL 缓存已解出的位图 + 用 ImageIO 直接解出降采样位图。
+///
+/// 封面是公开资源（不含 token / 签名参数），所以缓存不需要随登出清理；
+/// `NSCache.totalCostLimit` 负责淘汰。
+enum CovaArtworkCache {
+    /// 降采样上限（长边像素）。本 App 最大的封面位是全屏播放器的封面 ≈ 340pt，
+    /// @3x 也只要 1020px —— 取 1024 既不掉画质也不留原图的体积。
+    private static let maxPixel: CGFloat = 1024
+
+    @MainActor private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 64 * 1024  // cost 以 KB 计 ⇒ ≈64MB 位图
+        return cache
+    }()
+
+    @MainActor static func image(for url: URL) -> UIImage? {
+        cache.object(forKey: url.absoluteString as NSString)
+    }
+
+    @MainActor static func insert(_ image: UIImage, for url: URL) {
+        let pixels = image.size.width * image.size.height * image.scale * image.scale
+        cache.setObject(image, forKey: url.absoluteString as NSString,
+                        cost: max(1, Int(pixels / 1_024)))
+    }
+
+    /// 下载 + 解码都在**非主 actor** 上做；主 actor 只碰缓存与最终位图。
+    @MainActor static func fetch(_ url: URL) async -> UIImage? {
+        if let hit = image(for: url) { return hit }
+        return await Task.detached(priority: .userInitiated) {
+            guard let (data, response) = try? await URLSession.shared.data(from: url),
+                  let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else { return nil }
+            return downsampled(data)
+        }.value
+    }
+
+    private nonisolated static func downsampled(_ data: Data) -> UIImage? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, options) else { return nil }
+        let thumb = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ] as CFDictionary
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, thumb) else { return nil }
+        return UIImage(cgImage: cg, scale: 1, orientation: .up)
+    }
+}
 
 /// 封面图（异步加载 + 占位 + 失败回退）。**签名 URL 不回显**：日志与无障碍标签只含曲目名。
 public struct CovaArtwork: View {
@@ -33,14 +89,18 @@ public struct CovaArtwork: View {
 
     private func load() async {
         guard let url else { phase = .failed; return }
-        phase = .loading
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let ui = UIImage(data: data) { phase = .loaded(Image(uiImage: ui)) }
-            else { phase = .failed }
-        } catch {
-            phase = .failed
+        if let cached = CovaArtworkCache.image(for: url) {
+            phase = .loaded(Image(uiImage: cached))
+            return
         }
+        phase = .loading
+        let image = await CovaArtworkCache.fetch(url)
+        // 被取消**不是失败**（`.task(id: url)` 换封面时就会取消上一轮）：
+        // 这里若把取消写成 `.failed`，列表换绑的瞬间会闪一下音符占位。
+        guard !Task.isCancelled else { return }
+        guard let image else { phase = .failed; return }
+        CovaArtworkCache.insert(image, for: url)
+        phase = .loaded(Image(uiImage: image))
     }
 }
 
