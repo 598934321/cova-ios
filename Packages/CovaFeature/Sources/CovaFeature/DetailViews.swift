@@ -82,7 +82,11 @@ public struct PlaylistDetailView: View {
                     ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                         CovaListRow(
                             title: track.titleCn ?? track.title,
-                            subtitle: "\(track.artistNameCn ?? track.artist.name) · \(Int(track.audioDuration ?? track.duration))s · BPM \(track.bpm)",
+                            subtitle: TrackRowCopy.subtitle(
+                                artist: track.artistNameCn ?? track.artist.name,
+                                durationSeconds: Int(track.audioDuration ?? track.duration),
+                                bpm: track.bpm
+                            ),
                             artwork: CovaArtwork(resolution: PlaylistDetailArtwork.cover(track), title: track.title)
                         ) {
                             heartButton(track.id)

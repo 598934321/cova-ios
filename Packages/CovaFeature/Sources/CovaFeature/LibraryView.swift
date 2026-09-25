@@ -337,7 +337,11 @@ public struct LibraryView: View {
                     ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                         CovaListRow(
                             title: track.titleCn ?? track.title,
-                            subtitle: "\(track.artistNameCn ?? track.artist.name) · \(Int(track.duration))s · BPM \(track.bpm)",
+                            subtitle: TrackRowCopy.subtitle(
+                                artist: track.artistNameCn ?? track.artist.name,
+                                durationSeconds: Int(track.duration),
+                                bpm: track.bpm
+                            ),
                             artwork: CovaArtwork(resolution: LibraryArtwork.cover(track), title: track.title)
                         ) {
                             let on = session.favoriteIDs.contains(track.id)

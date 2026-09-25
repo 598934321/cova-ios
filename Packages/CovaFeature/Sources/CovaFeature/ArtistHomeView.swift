@@ -189,7 +189,11 @@ public struct ArtistHomeView: View {
                 } else {
                     CovaListRow(
                         title: track.titleCn ?? track.title,
-                        subtitle: "\(track.artistNameCn ?? track.artist.name) · \(Int(track.audioDuration ?? track.duration))s · BPM \(track.bpm)",
+                        subtitle: TrackRowCopy.subtitle(
+                            artist: track.artistNameCn ?? track.artist.name,
+                            durationSeconds: Int(track.audioDuration ?? track.duration),
+                            bpm: track.bpm
+                        ),
                         artwork: CovaArtwork(resolution: ArtistHomeArtwork.cover(track), title: track.title)
                     ) {
                         let on = session.favoriteIDs.contains(track.id)

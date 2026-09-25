@@ -142,9 +142,14 @@ public struct CatalogService: Sendable {
     /// 把 `CovaAPIError` 归类成 UI 可说的三句话。
     ///
     /// `decodingNeeds` 是**调用点**的事实，不是错误自己的事实：解码失败只说明「响应和 DTO
-    /// 不一致」，说是哪一条缺口必须由调用的是哪个端点决定。旧实现把一切 `.decoding` 都写成
-    /// NEEDS-1，于是收藏页（NEEDS-11 混条目）会指着登录缺口撒谎。
-    public static func classify(_ error: Error, decodingNeeds: String = "NEEDS-1") -> CatalogFailure {
+    /// 不一致」，说是哪一条缺口必须由调用方**自己登记过**才算数。
+    /// · 默认值曾是 `"NEEDS-1"` ⇒ 任何一次客户端读不懂响应，屏幕上都写着「后端契约缺口
+    ///   NEEDS-1 已登记，上线后此处自动可用」—— 2026-09-25 的 03 整屏错误态就是这么被记到
+    ///   后端账上的（真实原因是 `TrackDto.bpm/energy` 被写成必填，而服务端成片发 `null`）。
+    ///   仓里口径：**客户端的错不许记到后端账上** ⇒ 默认不再有编号，没编号就不指认。
+    /// · 真的登记过 NEEDS 的调用点必须**显式**传编号（收藏页 NEEDS-11、曲目详情 NEEDS-8/10、
+    ///   歌单详情 NEEDS-9、人设页 NEEDS-22、会话面 NEEDS-23），那条话才有据可依。
+    public static func classify(_ error: Error, decodingNeeds: String? = nil) -> CatalogFailure {
         if let api = error as? CovaAPIError {
             switch api {
             case .offline, .timeout, .transport, .cancelled: return .network
@@ -154,11 +159,19 @@ public struct CatalogService: Sendable {
                 if code == 401 || code == 403 { return .unauthenticated }
                 if code == 404 || code == 501 { return .backendGap("NEEDS-14…22") }
                 return .server("HTTP \(code)")
-            case .decoding: return .backendGap(decodingNeeds)
+            case .decoding(let field):
+                guard let decodingNeeds else { return .server(unverifiedDecodingCopy(field)) }
+                return .backendGap(decodingNeeds)
             default: return .server(api.redactedDescription)
             }
         }
         if error is URLError { return .network }
         return .server(error.localizedDescription)
+    }
+
+    /// 「客户端读不了」这句话：只陈述自己知道的事实（哪个字段解不开），并明确**没有**登记为
+    /// 后端缺口 —— 待核的是 DTO，不是服务端。
+    static func unverifiedDecodingCopy(_ field: String?) -> String {
+        "这份响应客户端读不了（字段 \(field ?? "未定位")）：按客户端 DTO 待核，未指认为后端契约缺口"
     }
 }

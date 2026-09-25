@@ -58,7 +58,10 @@ final class LibraryDTOTests: XCTestCase {
         XCTAssertEqual(first.title.isEmpty, false)
         XCTAssertEqual(first.cover.hasPrefix("https://"), true)
         XCTAssertEqual(first.duration > 0, true)
-        XCTAssertEqual(first.bpm > 0, true)
+        // 本行原本是 `first.bpm > 0` —— 把「服务端给了一个正数」当成了契约。`bpm` 于 2026-09-25
+        // 改成可选（真实响应成片 `null`）之后它连编译都不过，于是顺手钉成**这一个 fixture 的真值**：
+        // 放宽可空性之后仍然必须读到 120，而不是被 `decodeIfPresent` 静默变成 nil。
+        XCTAssertEqual(first.bpm, 120, "similar 投影这行的真实 bpm")
         // R16-1：这里原本钉的是 `first.audioUrl.hasPrefix("https://")` —— 那是 2026-09-17
         // 回灌时的形态，而 2026-09-24 实测 `GET /api/tracks` 的 20/20 行都是**相对路径**。
         // 「以 https 开头」这条断言正是缺陷逃过去的原因：它把当时的**拼写**当成了契约，

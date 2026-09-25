@@ -72,12 +72,21 @@ public struct TrackVariantDto: Codable, Equatable, Sendable {
 ///
 /// 必填集合 = 契约点名 **且** 真实列表/详情两种形态都存在的字段；
 /// 其余一律可选（真实响应中 `lyrics` 恒为 `null`、详情接口缺 variant 字段族）。
+///
+/// `bpm` / `energy` 就是「两种形态都在、但值可以是 null」那一类 ⇒ 可选（2026-09-25 只读探针
+/// `GET https://covalink.cn/api/tracks`：**400 行** × 7 个 sort 档
+/// （`featured|newest|popular|downloads|favorites|duration_asc|bpm_asc`）+ `page=3&pageSize=50`；
+/// `featured` 档首屏 20 行里 **15 行 `energy` 为 null**，两种 null 在整轮扫掠中都出现。
+/// 同一轮把其余 **17** 个非可选字段逐个核过，**无一** null ⇒ 只放宽这两格，别的照旧必填。
+/// 这里曾写死成 `Int` / `String` ⇒ 一条 null 就让整页解码失败，而屏幕上说的是「后端契约缺口
+/// NEEDS-1」—— 客户端的账记到了后端头上（`TrackNullBpmEnergyDTOTests` 钉着这一条）。
 public struct TrackDto: Codable, Equatable, Sendable {
     public let id: String
     public let title: String
     public let cover: String
     public let duration: Double
-    public let bpm: Int
+    /// 服务端可空（实测 `null`，见类型文档）⇒ `nil` 就是「没给」，不是 0。
+    public let bpm: Int?
     public let audioUrl: String
     public let artist: ArtistDto
     public let scenes: [String]
@@ -91,7 +100,8 @@ public struct TrackDto: Codable, Equatable, Sendable {
     public let highlightEnd: Double
     public let favoriteCount: Int
     public let vocalType: String
-    public let energy: String
+    /// 能量档位词表由服务端维护（`null` 实测成片，见类型文档）。
+    public let energy: String?
 
     public let titleCn: String?
     public let category: String?
@@ -169,8 +179,36 @@ public struct TrackDto: Codable, Equatable, Sendable {
     }
 }
 
-/// `GET /api/tracks/:id` 的 `similar[]` 元素。
+/// 曲目行副文案（03 §4 / 06 / 16 三屏共用同一条腿）：`艺人 · 时长s · BPM n`。
 ///
+/// BPM 那一段**只在服务端真给了值时出现**：07 的「可空/缺失规则」明文「`bpm`/`key` 为 **0 或空**
+/// → 该标签不进 G 区（不显示「BPM 0」）」，这里把同一条裁决用到所有曲目行 —— 没给就整段不出现，
+/// 不写 `--`、不写 0、不猜一个数（「不编造边界」；03 §4 的行本身只规定 封面/标题+艺人/时长，
+/// BPM 一直是附加段，所以少一段不破坏任何被规格要求的元素）。
+///
+/// 判据放 CovaCore 而不是各 View：三屏必须说同一句话，而这句话要能在单测里钉死
+/// （`PlayerFormatting` 同样是「格式化住核心层」的先例）。
+public enum TrackRowCopy {
+    /// BPM 段：`nil`（服务端没给）与 `0`（07 口径的「未分析」）都是 `nil` ⇒ 调用方整段不拼。
+    public static func bpmSegment(_ bpm: Int?) -> String? {
+        guard let bpm, bpm > 0 else { return nil }
+        return "BPM \(bpm)"
+    }
+
+    /// 只拼**存在**的片段：少一段就少一个分隔符，不留悬挂的「 · 」。
+    public static func subtitle(artist: String, durationSeconds: Int?, bpm: Int?) -> String {
+        joined([artist, durationSeconds.map { "\($0)s" }, bpmSegment(bpm)])
+    }
+
+    static func joined(_ segments: [String?]) -> String {
+        segments.compactMap { segment in
+            guard let segment, !segment.isEmpty else { return nil }
+            return segment
+        }.joined(separator: " · ")
+    }
+}
+
+/// `GET /api/tracks/:id` 的 `similar[]` 元素。
 /// **与 `TrackDto` 不是同一投影**（2026-09-17 实测 10 份详情 / 40 个元素）：
 /// - `featured` 为 **数字 0/1**（列表与详情 `track` 为 Bool）；
 /// - 预告区间只有 snake_case `preview_start` / `preview_end`（**无** `previewStart`/`previewEnd`）；
@@ -178,12 +216,16 @@ public struct TrackDto: Codable, Equatable, Sendable {
 /// - `artist` 为裁剪版 `{id,name,nameCn,avatar}`，`tags[]` 元素无 `trackId`。
 ///
 /// 因此本模型按**真实投影**逐键建模，不复用 `TrackDto`（复用会必然解码失败）。
+///
+/// `bpm` / `energy` 同样可选（2026-09-25 实测：similar 投影与 `similarTo` 列表里都有 null，
+/// 见 `TrackDto` 的类型文档与 `TrackNullBpmEnergyDTOTests`）。
 public struct SimilarTrackDto: Codable, Equatable, Sendable {
     public let id: String
     public let title: String
     public let cover: String
     public let duration: Double
-    public let bpm: Int
+    /// 服务端可空 ⇒ `nil` 就是「没给」，不是 0。
+    public let bpm: Int?
     public let audioUrl: String
     public let artist: ArtistDto
     public let scenes: [String]
@@ -197,7 +239,8 @@ public struct SimilarTrackDto: Codable, Equatable, Sendable {
     public let highlightEnd: Double
     public let favoriteCount: Int
     public let vocalType: String
-    public let energy: String
+    /// 能量档位（`null` 实测存在）。
+    public let energy: String?
     /// 0/1 数字（真实投影）。
     public let featured: Int
 

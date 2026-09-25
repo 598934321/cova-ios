@@ -42,6 +42,8 @@
 |---|---|
 | `synthetic/track-with-variants.json` | 真实 page-1 数据里 `variantCount` 全为 0，故用合成样例覆盖「非空 `variants[]` + 未知字段忽略 + 可选字段缺失」路径 |
 | `synthetic/track-page-relative-audio.json` | **R16-1 的缺失形态**：真实回灌 fixture 的 `audioUrl` 全是绝对直链，而 2026-09-24 只读探针实测 `GET /api/tracks` 的 **20/20 行是相对路径**（`/api/tracks/<id>/preview-stream`；服务端 `src/lib/api-dto.ts:135-137` 把整曲桶直链一律改写为本站代理端点）。本样例 = `track-page.json` 的同一批行，只把 `audioUrl`/`audio_url` 换成该真实形态，`cover` 保持绝对（两种拼写并存正是「画面正常、音频静默不可播」的成因）。**不是**新造的模型示例 |
+| `synthetic/track-page-null-bpm-energy.json` | **03 整屏错误态的缺失形态**：2026-09-25 只读探针打 `GET /api/tracks`（400 行 × 7 个 sort 档 + `page=3&pageSize=50`）实测 `bpm: null` / `energy: null` 成片存在（featured 档首屏 20 行里 15 行 `energy` 为 null），而 `TrackDto` 把这两格写成必填 ⇒ 一条 null 就让整页解码失败，屏幕上写的却是「后端契约缺口 NEEDS-1」。本样例 = `track-page.json` 前两行，第一行把 `bpm`/`energy` 写成 `null`、第二行**整键删掉**，封套按真实 `{page,pageSize,total,totalPages,tracks}` 形状；其余键逐字保留。钉它的是 `TrackNullBpmEnergyDTOTests`（修复前 8 条用例红 7 条） |
+
 
 ## 四、写请求体（**契约目标形态**，写操作/需登录 → 无法只读验证）
 
