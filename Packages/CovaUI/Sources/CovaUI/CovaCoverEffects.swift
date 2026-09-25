@@ -52,3 +52,57 @@ public struct CovaPixelCover: View {
         .accessibilityHidden(true)
     }
 }
+
+// MARK: - 主色铺底（16 §3 / §5；02 §1 是同一族的另一张脸）
+//
+// 16 §3：头区容器「底为『艺人主色 → `color.canvas`』的柔和铺底」；§5 给了叠加强度
+// （TG-40：Light 12% / Dark 22%）；§7 给了**唯一**允许的解析口径（只认 `#RGB`/`#RRGGBB`）。
+//
+// 为什么这一格今天拿得到"真主色"而不必假称取色：16 的主色源是 `artist.colorPalette`
+// （后端直接给的颜色串，2026-09-25 实测为 JSON 字符串数组 `["#…", …]`），
+// 不是"从封面图上算一个主色"。**从封面取主色**是 02 §1 那一档，它要的是解出来的位图
+// ——而 `CovaArtwork`/`CovaArtworkCache` 今天不把解出的 `UIImage` 交回调用方
+// （CovaStates 不在本批可改面），所以 02 那一档今天做不了，也**不**在这里用一个常数色冒充。
+public struct CovaSwashBackdrop: View {
+    /// 解析失败 ⇒ `nil` ⇒ 回落 `color.surface`（16 §3 明令"不猜品牌橙"）。
+    private let tint: Color?
+    /// 交叉淡入的触发身份：换艺人 / 换主色就换这个串。用 `Color` 本身当值不可靠 ——
+    /// 动态 `Color(uiColor:)` 的相等性看的是底层 provider，不保证"色变了动画就变"。
+    private let identity: String
+
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    public init(tint: Color?, identity: String) {
+        self.tint = tint
+        self.identity = identity
+    }
+
+    public var body: some View {
+        ZStack {
+            CovaColor.canvas
+            if let tint {
+                LinearGradient(
+                    colors: [tint.opacity(Self.overlayAlpha(light: scheme != .dark)), CovaColor.canvas],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            } else {
+                CovaColor.surface
+            }
+        }
+        // 16 §4：Reduce Motion 下"色彩过渡退化为一帧" ⇒ 直接把动画整个拿掉。
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: ArtistSwash.crossFadeDuration),
+            value: identity
+        )
+        // 16 §6：铺底色不播报，解析失败也不产生任何提示。
+        .accessibilityHidden(true)
+    }
+
+    /// TG-40 的两档（Light 12% / Dark 22%）。两档不同值是 §5 的理由：
+    /// 同一个透明度压在白底与黑底上观感不等价。
+    static func overlayAlpha(light: Bool) -> Double {
+        light ? ArtistSwash.overlayLightAlpha : ArtistSwash.overlayDarkAlpha
+    }
+}

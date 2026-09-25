@@ -213,3 +213,120 @@ public enum PixelCoverFacts {
         return lit ? cellAlphaLow : cellAlphaHigh
     }
 }
+
+// MARK: - 01 §6 AI 音乐人专栏
+//
+// §6 把内容源钉成「A01–A15 AI 音乐人」，而**接口面没有艺人端点**
+// （`docs/api-contracts.md` 只有 `tracks` 的 `artistId` 筛选与内嵌 `artist`；
+// `HANDOVER.md` §15 那一行也是同一句话）。所以这一栏的人设只能从**已经取到的曲目里内嵌的
+// `artist`** 去重得到 —— 不发明 `GET /api/artists`，也不把 `ai音乐人/` 那份 IP 文档
+// 当运行时数据源读（那是"假数据冒充线上行为"）。
+public enum HomeArtistRail {
+    /// §6：圆形头像 64pt。
+    public static let avatarDiameter: Double = 64
+    /// 内容源写着 A01–A15 ⇒ 15 是这个栏目的天然上限（不是随手挑的数）。
+    public static let limit = 15
+
+    /// 从曲目列表里去重出音乐人（保持首次出现顺序，与 §4 同一把"不重排"口径）。
+    ///
+    /// 丢掉的只有两类**根本没法成为一格**的行：`id` 为空（点去哪都没有落点）、
+    /// 两个名字都空（下面那行 caption 无字可显）。其余一律保留 ——
+    /// 头像缺失**不**丢行：`CovaArtwork` 那一侧有它自己的占位形态
+    /// （2026-09-25 只读核对 `/api/tracks?page=1&pageSize=60`：60 行 → **11 位**不同音乐人，
+    /// 38 行内嵌 `artist.avatar` 有值且**全部是站内相对路径** ⇒ 交图前一律走
+    /// `CovaArtworkResolution`，直接 `URL(string:)` 就是 R18-2 那条"一次请求都不发"的静默占位）。
+    public static func artists(
+        from tracks: [TrackDto], limit: Int = HomeArtistRail.limit
+    ) -> [ArtistDto] {
+        guard limit > 0 else { return [] }
+        var seen: Set<String> = []
+        var out: [ArtistDto] = []
+        for track in tracks {
+            let artist = track.artist
+            guard !artist.id.isEmpty, displayName(artist) != nil else { continue }
+            guard seen.insert(artist.id).inserted else { continue }
+            out.append(artist)
+            if out.count == limit { break }
+        }
+        return out
+    }
+
+    /// §6 名字那一行：`nameCn ?? name`（与 16 §3.C 同一个优先级）；两者都空 ⇒ `nil`
+    /// （不补「未知音乐人」—— spec 在这里没给兜底文案，编一个就是把空说成事实）。
+    public static func displayName(_ artist: ArtistDto) -> String? {
+        if let cn = artist.nameCn, !cn.trimmingCharacters(in: .whitespaces).isEmpty { return cn }
+        let name = artist.name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
+    }
+}
+
+// MARK: - 16 §3/§5 头区主色铺底
+//
+// 16 §3 把这一格写成「底为『艺人主色 → `color.canvas`』的柔和铺底」，§5 给出叠加强度，
+// §7 给出**唯一**的解析口径。同一族的还有 02 §1（封面取主色 → 深色化模糊铺底 + 交叉淡入），
+// 所以视图侧的落点在 CovaUI 的 `CovaSwashBackdrop`，而数值与解析全在这一层（可测：
+// CovaUI 没有测试目标）。
+public enum ArtistSwash {
+    /// 16 §5 的 TG-40 两档：Light 12% / Dark 22% 叠在 `color.canvas` 上。
+    /// **两档不同值不是随手调的**：同一透明度在白底与黑底上观感不等价（16 §5 原话），
+    /// 而 TG-40 至今没进 `tokens.json` ⇒ 先按 spec 的字面值施工，缺口照缺口登记。
+    public static let overlayLightAlpha = 0.12
+    public static let overlayDarkAlpha = 0.22
+    /// 铺底换色那一次的交叉淡入：`motion.duration.hero`（700ms）——
+    /// 02 §1 对同一族铺底点名了这一档；16 §4「Reduce Motion 退化为一帧」由视图侧执行。
+    public static let crossFadeDuration = 0.7
+
+    /// 一个 `#RGB` / `#RRGGBB` 解出来的分量（0…1）。放这里而不是直接给 `Color`：
+    /// CovaCore 不引 SwiftUI，而"能不能解析"这件事必须能在没有 UI 的测试里红。
+    public struct Swatch: Equatable, Sendable {
+        public let red: Double
+        public let green: Double
+        public let blue: Double
+
+        public init(red: Double, green: Double, blue: Double) {
+            self.red = red
+            self.green = green
+            self.blue = blue
+        }
+    }
+
+    /// §7 的硬裁决：`colorPalette` 在契约上是 `String?` 而**格式未定义**（线上实测是
+    /// JSON 字符串数组，如 `"[\"#1B1464\",…]"`），所以**只认** `#RGB` / `#RRGGBB` 两种形态，
+    /// 取第一个合法的那一段。「red」「blue」这类命名色、8 位 ARGB、空串、`null`
+    /// 一律当"没有主色"（16 §3 于是回落 `color.surface`，**不猜品牌橙**）。
+    public static func swatch(fromPalette raw: String?) -> Swatch? {
+        guard let raw else { return nil }
+        var index = raw.startIndex
+        while index < raw.endIndex {
+            guard raw[index] == "#" else {
+                index = raw.index(after: index)
+                continue
+            }
+            var end = raw.index(after: index)
+            while end < raw.endIndex, raw[end].isHexDigit { end = raw.index(after: end) }
+            let digits = String(raw[raw.index(after: index)..<end])
+            if let swatch = Self.parse(digits) { return swatch }
+            // 这一段形态不对（例如 8 位 ARGB）：整段跳过，**不**退而求其次截前 6 位 ——
+            // 截了就是把一个没见过的编码当成 `#RRGGBB` 用，正是要防的那条"脏色"。
+            index = end
+        }
+        return nil
+    }
+
+    /// 3 位按 CSS 规则翻倍展开（`#abc` → `aabbcc`），6 位直取；其余长度一律 `nil`。
+    private static func parse(_ digits: String) -> Swatch? {
+        let normalized: String
+        switch digits.count {
+        case 3: normalized = digits.map { "\($0)\($0)" }.joined()
+        case 6: normalized = digits
+        default: return nil
+        }
+        var value: UInt64 = 0
+        guard Scanner(string: normalized).scanHexInt64(&value) else { return nil }
+        return Swatch(
+            red: Double((value & 0xFF0000) >> 16) / 255,
+            green: Double((value & 0x00FF00) >> 8) / 255,
+            blue: Double(value & 0x0000FF) / 255
+        )
+    }
+}

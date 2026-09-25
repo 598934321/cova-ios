@@ -13,7 +13,8 @@ import SwiftUI
 /// · **不渲染** `stylePrompt` / `lyricsPrompt` / `sceneResponsibility` —— 那是内部提示词，
 ///   露出来就是泄漏（16 §7 硬性禁令），哪怕它们"看起来能填上 D/E 两行"；
 /// · 右侧**不放「关注」**（无关注端点）；
-/// · `colorPalette` 只接受 `#RGB` / `#RRGGBB`，**不拿任意字符串当色值**试。
+/// · `colorPalette` 只接受 `#RGB` / `#RRGGBB`，**不拿任意字符串当色值**试
+///   （解析只有一条腿：`ArtistSwash.swatch(fromPalette:)`，CovaCore，可测）。
 public struct ArtistHomeView: View {
     /// 16 §Dynamic Type：AX 档下头像 112 → 88，把宽度让给文本（图像本身不随字号放大）。
     @Environment(\.covaAXLayout) private var axLayout
@@ -87,13 +88,18 @@ public struct ArtistHomeView: View {
 
     // MARK: B–F 头区
 
+    /// §3 头区容器（B–F）：**底为「艺人主色 → `color.canvas`」的柔和铺底**（TG-40 的两档
+    /// 叠加强度在 `CovaSwashBackdrop` 里，解析口径在 `ArtistSwash`），下内边距 `spacing.xl`。
+    ///
+    /// 顺带按 §5 把**头像边框去掉**：「头像不加边框（两主题均由 `radius.capsule` 与铺底差值
+    /// 分离）」—— 这一格以前没有铺底，那圈描边是给"没有差值"打的补丁；铺底来了，
+    /// 补丁就该跟着撤掉，否则同一屏同时存在两种分离手段。
     @ViewBuilder
     private func header(_ artist: ArtistDto) -> some View {
         VStack(spacing: CovaSpace.md) {
             CovaArtwork(resolution: ArtistHomeArtwork.avatar(artist), title: artist.name)
                 .frame(width: axLayout ? 88 : 112, height: axLayout ? 88 : 112)
                 .clipShape(Circle())
-                .overlay(Circle().strokeBorder(swash(artist.colorPalette), lineWidth: 2))
                 .accessibilityLabel("\(artist.nameCn ?? artist.name) 的头像")
             Text(artist.nameCn ?? artist.name)
                 .font(CovaType.largeTitle).foregroundStyle(CovaColor.fg)
@@ -110,6 +116,22 @@ public struct ArtistHomeView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.top, CovaSpace.md)
+        .padding(.bottom, CovaSpace.xl)   // §3：头区容器下内边距 spacing.xl
+        .background(
+            CovaSwashBackdrop(tint: swatchColor(artist), identity: swashIdentity(artist))
+        )
+    }
+
+    /// 主色：`artist.colorPalette` → 只认 `#RGB`/`#RRGGBB`（§7）；解不出 ⇒ `nil`
+    /// （铺底那侧回落 `color.surface`）。**不**在这里补"看起来像品牌色"的默认值。
+    private func swatchColor(_ artist: ArtistDto) -> Color? {
+        guard let swatch = ArtistSwash.swatch(fromPalette: artist.colorPalette) else { return nil }
+        return Color(red: swatch.red, green: swatch.green, blue: swatch.blue)
+    }
+
+    /// 交叉淡入的触发身份：艺人与那串调色板一起进键 —— 同一个人换了主色也要淡一次。
+    private func swashIdentity(_ artist: ArtistDto) -> String {
+        "\(artist.id)|\(artist.colorPalette ?? "-")"
     }
 
     private func stylePhrase(_ artist: ArtistDto) -> String? {
@@ -132,22 +154,7 @@ public struct ArtistHomeView: View {
         return decoded.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 
-    /// `colorPalette` 在真实响应里是 JSON 字符串（可能是数组也可能是单值）⇒
-    /// 只认 `#RGB` / `#RRGGBB`，其余一律视为"没有"，不去猜。
-    private func swash(_ raw: String?) -> Color {
-        guard let raw else { return CovaColor.line }
-        guard let hex = firstHexColor(in: raw) else { return CovaColor.line }
-        return Color(hexString: hex) ?? CovaColor.line
-    }
-
-    private func firstHexColor(in raw: String) -> String? {
-        let pattern = try? NSRegularExpression(pattern: "#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}")
-        let range = NSRange(raw.startIndex..<raw.endIndex, in: raw)
-        guard let match = pattern?.firstMatch(in: raw, range: range),
-              let swiftRange = Range(match.range, in: raw) else { return nil }
-        return String(raw[swiftRange])
-    }
-
+    /// F 主操作行。
     private var actionBar: some View {
         HStack(spacing: CovaSpace.md) {
             CovaButton("播放全部") {
@@ -285,24 +292,5 @@ enum ArtistHomeArtwork {
 
     static func cover(_ track: TrackDto) -> CovaArtworkResolution {
         CovaArtworkResolution(serverValue: track.cover)
-    }
-}
-
-extension Color {
-    /// 只接受 `#RGB` / `#RRGGBB`；其余返回 `nil`（调用方必须准备"没有颜色"的样子）。
-    init?(hexString: String) {
-        var raw = hexString
-        if raw.hasPrefix("#") { raw.removeFirst() }
-        guard raw.count == 3 || raw.count == 6 else { return nil }
-        if raw.count == 3 {
-            raw = raw.map { "\($0)\($0)" }.joined()
-        }
-        var value: UInt64 = 0
-        guard Scanner(string: raw).scanHexInt64(&value) else { return nil }
-        self.init(
-            red: Double((value & 0xFF0000) >> 16) / 255,
-            green: Double((value & 0x00FF00) >> 8) / 255,
-            blue: Double(value & 0x0000FF) / 255
-        )
     }
 }

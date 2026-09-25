@@ -2,7 +2,9 @@ import CovaCore
 import CovaUI
 import SwiftUI
 
-/// 首页（design 01）：推荐歌单 / 继续聆听 / 场景精选三段；匿名可读。
+/// 首页（design 01）：§2 会话输入卡 → §3 今日推荐大卡 → 推荐歌单轨道 → §4 场景精选 →
+/// 曲库精选行 → 继续聆听 → §5 你的创作 → §6 AI 音乐人。
+/// 公开段匿名可读；§5 那一格**单独**跟着登录态走（它要登录）。
 /// 加载=骨架、空=空态、失败=三分类错误态；**不伪造数据**。
 public struct HomeView: View {
     @Environment(AppSession.self) private var session
@@ -53,6 +55,7 @@ public struct HomeView: View {
                 content
                 recentlyPlayed
                 creationsSection
+                artistSection
             }
             .padding(.vertical, CovaSpace.lg)
         }
@@ -423,6 +426,37 @@ public struct HomeView: View {
         }
     }
 
+    /// AI 音乐人专栏（design 01 §6）：圆形头像 64pt 横滑 + 名字（caption / secondary）。
+    ///
+    /// **这一栏没有自己的请求**：§6 写的接口面是「`artistId` 筛选 tracks」，而契约里
+    /// 根本没有艺人端点（16 §7 的同一句裁决）⇒ 人设只从**这份已经取到的曲目**里内嵌的
+    /// `artist` 去重（`HomeArtistRail`）。所以它在 `.loading` / `.failed` 两档下**不出现**：
+    /// 那份数据还没到，而它没有任何独立的取数路径可标"骨架"或"错误"。
+    /// 点击落点是 16 的 `ArtistHomeView`（`.artist(id)` 路由）——
+    /// §6 原文那个「曲库预填 artistId」需要 `AppSession` 上一个跨屏筛选字段，
+    /// 本批**没有**动那个文件，需求点写在 `HomeArtistCell` 上方与本批报告里。
+    @ViewBuilder
+    private var artistSection: some View {
+        if case .ready(_, let tracks) = phase {
+            let artists = HomeArtistRail.artists(from: tracks)
+            if !artists.isEmpty {
+                VStack(alignment: .leading, spacing: CovaSpace.xs) {
+                    CovaSectionHeader("AI 音乐人")
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(alignment: .top, spacing: CovaSpace.md) {
+                            ForEach(artists, id: \.id) { artist in
+                                HomeArtistCell(artist: artist) {
+                                    session.path.append(.artist(artist.id))
+                                }
+                            }
+                        }
+                        .padding(.horizontal, CovaSpace.pageGutter)
+                    }
+                }
+            }
+        }
+    }
+
     /// 继续聆听（design 01）：本机真的响过的曲目。点一行 = **回读**曲目再播
     /// （本地账里刻意不存音频地址：它可能带签名，硬边界 3）。
     @ViewBuilder
@@ -468,7 +502,12 @@ public struct HomeView: View {
         phase = .loading
         do {
             async let playlists = catalog.featuredPlaylists()
-            async let page = catalog.tracks(pageSize: 8)
+            // 一枪取 60 首而不是 8 首，唯一的理由是 §6：那一栏**没有自己的端点**
+            // （契约里只有 `tracks` 的 `artistId` 筛选），内容源只能是这份列表里内嵌的 `artist`。
+            // 2026-09-25 只读实测：pageSize=60 ⇒ 60 行 / **11 位**不同音乐人（193KB、≈1.3s）；
+            // 100 行才见得到 13 位（323KB、≈1.9s）⇒ 首屏不为多两位付一倍的量。
+            // 上限由 `HomeArtistRail.limit`（15 = A01–A15）守着，视图侧不再截一次。
+            async let page = catalog.tracks(pageSize: 60)
             phase = .ready(playlists: try await playlists, tracks: try await page.tracks)
         } catch {
             phase = .failed(CatalogService.classify(error))
@@ -617,17 +656,63 @@ struct CreationCard: View {
     }
 }
 
+// MARK: - 01 §6 AI 音乐人栏的一格
+
+/// §6：圆形头像 64pt + 名字（caption / secondary）。
+///
+/// §6 原文的第二半句是「点击进音乐人曲目列表（**曲库页预填 artistId 筛选**）」——
+/// 那需要 `AppSession` 上多一个跨屏字段（进 03 时带着艺人名去筛），而 03 的筛选状态
+/// 今天整个在 `LibraryView`/`AppSession` 里（本批不许改）⇒ 落点先取 16 的
+/// `ArtistHomeView`（16 §待裁决 1 建议的就是这一条，且它已经是仓库里存在的路由）。
+/// 需要协调者接的那一根线，名字写在报告里。
+public struct HomeArtistCell: View {
+    /// §6 的头像档。
+    static let side = CGFloat(HomeArtistRail.avatarDiameter)
+    /// 名字行的宽度档：spec 没给 ⇒ 取"比头像宽一点、让这一格仍是一根柱子"的 76pt。
+    /// 不给上限的话，长名字会把整条横滑栏撑成一段散文。
+    static let nameWidth: CGFloat = 76
+
+    private let artist: ArtistDto
+    private let action: () -> Void
+
+    public init(artist: ArtistDto, action: @escaping () -> Void) {
+        self.artist = artist
+        self.action = action
+    }
+
+    public var body: some View {
+        Button(action: action) {
+            VStack(spacing: CovaSpace.xs) {
+                CovaArtwork(resolution: HomeArtwork.artistAvatar(artist), title: name)
+                    .frame(width: Self.side, height: Self.side)
+                    .clipShape(Circle())
+                    .accessibilityLabel("\(name) 的头像")
+                Text(name)
+                    .font(CovaType.caption).foregroundStyle(CovaColor.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .frame(width: Self.nameWidth)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 名字优先级与 16 §3.C 同一条：`nameCn ?? name`（两个都空的行已在去重那一步被丢掉）。
+    private var name: String { HomeArtistRail.displayName(artist) ?? artist.name }
+}
+
 // MARK: - 美术腿（R18-2）
 
-/// 01 屏的三条封面腿：场景精选 `track.cover`、继续聆听 `recent.coverURLString`、
-/// 推荐歌单 `playlist.cover`/`coverUrl`。
+/// 01 屏的四条封面腿：场景精选/曲目行 `track.cover`、继续聆听 `recent.coverURLString`、
+/// 推荐歌单 `playlist.cover`/`coverUrl`、§6 头像 `track.artist.avatar`。
 ///
 /// 判据一律在 `CovaArtworkResolution`（CovaUI 唯一裁决面）：本屏只回答「哪个字段进哪个槽」。
 /// 线上事实（2026-09-25 只读核对，见 D23 名单补充）：`GET /api/tracks` 内嵌的 `artist.avatar`
 /// 是**站内相对**（20 行里 11 行相对 / 9 行没有），`GET /api/user-playlists` 的 `coverUrl` /
 /// `imageUrl` 是**站内相对 + 带查询串** —— 相对串没有 scheme，直接 `URL(string:)` 交给
 /// `CovaArtworkCache.fetch` 就是出口判定为假 ⇒ 一次请求都不发、只剩占位（R16-1 同族）。
-/// 三条腿因此一律先裁决再交图。
+/// 四条腿因此一律先裁决再交图。
 enum HomeArtwork {
     static func cover(_ track: TrackDto) -> CovaArtworkResolution {
         CovaArtworkResolution(serverValue: track.cover)
@@ -643,5 +728,13 @@ enum HomeArtwork {
     /// 歌单图有两个候选字段：`cover` 与 `coverUrl`（先到的**非空**值赢）。
     static func playlistCover(_ playlist: PlaylistDto) -> CovaArtworkResolution {
         CovaArtworkResolution(serverValues: [playlist.cover, playlist.coverUrl])
+    }
+
+    /// §6 那一栏的头像腿。这一条**必须**先裁决再交图，理由比歌单那条还硬：
+    /// 2026-09-25 只读核对 `/api/tracks?page=1&pageSize=60` —— 内嵌 `artist.avatar` 有值的
+    /// 38 行里 **38 行都是站内相对路径**（一条绝对地址都没有），
+    /// 直接 `URL(string:)` 就是"一次请求都不发、只剩占位"（R18-2 同族）的正中形状。
+    static func artistAvatar(_ artist: ArtistDto) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValue: artist.avatar)
     }
 }
