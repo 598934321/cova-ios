@@ -56,7 +56,6 @@ public struct AISessionsView: View {
     @Environment(AppSession.self) private var session
     @State private var phase: Phase = .loading
     @State private var sessions: [StudioSessionDto] = []
-    @State private var inFlightTitles: Set<String> = []
 
     private enum Phase: Equatable { case loading, ready, failed(CatalogFailure) }
 
@@ -113,7 +112,13 @@ public struct AISessionsView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(sessions) { item in
+                        // §3.C 行间分隔：`color.lineSubtle` 1pt（TG-04），**首行不加**。
+                        ForEach(Array(sessions.enumerated()), id: \.element.id) { index, item in
+                            if index > 0 {
+                                Rectangle()
+                                    .fill(CovaColor.lineSubtle)
+                                    .frame(height: SessionRowMetrics.separatorHeight)
+                            }
                             row(item)
                         }
                         Text("已显示全部")
@@ -127,22 +132,38 @@ public struct AISessionsView: View {
     }
 
     private func row(_ item: StudioSessionDto) -> some View {
-        CovaListRow(
-            title: item.displayTitle,
-            subtitle: item.displaySummary,
-            artwork: CovaArtwork(url: nil, title: item.displayTitle)
-        ) {
-            if inFlightTitles.contains(item.id) {
-                HStack(spacing: CovaSpace.xs) {
-                    ProgressView().controlSize(.mini)
-                    Text("生成中").font(CovaType.caption).foregroundStyle(CovaColor.secondary)
+        let ring = liveRing(for: item)
+        return SessionRow(item: item, ring: ring, trailing: {
+            HStack(spacing: CovaSpace.xs) {
+                // §3.C「进度环在 ⋯ 左」；而 ⋯ 菜单在删除/重命名端点未文档化期间**整项不渲染**
+                // （§7 + 待裁决 4）⇒ 状态区今天只有环。行尾那枚 chevron 是「整行可点」的提示，
+                // 不是一枚控件，也不进 VoiceOver 元素序列（整行只有一个元素，§6）。
+                if StudioSessionProgressRing.showsInProgressBar(of: ring) {
+                    SessionProgressRing(ring: ring)
                 }
-            } else {
                 Image(systemName: "chevron.right").foregroundStyle(CovaColor.muted)
             }
-        } action: {
+        }, action: {
             session.path.append(.aiSession(item.id))
-        }
+        })
+    }
+
+    /// 08 §数据源行 140 只承认**一个**进行中来源：本设备内存里未终态的 job（由 09 的发起者持有）。
+    ///
+    /// 本仓今天**没有**这样一份按会话号索引的内存账：
+    /// · `AppSession.studioCoordinator` 是**单个**协调器（一次发送一个），且它的 `sessionId`
+    ///   是私有的（`OneStepStream.swift:254`）⇒ 从本屏读不到"是哪一路会话在跑"；
+    /// · 09 一离屏就 `onDisappear { await session.cancelStudioStream() }`（`AISessionDetailView.swift:68`）
+    ///   ⇒ 回到本屏时那条流必然已终态，连"有没有在跑"都读不到。
+    ///
+    /// 于是这里**不猜、也不另建一份账**（那是第二个事实源，比空环更糟）：全部行按 `.idle` 画
+    /// ⇒ 环、2pt 竖条、「生成中」三者都不出现，冷启动同形且不报错（§9 判据第 3 条）。
+    ///
+    /// 接线后的形状（本批**没有** `AppSession` 的改动权限，需求点给协调者）：
+    /// `StudioSessionProgressRing.ring(hasLiveJob: progress != nil, progress: progress)`
+    /// 其中 `progress = session.liveStudioJobs[item.id]`（会话号 → 内存里的未终态进度，可为 `nil`）。
+    private func liveRing(for item: StudioSessionDto) -> StudioSessionRing {
+        StudioSessionProgressRing.ring(hasLiveJob: false, progress: nil)
     }
 
     /// 建会话再进详情；失败点名 NEEDS-23（会话条目 schema 未文档化）。
@@ -175,6 +196,217 @@ public struct AISessionsView: View {
         } catch {
             phase = .failed(StudioService.classify(error))
         }
+    }
+}
+
+// MARK: - 08 §3.C 会话行（SessionRow）
+
+/// 会话行的几何档（08 §3.C + §6 + §8）。**每个数都点名 spec 或 token 缺口**，
+/// 因为 §9 的判据就是「抽查进度环线宽、行内边距、胶囊高度」——抽查要能在源码里找到出处。
+enum SessionRowMetrics {
+    /// §3.C：封面 48 方；§6 的 AX 档收至 `spacing.xxl`+`spacing.lg` = 48 ⇒ **同一档**，不两值。
+    static let coverSide: CGFloat = 48
+    /// §3.C / TG-19：行最小高 64。
+    static let minRowHeight: CGFloat = 64
+    /// §3.C / TG-18：进度环直径 20。
+    static let ringDiameter: CGFloat = 20
+    /// §3.C / TG-04：进度环线宽 2。
+    static let ringLineWidth: CGFloat = 2
+    /// §3.C / §5 / components §7：进行中行的左缘竖条 2pt（与抽屉选中指示条同规格）。
+    static let inProgressStripWidth: CGFloat = 2
+    /// §3.C / TG-04：行间分隔 1pt。
+    static let separatorHeight: CGFloat = 1
+    /// §4：Reduce Motion 下那条不确定条的高。
+    static let fallbackBarHeight: CGFloat = 2
+    /// 无定值时环上那段可见弧的比例。**不是进度读数** —— 这一档就是「没有可报的百分比」，
+    /// 弧只是让「环在转」这件事看得见（§3.C 环内不放百分数）。
+    static let indeterminateSweep: CGFloat = 0.25
+    /// 一圈 / 一次扫动的时长：tokens 里**没有**「无限旋转周期」与「一次性进度条时长」两档
+    /// （08 的 Token 缺口表也没给），故取已有的最长一档 `motion.duration.hero` = 700ms，
+    /// 而不是新造一个数。
+    static let sweepDuration: Double = 0.7
+}
+
+/// 08 §3.C 的会话行，12c §3.D **完全复用**同一份几何（差异只有尾饰与左滑）。
+///
+/// 为什么不走 `CovaListRow`：那一支是通用曲目行几何 —— 封面 44 + `radius.control − 4` +
+/// 标题 `type.body` + 两行文本，而 §3.C 要的是 48 + `radius.control` + `type.headline`
+/// + **第三条时间线** + 最小高 64 + 2pt 进行中竖条。CovaUI 不在本批可改面内，
+/// 所以几何先落在屏侧（要不要抬进 `CovaListRow` 由协调者裁决，别在这里替它决定）。
+struct SessionRow<Trailing: View>: View {
+    private let item: StudioSessionDto
+    private let ring: StudioSessionRing
+    @ViewBuilder private let trailing: Trailing
+    private let action: () -> Void
+    /// §6 Dynamic Type：AX 档下摘要 1→2 行、时间移到标题行右端。
+    @Environment(\.covaAXLayout) private var axLayout
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(
+        item: StudioSessionDto,
+        ring: StudioSessionRing,
+        trailing: () -> Trailing,
+        action: @escaping () -> Void
+    ) {
+        self.item = item
+        self.ring = ring
+        self.trailing = trailing()
+        self.action = action
+    }
+
+    private var relativeTime: String? {
+        // §数据源行 138：时间拿不到 ⇒ **整条不渲染**（不显示「—」噪声）。
+        StudioRelativeTime.text(item.updatedAt ?? item.createdAt, now: Date(), calendar: .current)
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .center, spacing: CovaSpace.md) {
+                SessionCoverSlot()
+                VStack(alignment: .leading, spacing: CovaSpace.xs) {
+                    // §6：AX 档把时间搬到标题行右端，避免「标题/摘要/时间」三块同时长高。
+                    if axLayout {
+                        HStack(alignment: .firstTextBaseline, spacing: CovaSpace.sm) {
+                            title
+                            Spacer(minLength: CovaSpace.xs)
+                            if let time = relativeTime { timeText(time) }
+                        }
+                    } else {
+                        title
+                    }
+                    if let summary = item.displaySummary {
+                        Text(summary)
+                            .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                            .lineLimit(axLayout ? 2 : 1)   // §8 / TG-17
+                    }
+                    if !axLayout, let time = relativeTime { timeText(time) }
+                    // §4：Reduce Motion 时不确定环退化为静态环 **+ 一条一次性 2pt 高的不确定条**。
+                    if StudioSessionProgressRing.showsIndeterminateFallbackBar(of: ring, reduceMotion: reduceMotion) {
+                        OneShotIndeterminateBar().frame(maxWidth: .infinity)
+                    }
+                }
+                Spacer(minLength: CovaSpace.sm)
+                trailing
+            }
+            .padding(.horizontal, CovaSpace.pageGutter)
+            .padding(.vertical, CovaSpace.md)
+            .frame(minHeight: SessionRowMetrics.minRowHeight, alignment: .leading)
+            .contentShape(Rectangle())
+            // §3.C / §5：进行中行的左缘 2pt `color.accent` 竖条（与环同判据、同色值，双主题同值）；
+            // **不**用底色高亮 —— 底色留给「当前所在会话」的一次性高亮，那个信号要 09 回传，本批没有来源。
+            .overlay(alignment: .leading) {
+                if StudioSessionProgressRing.showsInProgressBar(of: ring) {
+                    Rectangle()
+                        .fill(CovaColor.accent)
+                        .frame(width: SessionRowMetrics.inProgressStripWidth)
+                        .frame(maxHeight: .infinity)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        // §6：**整行一个可聚焦元素**，复合标签「<标题>，<摘要>，<相对时间>，生成中，约 68%」；
+        // 环与竖条都不单独占焦点（旋转动画上重复播报是 §6 行 117 明令要避免的）。
+        .accessibilityLabel(
+            StudioSessionProgressRing.rowVoiceOverLabel(
+                title: item.displayTitle,
+                summary: item.displaySummary,
+                relativeTime: relativeTime,
+                ring: ring
+            )
+        )
+    }
+
+    private var title: some View {
+        Text(item.displayTitle)
+            .font(CovaType.headline).foregroundStyle(CovaColor.fg)
+            .lineLimit(axLayout ? 2 : 1)   // §3.C 标题 1 行；TG-17 的 AX 档给 2 行
+    }
+
+    private func timeText(_ time: String) -> some View {
+        Text(time).font(CovaType.caption).foregroundStyle(CovaColor.muted)
+    }
+}
+
+/// §3.C 的 48 方封面槽。**当前恒为符号占位**，这一句是实话而不是保守：
+/// 会话列表载荷里没有封面字段（`StudioSessionCover.hasCoverFieldInListPayload == false`，
+/// `StudioSessionDTOs.swift` 里 `cover/coverUrl/imageUrl/thumbnail` 零命中），
+/// 而 §数据源行 140 明令**不得**为封面逐行发详情请求（N+1）。
+/// 线上其实给的是 `firstCoverUrl`（web `src/lib/find-my-song/session.ts` 的 `listOwnedSessions`），
+/// 但那一格**没进 DTO** ⇒ 本屏不读它、也不画一张不存在的图。DTO 补上后这里换成
+/// `CovaArtwork(resolution: CovaArtworkResolution(serverValue: …))`，占位分支保留。
+struct SessionCoverSlot: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: CovaRadius.control, style: .continuous)
+                .fill(CovaColor.surface)
+            Image(systemName: StudioSessionCover.placeholderSymbol)
+                .foregroundStyle(CovaColor.accentText)
+        }
+        .frame(width: SessionRowMetrics.coverSide, height: SessionRowMetrics.coverSide)
+        // §6：整行单元素 ⇒ 封面不单独占焦点（标题已经在行标签里）。
+        .accessibilityHidden(true)
+    }
+}
+
+/// §3.C 的 20pt 进度环：轨道 `color.line`、进度 `color.accent`、线宽 2（TG-04）。
+/// 环内**不放百分数**（空间不足，§3.C），百分比只进行标签（§6）。
+struct SessionProgressRing: View {
+    private let ring: StudioSessionRing
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var turning = false
+
+    init(ring: StudioSessionRing) { self.ring = ring }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(CovaColor.line, lineWidth: SessionRowMetrics.ringLineWidth)
+            Circle()
+                .trim(from: 0, to: StudioSessionProgressRing.arcFraction(of: ring) ?? SessionRowMetrics.indeterminateSweep)
+                .stroke(
+                    CovaColor.accent,
+                    style: StrokeStyle(lineWidth: SessionRowMetrics.ringLineWidth, lineCap: .round)
+                )
+                .rotationEffect(.degrees(turning ? 360 : 0))
+        }
+        .frame(
+            width: SessionRowMetrics.ringDiameter,
+            height: SessionRowMetrics.ringDiameter
+        )
+        // §6 行 117：环**不设独立可聚焦元素**，数值并进行标签。
+        .accessibilityHidden(true)
+        .onAppear {
+            guard StudioSessionProgressRing.spins(of: ring, reduceMotion: reduceMotion) else { return }
+            // §4：Reduce Motion 下不转（静态环 + 不确定条那一档由行负责）。
+            withAnimation(.linear(duration: SessionRowMetrics.sweepDuration).repeatForever(autoreverses: false)) {
+                turning = true
+            }
+        }
+    }
+}
+
+/// §4 行 101：Reduce Motion 时替代旋转环的那条**一次性** 2pt 高不确定进度条。
+/// 「一次性」是硬要求：`repeatForever` 在这一档就是违规。
+struct OneShotIndeterminateBar: View {
+    @State private var swept = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            let segment = max(8, proxy.size.width / 3)
+            ZStack(alignment: .leading) {
+                Capsule().fill(CovaColor.line)
+                Capsule()
+                    .fill(CovaColor.accent)
+                    .frame(width: segment)
+                    .offset(x: swept ? max(0, proxy.size.width - segment) : 0)
+            }
+        }
+        .frame(height: SessionRowMetrics.fallbackBarHeight)
+        .onAppear {
+            withAnimation(.easeOut(duration: SessionRowMetrics.sweepDuration)) { swept = true }
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -216,13 +448,18 @@ public struct MyCreationsView: View {
                         )
                     } else {
                         VStack(spacing: 0) {
-                            ForEach(sessions.prefix(3)) { item in
-                                // 12c 的三行是**只读**：没有 ⋯、没有左滑、没有进度环。
-                                CovaListRow(
-                                    title: item.displayTitle,
-                                    subtitle: item.displaySummary,
-                                    artwork: CovaArtwork(url: nil, title: item.displayTitle)
-                                ) { EmptyView() } action: {
+                            ForEach(Array(sessions.prefix(3).enumerated()), id: \.element.id) { index, item in
+                                // §3.D 连分隔线一起复用：1pt `color.lineSubtle`，首行不加。
+                                if index > 0 {
+                                    Rectangle()
+                                        .fill(CovaColor.lineSubtle)
+                                        .frame(height: SessionRowMetrics.separatorHeight)
+                                }
+                                // 12c §3.D：**完全复用** 08 §3.C 的行（48 封面、相对时间、最小高 64、
+                                // 1pt 分隔），差异只有「不渲染 ⋯ 与左滑」⇒ 尾饰给空。
+                                // 环同样是 `.idle`：12c 与本屏共用数据源，也共用同一个
+                                // 「没有按会话号索引的内存账」这一事实（见 `liveRing(for:)`）。
+                                SessionRow(item: item, ring: .idle, trailing: { EmptyView() }) {
                                     session.path.append(.aiSession(item.id))
                                 }
                             }
