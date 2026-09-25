@@ -120,6 +120,7 @@ public struct LibraryView: View {
         .task {
             consumeLibraryPreset()
             await loadTaxonomy()
+            applyPreviewFilter()
             await reload()
         }
         .sheet(item: $panel) { presented in
@@ -415,6 +416,27 @@ public struct LibraryView: View {
         presetArtistID = preset.artistID
         presetArtistLabel = preset.artistLabel
         selection.merge(preset.dimensions)
+    }
+
+    /// 走查钩子 6（**只为模拟器逐屏截图存在**，与 `COVA_PREVIEW_ROUTE/SHEET/DRAWER` 同一性质）：
+    /// `COVA_PREVIEW_FILTER=<维度>:<值>[;<维度>:<值>…]` 在词表到位后把已选装进选择态，
+    /// 再配 `COVA_PREVIEW_SHEET=filter` 直接展开 §2 的「+」全维度面板。
+    /// 为什么必须有它：`simctl` 不提供点击（引入 idb/appium 会破零依赖白名单），没有它这两格
+    /// 就永远进不了验收截图集合 ⇒ 03 的核心体验只能停在"编译过"。生产不设这两个键时代码完全不存在；
+    /// 值走 `selection.merge` 的同一条腿（未知维度/值按生产口径被丢掉，不假装生效）。
+    private func applyPreviewFilter() {
+        let env = ProcessInfo.processInfo.environment
+        if env["COVA_PREVIEW_SHEET"] == "filter" { panel = .moreDimensions }
+        guard let raw = env["COVA_PREVIEW_FILTER"], !raw.isEmpty else { return }
+        var grouped: [String: [String]] = [:]
+        for pair in raw.split(separator: ";") {
+            guard let colon = pair.firstIndex(of: ":") else { continue }
+            let name = String(pair[pair.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
+            let value = String(pair[pair.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty, !value.isEmpty else { continue }
+            grouped[name, default: []].append(value)
+        }
+        selection.merge(grouped)
     }
 
     private func loadTaxonomy() async {
