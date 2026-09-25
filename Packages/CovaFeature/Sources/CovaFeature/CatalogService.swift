@@ -57,6 +57,19 @@ public struct CatalogService: Sendable {
         return try await client.get("/api/tracks", queryItems: request.queryItems)
     }
 
+    /// 曲库列表的**跨维度**那条腿：查询编码由调用方交进来（唯一作者
+    /// `LibraryFilterSelection.queryItems(search:sort:artistID:page:pageSize:)`），
+    /// 本方法只负责发到哪个端点、以及把响应解成 `TrackPageDto`。
+    ///
+    /// 为什么上面那条 `tracks(dimension:term:terms:)` 不够用（03 审计的那一条）：它是 E3a 的
+    /// **单维**形态 —— 一个 `dimension` 配这一维的多个值。而 03 §1 的「咖啡馆 ✕ 平静 ✕」
+    /// 是场景 + 情绪两维同时生效，走它只会把第一维发出去，剩下的 chips 就成了
+    /// "画着但没发出去"的谎。**参数名一个都不在这里发明**：`page` / `pageSize` / `search` /
+    /// `sort` / `artistId` / 维度名即参数名，全部由那条编码函数带着（E3a 的实测口径与用例在那边）。
+    public func tracks(queryItems: [URLQueryItem]) async throws -> TrackPageDto {
+        try await client.get("/api/tracks", queryItems: queryItems)
+    }
+
     public func trackDetail(_ id: String) async throws -> TrackDetailDto {
         try await client.get("/api/tracks/\(id)")
     }

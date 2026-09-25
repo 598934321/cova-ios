@@ -424,15 +424,13 @@ public struct LibraryView: View {
 
     /// 03 §2 的取数腿：**跨维度**多选（场景 AND 情绪 AND 风格…）。
     ///
-    /// 为什么不走 `catalog.tracks(dimension:term:terms:)`：那条腿只能带**一个**维度（E3a 的
-    /// 形态），而 §1 的「已选：咖啡馆 ✕ 平静 ✕」是场景 + 情绪两维同时生效 —— 走它会让第二个
-    /// 维度的 chips 变成屏上的谎（画着但没发出去）。本批的文件边界不允许改 `CatalogService`，
-    /// 所以这里按同一份实测编码（`LibraryFilterSelection.queryItems`）直连一次：路径、
-    /// 分页两键、`search` 键名与 `CatalogService.tracks` 逐字相同，失败分类也复用它。
-    /// 交给协调者的接线：把它折进 `CatalogService.tracks(query:page:pageSize:)` 后删掉本函数。
+    /// 不走 `catalog.tracks(dimension:term:terms:)`：那条腿只能带**一个**维度（E3a 的形态），
+    /// 而 §1 的「已选：咖啡馆 ✕ 平静 ✕」是场景 + 情绪两维同时生效 —— 走它会让第二个维度的
+    /// chips 变成屏上的谎（画着但没发出去）。跨维度这一条现在归服务层
+    /// （`CatalogService.tracks(queryItems:)`）：路径与响应类型在那边，
+    /// 参数编码在 `LibraryFilterSelection.queryItems` 那边，本屏只把两件事接起来。
     private func requestTracks(page: Int) async throws -> TrackPageDto {
-        try await session.client.get(
-            "/api/tracks",
+        try await catalog.tracks(
             queryItems: selection.queryItems(
                 search: query, sort: sort, artistID: presetArtistID, page: page
             )
