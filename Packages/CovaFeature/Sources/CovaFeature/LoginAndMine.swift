@@ -316,7 +316,7 @@ public struct MineView: View {
             CovaCard {
                 VStack(spacing: CovaSpace.md) {
                     Text("未登录").font(CovaType.headline).foregroundStyle(CovaColor.fg)
-                    Text("登录后可收藏、下载与上报播放。").font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                    Text("登录后可收藏与播放完整曲目。").font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                     CovaButton("去登录") { session.loginPresented = true }
                 }
             }
