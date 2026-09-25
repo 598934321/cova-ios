@@ -45,7 +45,16 @@ public final class AppSession {
 
     public private(set) var authPhase: AuthPhase = .restoring
     public var tab: Tab = .home
+    /// 04 抽屉的开关。**只有两处置真**：顶栏字标钮（`openDrawer(from:)`）与走查键
+    /// `COVA_PREVIEW_DRAWER`（`CovaRootView`）—— 后者没有触发者，所以它打开的抽屉不归还焦点。
     public var drawerOpen = false
+    /// 04 §1 入口① 的位置：抽屉是**从哪一枚顶栏字标钮**打开的。
+    /// 04 §6 后半句「关闭时归还给触发它的 logo 按钮」只有真的存在触发者才谈得上，
+    /// 所以这一本账必须记在会话层（触发钮在 01/03 的 toolbar 里，抽屉在根视图的 overlay 里，
+    /// 两者不在同一棵视图树上，关闭那一刻谁该接焦点没法由抽屉自己推断）。
+    public enum DrawerOpener: String, Equatable, Sendable { case home, library }
+    /// 最近一次由字标钮打开抽屉的那一枚；走查键打开的恒为 nil（于是关闭时不假装归还）。
+    public private(set) var drawerOpener: DrawerOpener?
     public var playerSheetOpen = false
     public var loginPresented = false
     public var toast: (message: String, isError: Bool)?
@@ -402,6 +411,14 @@ public final class AppSession {
         if case .signedIn = authPhase { return true }
         loginPresented = true
         return false
+    }
+
+    /// 04 §1 入口①：顶栏字标钮开抽屉。记下是谁开的，关闭时才知道该把 VoiceOver 焦点还给谁。
+    /// 关闭不在此处（04 §1「关闭 = 回到打开前的屏」，且关闭点分散在遮罩/✕/选中项/先逛逛四处），
+    /// 归还由 `DrawerTrigger` 自己观察 `drawerOpen` 的那次回落完成。
+    public func openDrawer(from opener: DrawerOpener) {
+        drawerOpener = opener
+        drawerOpen = true
     }
 
     // MARK: 播放意图（UI 唯一入口）

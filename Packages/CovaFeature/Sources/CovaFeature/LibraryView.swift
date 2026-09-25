@@ -28,6 +28,15 @@ public struct LibraryView: View {
             list
         }
         .covaPage()
+        // 04 §1 入口①：曲库是**顶层屏**，按 04 的口径这一屏的顶栏左上就是抽屉入口。
+        // 03 §1 的导航条画的是 `[←] 曲库 [搜索]`（Tab 根屏的 `←` 在本 App 里没有对应动作，
+        // 搜索栏则已在 §3 以页面内常驻的形式实现）⇒ 左上这个空位给触发钮，不与 03 的既有元素抢位。
+        // 03 的整条玻璃导航条（标题 + 右上搜索钮）仍是未实现项，这枚钮不替它充数。
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                DrawerTrigger(opener: .library)
+            }
+        }
         .task { await loadTaxonomy(); await reload() }
     }
 

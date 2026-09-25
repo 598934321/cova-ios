@@ -11,13 +11,13 @@ public struct CovaRootView: View {
     /// 放到某个元素上的是 `AccessibilityFocusState`（iOS 17+）。走查时 VoiceOver 关着 ⇒
     /// 它是无害的空操作；开着 ⇒ 进抽屉的第一下读到的就是「首页，标签页」。
     ///
-    /// **§6 后半句「关闭时归还给触发它的 logo 按钮」做不到，这里不假装做了**：
-    /// 那个触发钮在 01/03 各自顶栏的 `toolbar` 里（`HomeView.swift` / `LibraryView.swift`），
-    /// 而本 App 目前**没有任何应用内打开抽屉的入口** —— `drawerOpen` 只有一个置真点，
-    /// 就是 `COVA_PREVIEW_DRAWER` 走查钩子。归还目标不在这份代码可达的视图树里，
-    /// 所以关闭时只把焦点绑定**释放**（`onDisappear`，见 `drawerPanel`），让 VoiceOver 回到
-    /// 底层屏而不是停在一个已消失的元素上。待顶栏 logo 触发钮落地：由它持有第二个
-    /// `accessibilityFocused` 绑定，并在 `AppSession` 上带一个「该归还了」的开关。
+    /// §6 后半句「关闭时归还给触发它的 logo 按钮」的另一半在 `DrawerTrigger`（01/03 顶栏各一枚）：
+    /// 那两枚按钮自己持有 `@AccessibilityFocusState`，观察 `session.drawerOpen` 回落为假、
+    /// 且 `session.drawerOpener` 正是自己时把焦点接回去。本文件只负责**释放**抽屉侧的绑定
+    /// （`onDisappear`，见 `drawerPanel`），不让它停在一个已经消失的元素上。
+    /// 两处归还不到，也不在这里假装做到了：① 走查键 `COVA_PREVIEW_DRAWER` 打开的抽屉没有触发者
+    /// （`drawerOpener` 恒 nil）；② 关闭时若底层已被 06/07/09 这类 push 屏盖住，触发钮不在朗读树里，
+    /// 焦点请求无处落地。这两种情形下 VoiceOver 留在原地，不假装"回到了 logo"。
     @AccessibilityFocusState private var drawerEntryFocused: Bool
     private let themeMode: CovaThemeMode
 
@@ -67,8 +67,9 @@ public struct CovaRootView: View {
     }
 
     /// 走查钩子 4（同一性质）：`COVA_PREVIEW_DRAWER=1` 启动即展开抽屉。
-    /// 04 抽屉没有 Tab 入口、只能点按钮到达，而 `simctl` 不提供点击（引入 idb/appium 会破零依赖）
-    /// ⇒ 没有这个键，04 就永远进不了逐屏走查的截图集合。
+    /// 04 §1 入口①（顶栏字标钮）现在**真的存在**了，但这个键仍然保留、且不许用"只能点到达"的
+    /// 代码路径替换它：`simctl` 不提供点击（引入 idb/appium 会破零依赖）⇒ 没有这个键，
+    /// 04 就进不了逐屏走查的截图集合。它打开的抽屉没有触发者 ⇒ 关闭时不做焦点归还（见 `DrawerTrigger`）。
     private static func previewDrawer() -> Bool {
         (ProcessInfo.processInfo.environment["COVA_PREVIEW_DRAWER"]
             ?? UserDefaults.standard.string(forKey: "COVA_PREVIEW_DRAWER")) == "1"
@@ -123,6 +124,8 @@ public struct CovaRootView: View {
             default: break
             }
             if let route = Self.previewRoute() { session.path.append(route) }
+            // 这里是**直接置 `drawerOpen`** 而不是走 `openDrawer(from:)`：走查键没有触发者，
+            // 于是关闭时不做焦点归还（04 §6 后半句只对真触发钮成立）。
             if Self.previewDrawer() { session.drawerOpen = true }
             if let trackID = Self.previewTrackID() { session.detailTrackID = trackID }
         }
@@ -429,7 +432,7 @@ public struct LoginGate: View {
     }
 }
 
-// MARK: - 04 抽屉的施工件（分组项 / 行 / G 区卡片）
+// MARK: - 04 抽屉的施工件（顶栏触发钮 / 分组项 / 行 / G 区卡片）
 
 /// 抽屉里反复出现、但 `design/tokens.json` **还没有档位**的几何值。
 /// 集中成命名常量而不是在十几处散落字面量：缺口裁决落 token 时只改这一处。
@@ -445,6 +448,47 @@ private enum DrawerMetrics {
     static let hairline: CGFloat = 1
     /// 主按钮高 50（§4「登录」主钮；TG-07 按钮高度档未入库）。
     static let primaryControlHeight: CGFloat = 50
+}
+
+/// 04 §1 入口①：顶层屏顶栏左上的**字标钮**（01 `HomeView` / 03 `LibraryView` 各一枚，
+/// `placement: .topBarLeading`）。抽屉在根视图的 overlay 里、触发钮在各屏的 toolbar 里，
+/// 两者不在同一棵视图树上，所以"是谁开的"记在 `AppSession.drawerOpener`（见该处注释）。
+///
+/// **为什么不画 logo 图**：`design/assets/CovaAssets.xcassets` 里只有 `AppIcon`，没有 01 §1
+/// 顶栏那枚 28pt 品牌 logo 的 image set（TG-02 也未裁决）⇒ 拿 SF Symbol 冒充官方资产是
+/// design/README 的红线（04 §3.A 抽屉顶栏同一处已经按这条不画）。所以这一枚与抽屉顶栏用
+/// **同一个字标**：`CovaType.headline` / `CovaColor.fg`（04 §3.A 字标规格），logo 资产到位后
+/// 只换 `label` 里这一段，热区与归还逻辑不动。
+///
+/// 04 §6 后半句的归还：只有 `session.drawerOpener == opener` 的那一枚在抽屉关闭时把
+/// VoiceOver 焦点接回自己 —— 走查键打开的抽屉（`drawerOpener` 恒 nil）不归还，
+/// 因为那一回确实没有触发者，假装归还就是对着验收谎报做了做不到的事。
+struct DrawerTrigger: View {
+    @Environment(AppSession.self) private var session
+    @AccessibilityFocusState private var focused: Bool
+    private let opener: AppSession.DrawerOpener
+
+    init(opener: AppSession.DrawerOpener) { self.opener = opener }
+
+    var body: some View {
+        Button { session.openDrawer(from: opener) } label: {
+            Text("Cova")
+                .font(CovaType.headline)
+                .foregroundStyle(CovaColor.fg)
+                // 04 §3.A / TG-03：字标的显示宽度不当事务热区 ⇒ 触控区 ≥44×44。
+                .frame(
+                    minWidth: DrawerMetrics.touchMin, minHeight: DrawerMetrics.touchMin
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("打开导航抽屉")
+        .accessibilityFocused($focused)
+        .onChange(of: session.drawerOpen) { _, open in
+            guard !open, session.drawerOpener == opener else { return }
+            focused = true
+        }
+    }
 }
 
 /// 抽屉的一条导航项。文案取自 04 §8 的固定清单（禁改），分组与目的地取自 §1/§2。

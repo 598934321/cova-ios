@@ -37,6 +37,14 @@ public struct HomeView: View {
             .padding(.vertical, CovaSpace.lg)
         }
         .covaPage()
+        // 04 §1 入口①：顶层屏顶栏左上的字标钮（01 §1 顶栏那一行的 logo 位）。
+        // 01 顶栏的其余部分（玻璃材质、右侧 32pt 头像位）本轮**没有**一并施工 —— 那是另一条
+        // 未实现项，不在"抽屉不可达"这一刀的范围内；这里只把入口接上，不留一个假装的顶栏。
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                DrawerTrigger(opener: .home)
+            }
+        }
         .task { await load() }
         .refreshable { await load() }
     }
