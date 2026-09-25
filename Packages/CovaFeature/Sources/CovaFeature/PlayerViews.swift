@@ -83,7 +83,9 @@ public struct PlayerView: View {
 
     public var body: some View {
         let snap = session.snapshot
-        VStack(spacing: CovaSpace.xl) {
+        // D24 构图：主栈 24→16。封面/波形/传输/面板原来各段之间都是 `xl`，配合大字号把一屏
+        // 切成三段式堆叠；紧凑档下靠留白**对比**（段内 sm、段间 lg）拉开层级。
+        VStack(spacing: CovaSpace.lg) {
             topBar(snap)
             artwork(snap)
             texts(snap)
@@ -364,7 +366,7 @@ public struct PlayerView: View {
     /// 「下载」**不构造**：D12 明令 v1.0 不开任何扣费入口（02 §5），合规放行后再接。
     private func secondary(_ snap: PlaybackSnapshot?) -> some View {
         let mode = snap?.loopMode ?? .off
-        return HStack(spacing: CovaSpace.xxl) {
+        return HStack(spacing: CovaSpace.xl) {   // D24 紧凑：次级操作行 32→24，三枚钮仍各 ≥44pt 触控
             Button { Task { await session.cycleLoop() } } label: {
                 loopLabel(mode)
                     .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)

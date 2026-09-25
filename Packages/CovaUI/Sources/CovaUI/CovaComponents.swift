@@ -152,9 +152,11 @@ public struct CovaListRow<Trailing: View>: View {
 
     public var body: some View {
         Button(action: action) {
-            HStack(spacing: CovaSpace.md) {
+            HStack(spacing: CovaSpace.sm) {
                 if let artwork {
-                    artwork.frame(width: 44, height: 44)
+                    // 紧凑档（D24）：封面 44→40、纵向 padding 8→4 ⇒ 行高约 48pt，
+                    // **仍在 ≥44pt 触控红线之上**（这条是本仓硬规矩，不为密度牺牲）。
+                    artwork.frame(width: 40, height: 40)
                         .clipShape(RoundedRectangle(cornerRadius: CovaRadius.control - 4, style: .continuous))
                 }
                 VStack(alignment: .leading, spacing: 2) {
@@ -169,7 +171,7 @@ public struct CovaListRow<Trailing: View>: View {
                 trailing
             }
             .padding(.horizontal, CovaSpace.pageGutter)
-            .padding(.vertical, CovaSpace.sm)
+            .padding(.vertical, CovaSpace.xs)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -272,9 +272,17 @@ public struct CovaArtwork: View {
                 .fill(CovaColor.surface)
             switch phase {
             case .loading:
-                ProgressView().controlSize(.small)
+                // D24 观感：原来这里**只有一个转圈**，底下是空盒子 ⇒ 首屏/列表里同时出现
+                // 好几个转圈时读起来像"图坏了"，而图确实要转好几秒（登录 + 列表 + 封面串在一条链上）。
+                // 现在先画"没有封面"那一档的占位，图到了淡入盖上去：占位是**内容**，转圈只是进度。
+                Image(systemName: "music.note")
+                    .foregroundStyle(CovaColor.muted)
+                    .overlay {
+                        ProgressView().controlSize(.small).offset(y: 18)
+                    }
             case .loaded(let image):
                 image.resizable().scaledToFill()
+                    .transition(.opacity)   // 淡入，不是"从空盒子突然跳出一张图"
             case .placeholder:
                 Image(systemName: "music.note")
                     .foregroundStyle(CovaColor.muted)

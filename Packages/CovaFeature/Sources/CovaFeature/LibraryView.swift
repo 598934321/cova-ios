@@ -117,6 +117,11 @@ public struct LibraryView: View {
                 DrawerTrigger(opener: .library)
             }
         }
+        // D24 构图：03 §1 的导航条是 `[←] 曲库 [搜索]`。Tab 根屏的 `←` 在本 App 没有对应动作
+        // ⇒ 左位给抽屉触发钮，**标题落进导航条**（此前那一行只有字标、没有标题，那条带子是
+        // 空白，整屏读起来就像"内容堆在下面"）；搜索按 §3 以页面内常驻实现，不重复放右上钮。
+        .navigationTitle("曲库")
+        .toolbarTitleDisplayMode(.inline)
         .task {
             consumeLibraryPreset()
             await loadTaxonomy()
@@ -178,7 +183,7 @@ public struct LibraryView: View {
         .padding(CovaSpace.md)
         .background(Capsule().fill(CovaColor.surface))
         .padding(.horizontal, CovaSpace.pageGutter)
-        .padding(.vertical, CovaSpace.sm)
+        .padding(.vertical, CovaSpace.xs)   // D24 紧凑：搜索条上下各收 4pt
     }
 
     // MARK: - §2 维度 chips 条

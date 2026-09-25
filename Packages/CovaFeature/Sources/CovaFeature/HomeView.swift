@@ -49,7 +49,10 @@ public struct HomeView: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: CovaSpace.xl) {
+            // D24 构图：区块间距 24→16、上下留白 16→12。原来每块之间都是 `xl`，配合大字号
+            // 让首屏"两屏半才看完一个区块"；紧凑档下层级靠**标题字重 + 留白对比**拉开，
+            // 而不是靠把所有间距都放大。
+            VStack(alignment: .leading, spacing: CovaSpace.lg) {
                 header
                 promptCard
                 content
@@ -57,7 +60,7 @@ public struct HomeView: View {
                 creationsSection
                 artistSection
             }
-            .padding(.vertical, CovaSpace.lg)
+            .padding(.vertical, CovaSpace.md)
         }
         .covaPage()
         // 04 §1 入口①：顶层屏顶栏左上的字标钮（01 §1 顶栏那一行的 logo 位）。
