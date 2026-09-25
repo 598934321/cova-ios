@@ -31,7 +31,7 @@ configs:
 
 fileGroups:
   - README.md
-  - AGENTS.md
+  - DEVELOPMENT.md
   - docs
 
 targets:
@@ -48,7 +48,7 @@ targets:
       base:
         PRODUCT_NAME: Cova
         PRODUCT_BUNDLE_IDENTIFIER: cn.covalink.ios
-        # 版本（AGENTS.md：每次 commit 递增，小迭代 +0.0.1 / 大迭代 +0.1）
+        # 版本（DEVELOPMENT.md §2 协作约定：纯文档 commit 不递增；影响产物的 commit 递增两个字段，小 +0.0.1 / 大 +0.1）
         # 0.1.0/1 骨架 → ... → 0.2.4/15 G3-a 验收落证
         # → 0.2.5/16 G3-b 幂等键/Keychain 封装/owner 绑定持久化
         # → 0.2.6/17 G3-b 评审修复（M1/M2 + m1..m7）
