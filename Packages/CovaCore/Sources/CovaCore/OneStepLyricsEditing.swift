@@ -78,6 +78,10 @@ public enum OneStepLyricsEditingBlock: Equatable, Sendable {
     /// 改歌词**必须**连同标题池一起提交（`patch.ts:139` 的 `stale_title_pool`），
     /// 池子不完整就是"必然 400"，所以在这里就停住。
     case titlePoolIncomplete
+    /// 已归档的计划卡。09 §9 行 12 给 `archived` 的定义是"历史仍可浏览、候选仍可试听" ——
+    /// 里面**没有**"可修改"这一项，往定稿的历史上写字不在本轮范围内。
+    /// （其余 11 态不设闸门：规格没说不许改，而这张卡归不归改由后端自己判。）
+    case archivedPlan
 
     /// 上屏那句话。**`noLyrics` 刻意给 nil**：09 §8 明令「`lyrics` 空 → 「歌词」节不渲染
     /// （不显「无歌词」）」，纯音乐的说法由参数行那枚「纯音乐」chip 承担。
@@ -89,6 +93,7 @@ public enum OneStepLyricsEditingBlock: Equatable, Sendable {
         case .cardRevisionUnknown: return "没读到这张计划的版本，编辑先不可用。"
         case .cardSessionMismatch: return "这张卡不属于当前会话，编辑已停用。"
         case .titlePoolIncomplete: return "标题候选不完整，歌词编辑先不可用（保存要连同标题池一起提交）。"
+        case .archivedPlan: return "这张计划卡已归档，歌词留作历史，不再就地修改。"
         }
     }
 }
@@ -126,6 +131,7 @@ public struct OneStepLyricsEditor: Equatable, Sendable {
         guard !sections.isEmpty else { return .sectionsMissing }
         guard sections.allSatisfy({ $0.text != nil }) else { return .sectionTextMissing }
         guard plan.revision != nil else { return .cardRevisionUnknown }
+        guard plan.status != .archived else { return .archivedPlan }
         guard let candidates = plan.title?.candidates, !candidates.isEmpty else {
             return .titlePoolIncomplete
         }

@@ -35,6 +35,7 @@ final class OneStepLyricsEditingTests: XCTestCase {
     }
 
     private func cardJSON(
+        status: String = "ready",
         sessionId: String = "\"s-1\"",
         revision: String = "7",
         title: String = """
@@ -43,7 +44,7 @@ final class OneStepLyricsEditingTests: XCTestCase {
         lyrics: String
     ) -> String {
         """
-        {"planCardId": "pc-1", "status": "ready", "sessionId": \(sessionId), "revision": \(revision), \
+        {"planCardId": "pc-1", "status": "\(status)", "sessionId": \(sessionId), "revision": \(revision), \
         "snapshotHash": "sha256:abc", "type": "vocal", "title": \(title), "credits": 12\
         \(lyrics.isEmpty ? "" : ", \"lyrics\": \(lyrics)")}
         """
@@ -95,6 +96,7 @@ final class OneStepLyricsEditingTests: XCTestCase {
                     """))),
                 .sectionTextMissing
             ),
+            ("已归档的计划卡：§9 行 12 只给了可浏览与可试听", decoded(cardJSON(status: "archived", lyrics: lyricsJSON(sections: twoSections))), .archivedPlan),
             ("卡没有 revision", decoded(cardJSON(revision: "null", lyrics: lyricsJSON(sections: twoSections))), .cardRevisionUnknown),
             ("卡不属于这个会话", decoded(cardJSON(sessionId: "\"other\"", lyrics: lyricsJSON(sections: twoSections))), .cardSessionMismatch),
             ("标题池是空数组", decoded(cardJSON(title: """
@@ -118,7 +120,7 @@ final class OneStepLyricsEditingTests: XCTestCase {
     func testEveryBlockSaysSomethingChineseExceptTheSilentOne() throws {
         let all: [OneStepLyricsEditingBlock] = [
             .noLyrics, .sectionsMissing, .sectionTextMissing, .cardRevisionUnknown,
-            .cardSessionMismatch, .titlePoolIncomplete
+            .cardSessionMismatch, .titlePoolIncomplete, .archivedPlan
         ]
         var seen = Set<String>()
         for block in all {

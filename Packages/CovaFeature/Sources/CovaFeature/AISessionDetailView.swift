@@ -87,10 +87,13 @@ public struct AISessionDetailView: View {
                         ForEach(plans, id: \.planCardId) { plan in
                             PlanCardView(
                                 plan: plan,
+                                sessionID: sessionID,
                                 canStart: canStart(plan),
                                 creditsBalance: creditsBalance,
                                 onStart: { Task { await start(plan) } },
-                                onRevise: { draft = "请修改：" }
+                                onRevise: { draft = "请修改：" },
+                                onUpdated: { applyPlanUpdate($0) },
+                                onBalanceOutOfDate: { Task { await refreshBalance() } }
                             )
                         }
                         if !candidates.isEmpty { candidateBlock }
@@ -656,9 +659,8 @@ public struct AISessionDetailView: View {
             // 「已经问过要挑哪一版」是**本轮界面**的临时态：重新对账后不得继续亮着选择钮，
             // 否则用户可能按着一份已经被后端改掉的候选清单往下选。
             choosingVersion = false
-            creditsBalance = try? await session.catalog.me().entitlements.creditsBalance
-            phase = .ready
-            // 这份载荷是权威状态 ⇒ 顺手把 08 那一格的在途账对齐（收口/推进读数，不新发请求）。
+            await refreshBalance()
+            phase = .ready            // 这份载荷是权威状态 ⇒ 顺手把 08 那一格的在途账对齐（收口/推进读数，不新发请求）。
             syncStudioJobLedger()
             // 首页输入卡带过来的一句话：进屏后自动发一次（01 §2「提交后跳转创作会话详情」）。
             if let pending = session.pendingPrompt {
@@ -788,6 +790,23 @@ public struct AISessionDetailView: View {
             && plan.sourceMessage?.messageId != nil
     }
 
+    /// 歌词保存/重做之后，**后端回显的那一张卡**就是那张卡的最新事实 ⇒ 只换那一张。
+    /// 不整表重排、不重读会话：那是把"我自己排的顺序"当成后端事实（本仓反复纠的那类）。
+    private func applyPlanUpdate(_ updated: OneStepPlanCardDto) {
+        if let index = plans.firstIndex(where: { $0.planCardId == updated.planCardId }) {
+            plans[index] = updated
+            return
+        }
+        plans.append(updated)
+        plans.sort { ($0.cardIndex ?? 0) < ($1.cardIndex ?? 0) }
+    }
+
+    /// 余额位重读（写操作可能改账，09 §8「启动成功后强制刷新」同一口径）。
+    /// 取不到就**留空不渲染**：NEEDS-3 明令「余额 M」在未知时不出现，更不许印 0。
+    private func refreshBalance() async {
+        creditsBalance = try? await session.catalog.me().entitlements.creditsBalance
+    }
+
     private func start(_ plan: OneStepPlanCardDto) async {
         do {
             // 用户主动点的这一次 = 一次新的逻辑操作 ⇒ 由服务侧生成新 token；
@@ -873,10 +892,15 @@ public struct AISessionDetailView: View {
 /// 计划卡（design 09 §G）。缺 `snapshotHash` / 归因 ⇒ 主按钮置灰，**不放宽**。
 struct PlanCardView: View {
     let plan: OneStepPlanCardDto
+    let sessionID: String
     let canStart: Bool
     let creditsBalance: Int?
     let onStart: () -> Void
     let onRevise: () -> Void
+    /// 歌词编辑/重做拿到后端回显的那一张卡时，交回父层替换（**不在本卡里自存一份卡面**）。
+    let onUpdated: (OneStepPlanCardDto) -> Void
+    /// 重做可能改余额账 ⇒ 请父层重读一次（本屏不自己猜扣了多少）。
+    let onBalanceOutOfDate: () -> Void
     @State private var promptExpanded = false
 
     var body: some View {
@@ -900,17 +924,12 @@ struct PlanCardView: View {
                         Text(promptEn).font(CovaType.caption).foregroundStyle(CovaColor.muted)
                     }
                 }
-                ForEach(Array(sectionsOf(plan).enumerated()), id: \.offset) { _, section in
-                    VStack(alignment: .leading, spacing: 2) {
-                        // 段名与正文都只在**后端给了**的时候渲染（不补占位）。
-                        if let label = section.label, !label.isEmpty {
-                            Text(label).font(CovaType.caption).foregroundStyle(CovaColor.muted)
-                        }
-                        if let text = section.text, !text.isEmpty {
-                            Text(text).font(CovaType.subhead).foregroundStyle(CovaColor.fg)
-                        }
-                    }
-                }
+                PlanCardLyricsBlock(
+                    plan: plan,
+                    sessionID: sessionID,
+                    onUpdated: onUpdated,
+                    onBalanceOutOfDate: onBalanceOutOfDate
+                )
                 let chips = parameterChips(plan)
                 if !chips.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -950,10 +969,6 @@ struct PlanCardView: View {
         .padding(.horizontal, CovaSpace.pageGutter)
     }
 
-    private func sectionsOf(_ plan: OneStepPlanCardDto) -> [OneStepLyricsSectionDto] {
-        (plan.lyrics?.sections ?? []).sorted { ($0.order ?? .max) < ($1.order ?? .max) }
-    }
-
     /// 参数胶囊的**取值与文案一律不在本屏拼**：裁决面在 CovaCore 的
     /// `OneStepPlanParameterCopy`（09 §3-G 的中文标签 + 百分数 + 「不认识的取值不渲染」三条口径，
     /// 那边有用例钉着），本屏只负责摆。
@@ -989,5 +1004,331 @@ struct PlanCardView: View {
         case .analyzing, .patching, .archived:
             return CovaColor.muted
         }
+    }
+}
+
+// MARK: - 09 §1「标题候选 / 歌词编辑均在本屏内（不跳屏）」
+
+/// 计划卡上的歌词区：只读平铺 **+ 就地编辑**，全程不跳屏。
+///
+/// 视图只负责摆：能不能编辑、脏跟踪、拼载荷、幂等键、拒绝分诊全在 CovaCore
+/// （`OneStepLyricsEditor`，25 条用例钉着）。本屏只守三条：
+/// · **未确认成功前不改本地态** —— 卡面只在后端回显到达那一步才换（`onUpdated`），
+///   失败路径一个字段都不动，用户写的字原地留着；
+/// · 拿不到编辑基线的那几种形态**不给编辑钮**，并把原因说出来；唯一闭嘴的那一种是
+///   "这张卡没有歌词"（09 §8：整段不渲染，也不显「无歌词」）；
+/// · 每个钮都有中文 `accessibilityLabel` 与 ≥44pt 热区（09 §7），AX 档下动作行上下堆叠。
+struct PlanCardLyricsBlock: View {
+    let plan: OneStepPlanCardDto
+    let sessionID: String
+    let onUpdated: (OneStepPlanCardDto) -> Void
+    let onBalanceOutOfDate: () -> Void
+
+    @Environment(AppSession.self) private var session
+    @Environment(\.covaAXLayout) private var axLayout
+
+    @State private var editor: OneStepLyricsEditor?
+    @State private var phase: OneStepLyricsPanelPhase = .readOnly
+    @State private var notice: String?
+    @State private var tokens = OneStepLyricsEditTokenLedger()
+    @State private var askedToRegenerate = false
+    /// 版本读数是**读来的**：没读到就只报当前版，不印"共 0 版"（不编造边界）。
+    @State private var versionReadout: String?
+
+    private var block: OneStepLyricsEditingBlock? {
+        OneStepLyricsEditor.block(for: plan, sessionID: sessionID)
+    }
+
+    private var sections: [OneStepLyricsSectionDto] {
+        OneStepLyricsEditor.orderedSections(of: plan)
+    }
+
+    var body: some View {
+        if block == .noLyrics {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: CovaSpace.sm) {
+                header
+                if let editor {
+                    editingRows(editor)
+                } else {
+                    readOnlyRows
+                }
+                if editor == nil, let reason = block?.userCopy {
+                    Text(reason)
+                        .font(CovaType.caption).foregroundStyle(CovaColor.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                actionRow
+                if let notice { noticeLine(notice) }
+            }
+            .onChange(of: plan) { _, latest in reconcile(with: latest) }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: CovaSpace.sm) {
+            Text("歌词").font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+            if let versionReadout {
+                Text(versionReadout).font(CovaType.caption).foregroundStyle(CovaColor.muted)
+            }
+            Spacer(minLength: CovaSpace.sm)
+            if phase != .readOnly {
+                Text(phase.userLabel).font(CovaType.caption).foregroundStyle(CovaColor.muted)
+            }
+        }
+        // §7 朗读顺序里计划卡那一条要能念到「歌词 N 段」，段数与读数合成一个元素。
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "歌词，\(sections.count) 段"
+                + (versionReadout.map { "，\($0)" } ?? "")
+                + (phase == .readOnly ? "" : "，\(phase.userLabel)")
+        )
+    }
+
+    private var readOnlyRows: some View {
+        ForEach(Array(sections.enumerated()), id: \.offset) { index, section in
+            VStack(alignment: .leading, spacing: 2) {
+                Text(OneStepLyricsEditingCopy.sectionTitle(label: section.label, order: index))
+                    .font(CovaType.caption).foregroundStyle(CovaColor.muted)
+                // 正文只印**后端给了**的那一份（不补占位、不印空行）。
+                let body = OneStepLyricsEditor.bodyText(of: section)
+                if !body.isEmpty {
+                    Text(body).font(CovaType.body).foregroundStyle(CovaColor.fg)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func editingRows(_ snapshot: OneStepLyricsEditor) -> some View {
+        ForEach(Array(snapshot.drafts.enumerated()), id: \.offset) { index, draft in
+            VStack(alignment: .leading, spacing: CovaSpace.xs) {
+                Text(OneStepLyricsEditingCopy.sectionTitle(label: draft.label, order: index))
+                    .font(CovaType.caption).foregroundStyle(CovaColor.muted)
+                TextEditor(text: bodyBinding(at: index))
+                    .font(CovaType.body)
+                    .foregroundStyle(CovaColor.fg)
+                    .scrollContentBackground(.hidden)
+                    .padding(CovaSpace.xs)
+                    // AX 档给到 5 行高：字号放大后两行的框会把第三行藏起来（看不见 ≠ 没内容）。
+                    .frame(minHeight: axLayout ? 132 : 72)
+                    .background(
+                        RoundedRectangle(cornerRadius: CovaRadius.control, style: .continuous)
+                            .fill(CovaColor.surface)
+                    )
+                    .accessibilityLabel("第 \(index + 1) 段歌词，可编辑")
+            }
+        }
+    }
+
+    /// 一格的读写口：改的是**这一屏的草稿**，不是卡面。卡面要等后端回显（见类型注释）。
+    private func bodyBinding(at index: Int) -> Binding<String> {
+        Binding(
+            get: {
+                guard let editor, editor.drafts.indices.contains(index) else { return "" }
+                return editor.drafts[index].body
+            },
+            set: { value in editor?.editBody(value, at: index) }
+        )
+    }
+
+    @ViewBuilder
+    private var actionRow: some View {
+        // §Dynamic Type：动作行在 AX 档上下堆叠（与费用行/操作行同一处理）。
+        let row = axLayout
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: CovaSpace.sm))
+            : AnyLayout(HStackLayout(spacing: CovaSpace.sm))
+        row {
+            if editor != nil {
+                covaTextButton(
+                    title: phase == .saving ? "正在保存…" : "保存歌词",
+                    label: "保存歌词改动",
+                    hint: "只提交你改动过的那几段，不会重新生成整篇",
+                    tint: CovaColor.accentText,
+                    busy: phase == .saving
+                ) { Task { await save() } }
+                covaTextButton(
+                    title: "取消编辑",
+                    label: "取消编辑，丢弃未保存的改动",
+                    hint: nil,
+                    tint: CovaColor.secondary,
+                    busy: phase == .saving
+                ) { cancelEditing() }
+            } else if block == nil {
+                covaTextButton(
+                    title: "编辑歌词",
+                    label: "编辑歌词",
+                    hint: "在本屏内改歌词，不需要离开",
+                    tint: CovaColor.accentText,
+                    busy: false
+                ) { startEditing() }
+                covaTextButton(
+                    title: phase == .regenerating ? "正在重做…" : "重做歌词",
+                    label: "重做整篇歌词",
+                    hint: "会先确认，因为这一条按实际用量扣费",
+                    tint: CovaColor.secondary,
+                    busy: phase == .regenerating
+                ) { askedToRegenerate = true }
+            }
+        }
+        .confirmationDialog(regenerateWarning, isPresented: $askedToRegenerate, titleVisibility: .visible) {
+            Button("确认重做") { Task { await regenerate() } }
+            Button("先不重做", role: .cancel) {}
+        }
+    }
+
+    /// 本屏统一的文字钮形状：≥44pt 热区（09 §7）+ 中文读法。
+    private func covaTextButton(
+        title: String,
+        label: String,
+        hint: String?,
+        tint: Color,
+        busy: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(CovaType.callout)
+                .foregroundStyle(tint)
+                .frame(minHeight: 44)
+                .frame(maxWidth: axLayout ? .infinity : nil, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel(label)
+        .accessibilityHint(hint ?? "")
+    }
+
+    private func noticeLine(_ text: String) -> some View {
+        Text(text)
+            .font(CovaType.caption)
+            .foregroundStyle(phase == .failed || phase == .stale ? CovaColor.error : CovaColor.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel("歌词编辑状态，\(text)")
+    }
+
+    /// **扣费确认**话术（AGENTS 硬边界 5 + D12）：只说这一条会按实际用量扣、会出新版本，
+    /// 不说任何"去哪补余额"的话。确认只此一次入口，失败也不自动重试（见 `regenerate`）。
+    private var regenerateWarning: String {
+        "重做会由后端按这一次的实际用量扣费，并生成新版歌词；现在这份会被替换掉。确认要重做吗？"
+    }
+
+    // MARK: 行为
+
+    private func startEditing() {
+        guard let fresh = OneStepLyricsEditor(plan: plan, sessionID: sessionID) else { return }
+        editor = fresh
+        phase = .editing
+        notice = nil
+        readVersionReadout()
+    }
+
+    private func cancelEditing() {
+        editor = nil
+        phase = .readOnly
+        notice = nil
+    }
+
+    /// 回读版本清单（**只读**）。拿不到就停在"只报当前版"：这一格是可选项，
+    /// 而写路径自己带 `expectedRevision` 基线，不靠这份清单保正确 ⇒ 不因此挡住编辑。
+    private func readVersionReadout() {
+        versionReadout = OneStepLyricsEditingCopy.versionLabel(plan.lyrics?.revision)
+        Task {
+            guard let versions = try? await session.studio.lyricVersions(planCardID: plan.planCardId)
+            else { return }
+            versionReadout = OneStepLyricsEditingCopy.versionSummary(
+                versions, current: plan.lyrics?.revision
+            )
+        }
+    }
+
+    private func save() async {
+        guard let editor else { return }
+        // 先自核再出站：明知会被拒的写不发（也顺便不替服务端做它自己的判据）。
+        if let reason = editor.saveBlock() {
+            notice = reason
+            return
+        }
+        phase = .saving
+        notice = nil
+        do {
+            let key = try tokens.token(
+                planCardID: plan.planCardId, fingerprint: editor.payloadFingerprint
+            ).key
+            switch try await session.studio.saveLyrics(editor.patchRequest(key: key)) {
+            case .saved(let card), .replayed(let card):
+                self.editor = nil      // 草稿已成为后端事实 ⇒ 就地作废，卡面以回显为准
+                phase = .saved
+                onUpdated(card)
+            case .landedWithoutEcho:
+                self.editor = nil
+                phase = .savedWithoutEcho
+                notice = "改动已经保存，但这份响应没带回卡面；下拉刷新或下次进入才会看到新内容。"
+            }
+        } catch {
+            // 失败**不动草稿**：一次抖动就把用户写的字洗掉，比不保存更糟。
+            if let rejection = OneStepLyricsEditRejection.classify(error) {
+                phase = rejection == .staleCard ? .stale : .failed
+                notice = rejection.userCopy
+            } else {
+                phase = .failed
+                notice = "这次没保存上：\(StudioService.classify(error).uiMessage)；你写的字还在草稿里。"
+            }
+        }
+    }
+
+    /// 重做整篇歌词。**必须先在 `confirmationDialog` 上按过「确认重做」**：
+    /// 这一条按 token 实扣（`web/…/lyrics/regenerate/route.ts:34-60`）。
+    /// 失败绝不自动重试，且两种"没扣成"分得开：402 是预检就拦下（一次模型调用都没发），
+    /// 2xx 后 `insufficient:true` 是结算时扣不动。
+    private func regenerate() async {
+        guard let revision = plan.revision else {
+            phase = .failed
+            notice = OneStepLyricsEditingBlock.cardRevisionUnknown.userCopy
+            return
+        }
+        phase = .regenerating
+        notice = nil
+        do {
+            // 同一次确认的重发复用同一把键 ⇒ 后端按重放处理，不会扣第二次；
+            // 成功之后 revision 前进，用户若真再重做一次自然换新键（那是一次新的计费）。
+            let key = try tokens.token(
+                planCardID: plan.planCardId, fingerprint: "regen|\(revision)"
+            ).key
+            let outcome = try await session.studio.regenerateLyrics(
+                sessionID: sessionID, plan: plan, key: key
+            )
+            if let card = outcome.card {
+                phase = .saved
+                onUpdated(card)
+            } else {
+                phase = .savedWithoutEcho
+            }
+            notice = outcome.chargeCopy
+            onBalanceOutOfDate()   // 扣了钱就得重读余额（09 §8「启动成功后强制刷新」同口径）
+        } catch {
+            if let rejection = OneStepLyricsEditRejection.classify(error) {
+                phase = .failed
+                notice = rejection.userCopy
+            } else {
+                phase = .failed
+                notice = "这次没走通：\(StudioService.classify(error).uiMessage)；没有自动重试，要再来一次请再按一次并确认。"
+            }
+        }
+    }
+
+    /// 卡面在别处变了（SSE 又推一张、或另一台设备改过）。
+    /// **有未保存改动时一律不覆盖**：只把"这一份基线已经不新鲜"说出来，让用户自己决定
+    /// —— 静默用新载荷重建草稿，等于把用户刚写的字洗掉。
+    private func reconcile(with latest: OneStepPlanCardDto) {
+        guard let editor else { return }
+        guard editor.isDirty else {
+            self.editor = OneStepLyricsEditor(plan: latest, sessionID: sessionID)
+            return
+        }
+        phase = .stale
+        notice = OneStepLyricsEditRejection.staleCard.userCopy
     }
 }
