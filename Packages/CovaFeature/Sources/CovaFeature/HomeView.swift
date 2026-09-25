@@ -96,8 +96,12 @@ public struct HomeView: View {
                         .padding(.horizontal, CovaSpace.pageGutter)
                     }
                 }
+                let scenes = HomeSceneRail.groups(of: playlists)
+                if !scenes.isEmpty {
+                    sceneRail(scenes)
+                }
                 if !tracks.isEmpty {
-                    CovaSectionHeader("场景精选")
+                    CovaSectionHeader("曲库精选")
                     VStack(spacing: 0) {
                         ForEach(Array(tracks.prefix(8).enumerated()), id: \.element.id) { index, track in
                             CovaListRow(
@@ -214,6 +218,32 @@ public struct HomeView: View {
             await session.play(tracks: queue, at: 0)
         } catch {
             session.showToast("歌单没取到：\(CatalogService.classify(error).uiMessage)", isError: true)
+        }
+    }
+
+    /// 场景精选（design 01 §4）：140×140 横滑卡，封面 + 底部标题条。
+    ///
+    /// **「按 scene 分组」落成的形状**（§1 的版面只给这一区画了**一条**横滑轨道，
+    /// 所以分组不做成一堆子标题，也不给场景造一个落地页 —— 那需要一个契约里不存在的
+    /// 「场景 → 歌单」入口）：轨道里的卡**按组相邻**，每张卡的标题条上把 `scene`
+    /// 原样写出来，读得出"这几张是同一组"。分组与挑选的判据全在 `HomeSceneRail`（CovaCore，可测），
+    /// 线上 593 条里只有 101 条带非空 `scene` ⇒ 另外 492 条不进这一区，也不给它们编一个「其他」桶。
+    private func sceneRail(_ groups: [HomeSceneRail.Group]) -> some View {
+        VStack(alignment: .leading, spacing: CovaSpace.xs) {
+            CovaSectionHeader("场景精选")
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: CovaSpace.md) {
+                    ForEach(groups, id: \.scene) { group in
+                        // 组内相邻 = 「按 scene 分组」在这一条轨道里的全部落地形式（见上方说明）。
+                        ForEach(group.playlists, id: \.id) { playlist in
+                            ScenePlaylistCard(scene: group.scene, playlist: playlist) {
+                                session.path.append(.playlist(playlist.id))
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, CovaSpace.pageGutter)
+            }
         }
     }
 
@@ -359,6 +389,50 @@ public struct PlaylistCard: View {
             .frame(width: 148)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// 场景精选卡（design 01 §4）：140×140、圆角 `card`，封面铺满 + **底部标题条**（subhead / fg）。
+///
+/// 标题条自带 `elevated` 底：§4 给的是 `fg`（不是 §3 大卡那种白字），而 `fg` 在浅主题下
+/// 是深色 —— 直接压在来路不明的封面上没有对比度保证，加一层不透明底条是这一档文字色的
+/// 唯一读法。`scene` 那一行是后端原文（不翻译、不改写），它就是"这几张卡是同一组"的记号。
+public struct ScenePlaylistCard: View {
+    private static let side = CGFloat(HomeSceneRail.cardSide)
+    private let scene: String
+    private let playlist: PlaylistDto
+    private let action: () -> Void
+
+    public init(scene: String, playlist: PlaylistDto, action: @escaping () -> Void) {
+        self.scene = scene
+        self.playlist = playlist
+        self.action = action
+    }
+
+    public var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .bottomLeading) {
+                CovaArtwork(resolution: HomeArtwork.playlistCover(playlist), title: playlist.title)
+                    .frame(width: Self.side, height: Self.side)
+                    .clipped()
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(scene).font(CovaType.caption).foregroundStyle(CovaColor.muted).lineLimit(1)
+                    Text(playlist.titleCn ?? playlist.title)
+                        .font(CovaType.subhead).foregroundStyle(CovaColor.fg)
+                        .lineLimit(2)
+                }
+                .padding(.horizontal, CovaSpace.sm)
+                .padding(.vertical, CovaSpace.xs)
+                .frame(width: Self.side, alignment: .leading)
+                .background(CovaColor.elevated)
+            }
+            .frame(width: Self.side, height: Self.side)
+            .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(scene)，\(playlist.titleCn ?? playlist.title)")
     }
 }
 

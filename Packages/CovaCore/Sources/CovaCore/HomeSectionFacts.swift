@@ -52,3 +52,70 @@ public enum HomeFeaturedCard {
         return minutes >= 60 ? "约 \(minutes / 60) 小时 \(minutes % 60) 分" : "约 \(minutes) 分"
     }
 }
+
+// MARK: - 01 §4 场景精选横滑卡
+//
+// §数据来源写的是「playlists 按 scene 分组」。这一条**先核过线上再施工**
+// （2026-09-25 只读 GET /api/playlists）：593 条里 **101 条带非空 `scene`**，
+// 共 23 个不同取值（最多的「短视频/Vlog」17 条、「活动」13 条），
+// `PlaylistDto.scene` 也早就在 DTO 里（`LibraryDTOs.swift`）⇒ 分组是有数据支撑的，
+// 于是这里**只**用 `scene` 这一个真字段分组，`scene` 为空的 492 条一律不进这一区。
+public enum HomeSceneRail {
+    /// §4 卡片 140×140pt。
+    public static let cardSide: Double = 140
+    /// 一屏之内的上限：23 个场景全铺会把首页拖成长页，且"精选"本身就是要挑。
+    /// 这两个数是 **UI 取舍**（spec 没给档），所以钉在这里、可测、不藏在视图体里。
+    public static let groupLimit = 4
+    public static let cardsPerGroup = 4
+
+    /// 一个场景分组：组名就是后端给的 `scene` 原文（不翻译、不合并、不造"全部场景"）。
+    public struct Group: Equatable, Sendable {
+        public let scene: String
+        public let playlists: [PlaylistDto]
+
+        public init(scene: String, playlists: [PlaylistDto]) {
+            self.scene = scene
+            self.playlists = playlists
+        }
+    }
+
+    /// 分组裁决（三条都是"不猜"）：
+    /// 1. 只收 `scene` **非空非空白**的行 —— 没有场景的歌单不进这一区，也不给它们补一个
+    ///    「其他」桶：那等于客户端发明一个后端没有的场景。
+    /// 2. 组的先后按**该场景有多少条歌单**（多的在前），同数按服务端顺序里首次出现的位置 ——
+    ///    23 个组装不下 ⇒ 总要挑，挑的依据用服务端自己给的事实，不用"我觉得哪个场景火"。
+    /// 3. 组内保持服务端给的原顺序（`createdAt desc`），客户端不重排。
+    public static func groups(
+        of playlists: [PlaylistDto],
+        groupLimit: Int = HomeSceneRail.groupLimit,
+        cardsPerGroup: Int = HomeSceneRail.cardsPerGroup
+    ) -> [Group] {
+        guard groupLimit > 0, cardsPerGroup > 0 else { return [] }
+        var order: [String] = []            // 首次出现顺序（同数时的 tie-break）
+        var bucket: [String: [PlaylistDto]] = [:]
+        for playlist in playlists {
+            guard let scene = normalized(playlist.scene) else { continue }
+            if bucket[scene] == nil { order.append(scene) }
+            bucket[scene, default: []].append(playlist)
+        }
+        let rank = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element, $0.offset) })
+        return order
+            .sorted { lhs, rhs in
+                let lhCount = bucket[lhs]?.count ?? 0
+                let rhCount = bucket[rhs]?.count ?? 0
+                if lhCount != rhCount { return lhCount > rhCount }
+                return (rank[lhs] ?? .max) < (rank[rhs] ?? .max)
+            }
+            .prefix(groupLimit)
+            .map { scene in
+                Group(scene: scene, playlists: Array((bucket[scene] ?? []).prefix(cardsPerGroup)))
+            }
+    }
+
+    /// 去首尾空白后判空：`"  "` 这种脏值不进分组（否则界面上会出现一个看不见的场景名）。
+    private static func normalized(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
