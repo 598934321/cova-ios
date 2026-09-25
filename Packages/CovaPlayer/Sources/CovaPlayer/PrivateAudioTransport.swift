@@ -94,15 +94,23 @@ enum AudioAuthorityMatch {
     }
 }
 
-/// D23（R17-3）：跳转的**唯一裁决面**（纯函数，零 URLSession 可断言）。
+/// D23（R17-3 + R18-4）：跳转的**唯一裁决面**（纯函数，零 URLSession 可断言）。
 ///
-/// 旧形状是「URLSession 自动跟随 ⇒ 302 的那一跳**已经出站** ⇒ 只在投递时拒绝」，
-/// 于是「唯一网络出口」这条硬边界实际只是「不把跨源字节交给播放器」。现在：
-/// `AudioRedirectGuard` 把 URLSession 的自动跟随**无条件**关掉，3xx 原样交回这里，
-/// 由本类型按「请求带不带凭证」两类裁决（`CovaEnvironment.mediaRedirectAllowed`）：
-/// · 带 Bearer ⇒ 只有同一权威的生产出口可以跟（许可名单不构成放行理由）；
-/// · 不带凭证 ⇒ 只能落在许可名单内（生产出口 ∪ 封面桶/整曲桶），且落地也必须在名单内。
-/// 被拒的那一条**一次都不出站** —— 这才是「出口在发起前判定」的可测形态。
+/// 旧旧形状是「URLSession 自动跟随 ⇒ 302 的那一跳**已经出站** ⇒ 只在投递时拒绝」，
+/// 于是「唯一网络出口」这条硬边界实际只是「不把跨源字节交给播放器」。R17-3 把它改成：
+/// `AudioRedirectGuard` 把自动跟随**无条件**关掉，3xx 原样交回这里，由本类型按类别裁决后再
+/// **自己动手**发那一跳 ⇒ 被拒的那一条**一次都不出站**。
+///
+/// R18-4 补的是裁决的**第二格**（裁决面本身仍然只有一个，在 `CovaEnvironment.mediaHopEgress`）：
+/// · 带 Bearer ⇒ 同一权威的生产出口可以带着凭证继续；**落在许可名单的存储主机**上也可以跟，
+///   但那一跳**必须把凭证整条剥掉**（重建一条匿名 GET）—— 凭证照旧一步都不出生产出口；
+/// · 不带凭证 ⇒ 只能落在名单内（生产出口 ∪ 封面桶/整曲桶），且发起那一条本身也得在名单内；
+/// · 名单之外（换桶、换区、子域挂甲、降级、非规范端口）一律不跟，一次出站都不许多。
+///
+/// 为什么这一格不构成提权：未授权分支直接同源回字节、**永不 302**
+/// （`web` 仓 `src/app/api/tracks/[id]/preview-stream/route.ts:47-55`），而"允许 302 到桶"
+/// 这件事本身就是服务端在确认过 Bearer 之后做的 ⇒ 剥掉凭证不会多拿到任何东西。
+/// 不这么改的代价是实测出来的：名单里那台桶**按构造永远不可达**，**已购整曲从未播通过**。
 enum MediaEgressHop {
     /// 3xx 的 `Location` → 绝对落地地址；拿不出来（空头/空值/形状可疑）→ nil。
     ///
@@ -114,11 +122,13 @@ enum MediaEgressHop {
         CovaEnvironment.redirectLanding(of: response, requesting: url)
     }
 
-    /// 追一跳：先按类别裁决，再决定**这一条新请求长什么样**。
+    /// 追一跳：先按类别裁决（`CovaEnvironment.mediaHopEgress`），再决定**这一条新请求长什么样**。
     ///
     /// 新请求由这里重建而不是复用 URLSession 递来的 `newRequest`：后者会**继承**上一跳的请求头，
-    /// 那是「Bearer 跟着跳转漂到别家主机」的经典形态。重建之后凭证只在
-    /// 「原始权威 == 落地权威」时才原样延续 —— 许可名单主机一次都拿不到它。
+    /// 那是「Bearer 跟着跳转漂到别家主机」的经典形态。重建之后只有两种形状：
+    /// · `.keepCredentials` ⇒ 同权威的生产出口，Bearer 原样延续（同源换址是正常形态）；
+    /// · `.withoutCredentials` ⇒ **一条头都不带**的匿名 GET（名单存储主机永远拿不到凭证，
+    ///   也不接受任何别的头：R18-4 剥的是整包 header，不是只剥 `Authorization` 那一行）。
     static func hoppedRequest(
         to landing: URL,
         from previous: URLRequest,
@@ -127,25 +137,31 @@ enum MediaEgressHop {
     ) -> URLRequest? {
         guard let originalURL = original.url else { return nil }
         // 「带不带凭证」取**原始与当前这一跳的并**：中途莫名其妙长出来的 Authorization 头
-        // 也必须按凭证类裁决（只能同源），而不是被当成公开腿放出去。
+        // 也必须按凭证类裁决（同源或名单剥凭证），而不是被当成公开腿放出去。
         let carriesCredentials = previous.value(forHTTPHeaderField: "Authorization") != nil
             || original.value(forHTTPHeaderField: "Authorization") != nil
-        guard CovaEnvironment.mediaRedirectAllowed(
-            from: originalURL,
-            to: landing,
-            carriesCredentials: carriesCredentials
-        ) else { return nil }
         var request = URLRequest(url: landing)
         request.httpMethod = "GET"
         request.timeoutInterval = timeout
-        guard carriesCredentials, CovaEnvironment.isSameAuthority(originalURL, landing) else {
+        switch CovaEnvironment.mediaHopEgress(
+            from: originalURL,
+            to: landing,
+            carriesCredentials: carriesCredentials
+        ) {
+        case .refused:
+            return nil
+        case .withoutCredentials:
+            return request
+        case .keepCredentials:
+            // 不必在这里再判一次 `isSameAuthority`：`.keepCredentials` 只在
+            // `mediaRedirectAllowed` 的凭证分支成立时才可能出现，而那一支的定义就是
+            // 「两边都是生产出口 + 同一权威」。再写一遍就是同一规则两处各一份（min-2 那一族）。
+            request.setValue(
+                original.value(forHTTPHeaderField: "Authorization"),
+                forHTTPHeaderField: "Authorization"
+            )
             return request
         }
-        request.setValue(
-            original.value(forHTTPHeaderField: "Authorization"),
-            forHTTPHeaderField: "Authorization"
-        )
-        return request
     }
 }
 
@@ -396,7 +412,11 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
     /// 跳转循环的不变量：
     /// · URLSession 那一层由 `AudioRedirectGuard` **无条件**不自动跟随 ⇒ 每一次跳转出站都经过这里；
     /// · 每一次裁决都相对**最初那一条**请求（`original`）比对，链上任何一跳都不许漂出类别边界；
-    /// · 被拒 ⇒ `PlayerError.hostRejected`，且**一次出站都没有**（这是 R17-3 要的形态）；
+    /// · **凭证只延续到「落地自己也是同权威的生产出口」那一条**（`hoppedRequest` 读的是
+    ///   `original` 的头，不是"上一跳的头"）⇒ 落进名单桶之后，桶→桶、桶→名单外都拿不到 Bearer；
+    ///   而"落地仍是生产出口"时带着 Bearer 继续本来就是同源，没有出口边界被越过（R18-4）；
+    /// · 被拒 ⇒ `PlayerError.hostRejected(host:)`，且**一次出站都没有**（这是 R17-3 要的形态）；
+    ///   host 只经 `CovaEnvironment.egressHostLabel` 取 ⇒ 错误里永远不会有 path / 查询 / 签名；
     /// · 3xx 却没有 `Location` ⇒ 服务端故障，按 `badStatus(状态码)` 如实报，不伪装成出口决定；
     /// · 超出 `maximumRedirectHops` ⇒ 同上收尾，绝不让自指跳转变成出站风暴。
     private func openCheckedStream(
@@ -408,7 +428,9 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
         while true {
             // 每一次迭代都是一次真实出站：合流/登出/换号之后一律不许再打（D16②）。
             if Task.isCancelled { throw PlayerError.cancelled }
-            guard let requesting = request.url else { throw PlayerError.hostRejected }
+            guard let requesting = request.url else {
+                throw PlayerError.hostRejected(host: CovaEnvironment.unnameableHostLabel)
+            }
             let stream: URLSession.AsyncBytes
             let response: URLResponse
             do {
@@ -421,13 +443,18 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
                 throw PlayerError.badStatus(0)
             }
             guard let http = response as? HTTPURLResponse else {
-                throw PlayerError.hostRejected
+                // 响应连状态码与权威都没有 ⇒ 不知道字节来自谁，按 host 点名**发起**那一台。
+                throw PlayerError.hostRejected(host: CovaEnvironment.egressHostLabel(of: requesting))
             }
             // C2（投递面兜底）：响应的**最终**权威必须仍是发起那一台主机。判在 `createFile`
             // 之前 —— 被拒绝时连文件都不该存在。注入式会话没有本层守卫（见 `init` 的警告），
             // 这道就是它唯一的防线，所以 D23 之后仍然不许拆。
+            // R18-4 之后它的定位一个字都没变：它证明的是「字节来自我们亲手核准的那一条落地」，
+            // 与那一条在不在名单上无关 —— 名单落地拿到了一条**自称别家**的响应照样红。
             guard AudioAuthorityMatch.matches(requestURL: requesting, responseURL: http.url) else {
-                throw PlayerError.hostRejected
+                throw PlayerError.hostRejected(
+                    host: CovaEnvironment.egressHostLabel(of: http.url ?? requesting)
+                )
             }
             guard (300..<400).contains(http.statusCode) else { return (stream, http) }
             guard hops < Self.maximumRedirectHops else { throw PlayerError.badStatus(http.statusCode) }
@@ -440,7 +467,7 @@ public final class URLSessionPrivateAudioTransport: PrivateAudioTransport, @unch
                 original: initial,
                 timeout: Self.requestTimeout
             ) else {
-                throw PlayerError.hostRejected
+                throw PlayerError.hostRejected(host: CovaEnvironment.egressHostLabel(of: landing))
             }
             hops += 1
             request = next

@@ -42,13 +42,18 @@ public enum CovaEnvironment {
 
     /// 许可名单上的**桶名**（D23② 的唯一事实源，2026-09-25 只读核对 `web` 仓
     /// `src/lib/page-media.ts:91-96` 与 `src/lib/catalog-audio-url.ts:10-12`）：
-    /// · `covalink-covers-…`：封面桶，**公开读**（App 里每一张封面今天就在这台主机上）；
-    /// · `covalink-audio-…`：整曲桶，私有读，只允许**服务端签发的地址**出现在查询串里
-    ///   （NEEDS-29 未解锁前它仍然是「有权益分支的落地主机」，不是凭证出口）。
+    /// · `covalink-covers-…`：封面桶，**公开读**（App 里每一张封面今天就在这台主机上；
+    ///   20/20 目录封面是**无查询**直链）；
+    /// · `covalink-audio-…`：整曲桶，私有读，只允许**服务端签发的地址**出现在查询串里。
+    ///   R18-4 之后它是「已授权分支的那一条落地」：带凭证的请求被 302 到这台时，音频腿
+    ///   **剥掉凭证**再发一次匿名 GET（见 `mediaHopEgress`）—— 名单从来不是**凭证**出口，
+    ///   这一条到今天仍然一个字不改。
     ///
     /// 刻意**不**放宽成 `*.myqcloud.com`：那样会把 `covalink-uploads-…`（用户私产桶）与
     /// 任何别人账号下同前缀的桶一起放进来 —— `web` 侧正因为这个被否过一次。
-    /// 名单按「桶名 + 存储区」**精确**匹配（既不是前缀也不是通配）：新增桶 = 改这一行 + 过 D23。
+    /// 名单按「桶名 + 存储区」**精确**匹配（既不是前缀也不是通配 —— 两个方向都由
+    /// `CovaEnvironmentTests.testSanctionedHostMatchingRefusesBothThePrefixAndTheSuffixDirection`
+    /// 钉住）：新增桶 = 改这一行 + 过 D23。
     public static let sanctionedStorageBuckets: [String] = [
         "covalink-covers-1301797874",
         "covalink-audio-1301797874",
@@ -67,11 +72,33 @@ public enum CovaEnvironment {
     /// D23②：**不带凭证**的公开媒体出口判定 = 生产出口 ∪ 许可名单存储主机。
     ///
     /// 这不是「任何 https 主机」：名单之外的桶、别的地域（`.cos.ap-beijing.…`）、
-    /// 前缀相似的 `evil-myqcloud.com`、把名单主机当后缀挂上去的
-    /// `covalink-covers-….myqcloud.com.attacker.test` 一律不合格。
+    /// 前缀相似的 `evil-myqcloud.com`，以及**两个方向**的挂甲 ——
+    /// 名单当前缀（`covalink-covers-….myqcloud.com.attacker.test`）与
+    /// 名单当后缀（`x.covalink-covers-….myqcloud.com`，那台桶的"子域"）—— 一律不合格。
+    ///
+    /// 挂甲这一句不许改写成"反正解析不到"：2026-09-25 本机 `getaddrinfo` 实测
+    /// **整个 `.cos.ap-shanghai.myqcloud.com` 区域是通配解析**（连
+    /// `totally-not-a-bucket-xyz99999.cos.ap-shanghai.myqcloud.com` 都返回同一组 A 记录），
+    /// 子域挂甲与真桶拿到的是**同一台腾讯边缘** ⇒ 可达性在这里什么也证明不了；
+    /// 而 COS 正是按 `Host` 头取桶名，多出来的那一截就是**另一台桶**（我们不认的那一台）。
+    /// 唯一撑得住的判据还是那句：**桶标号精确 + 存储区精确**。
+    /// 名单串只是出现在 path / query 里（`evil.test/covalink-covers-…`）同样不合格：
+    /// host 只经 `normalizedEgressHost` 取。
     public static func isSanctionedMediaURL(_ url: URL) -> Bool {
         guard let host = normalizedEgressHost(of: url) else { return false }
         return host == apiBaseURL.host()?.lowercased() || isSanctionedStorageHost(host)
+    }
+
+    /// 落地**本身就是名单上的那台存储主机**（出口形态合格 + host 精确命中名单）。
+    ///
+    /// 与 `isSanctionedMediaURL` 的区别只有一处、但那一处是全部：本函数**不含**生产出口。
+    /// 「落地在生产出口」与「落地在存储桶」在 R18-4 之后要走两条不同的路（前者可以带着
+    /// Bearer 继续，后者必须把 Bearer 留下），所以两者不许混在同一个布尔里。
+    /// host 仍然只经 `normalizedEgressHost` 取（scheme / userinfo / 规范端口 / 私网 / 大小写
+    /// 全都先过一遍），名单串出现在 path 或 query 里不可能被误判成 host。
+    static func isSanctionedStorageLanding(_ url: URL) -> Bool {
+        guard let host = normalizedEgressHost(of: url) else { return false }
+        return isSanctionedStorageHost(host)
     }
 
     /// 权威归一化（`scheme://host`，**规范端口折叠**）：`covalink.cn` 与 `covalink.cn:443`
@@ -91,14 +118,21 @@ public enum CovaEnvironment {
         return first == second
     }
 
-    /// **D23 的唯一跳转裁决面**：一条 3xx 的 `Location` 能不能被跟。
+    /// **D23 的跳转裁决面（旧的那一条）**：一条 3xx 的 `Location` 能不能**按原类别带着原来
+    /// 那套凭证**被跟。
     ///
-    /// · `carriesCredentials == true`（请求带 `Authorization: Bearer …`）⇒ 落地必须**仍是同一权威**
-    ///   且仍在生产出口内。许可名单**不构成**放行理由 —— 凭证永不出生产出口，这是不可谈判的一半
-    ///   （硬边界 2/3、D5、D7、D10）。
-    /// · `carriesCredentials == false`（公开媒体：封面、签名地址）⇒ 落地必须在
-    ///   `isSanctionedMediaURL` 名单内，且**发起那一条本身也得在名单内**
-    ///   （名单主机之间跳转仍在名单内；名单外根本没有发起的资格）。
+    /// 定位要说准（R18-4 之后本函数的**含义**没变、**用法**变窄了）：它回答的是「这一类请求
+    /// 原样继续合不合规」，所以今天它仍然是三条腿的唯一判据 ——
+    /// · API 腿与 SSE 腿（`decideCredentialedRedirect` ⇒ `HTTPTransport.hoppingCheckedStream`）：
+    ///   那两条追出去时**会原样带着凭证**，所以名单对它们**不构成**放行理由，一个字都不改；
+    /// · 美术腿（`CovaUI.CovaArtworkEgressGuard`）：那条本来就无凭证，走第二个分支；
+    /// · 音频腿（`CovaPlayer.MediaEgressHop`）：**改走 `mediaHopEgress`** —— 它在本函数的答复
+    ///   之上只多做一件事：把「带凭证的腿落在名单桶上」这一格从"拒"变成"跟，但剥掉凭证"。
+    ///
+    /// · `carriesCredentials == true` ⇒ 落地必须**仍是同一权威**且仍在生产出口内（凭证永不出
+    ///   生产出口，这是不可谈判的一半：硬边界 2/3、D5、D7、D10）；
+    /// · `carriesCredentials == false` ⇒ 落地必须在 `isSanctionedMediaURL` 名单内，
+    ///   且**发起那一条本身也得在名单内**（名单主机之间仍在名单内；名单外没有发起的资格）；
     /// · 两类共用出口形态守卫：不许降级 http、不许 userinfo、不许非规范端口、不许私网。
     public static func mediaRedirectAllowed(
         from original: URL,
@@ -110,6 +144,55 @@ public enum CovaEnvironment {
             return isSameAuthority(original, landing)
         }
         return isSanctionedMediaURL(original) && isSanctionedMediaURL(landing)
+    }
+
+    /// 媒体腿一跳的裁决结果：**能不能跟，以及那一跳带不带凭证**。
+    public enum MediaHopEgress: Equatable, Sendable {
+        /// 落地仍是同一权威的生产出口 ⇒ 重建的请求**原样带着** Bearer（NEEDS-15 的同源换址）。
+        case keepCredentials
+        /// 落地可以跟，但那一跳**一个头都不带**：公开腿的名单内落地，**或**带凭证的腿落在
+        /// 名单存储主机上（R18-4 那一格 —— 凭证留在生产出口，出去的是匿名 GET）。
+        case withoutCredentials
+        /// 都不合格 ⇒ 拒：那一次出站**绝不发生**，并由调用方点名落地 host。
+        case refused
+    }
+
+    /// **D23（R18-4）音频腿跳转的唯一裁决面**：`mediaRedirectAllowed` 的答复 + 名单落地那一格。
+    ///
+    /// 为什么必须有第二格（这不是把闸放宽，是把一扇本来就开着的门认下来）：
+    /// 2026-09-25 只读核对部署侧源码（`web` 仓 `src/app/api/tracks/[id]/preview-stream/route.ts:47-55`）：
+    /// **只有** `admin || hasFullAccess` 那一支 `return new NextResponse(null, {status: 302,
+    /// headers: {Location: catalogAudioSignedUrl(key, FULL_PLAY_TTL)}})`，另一支直接
+    /// `catalogAudioHead` + 预览窗**同源回字节**（今天 3 条 preview 路径的只读实测：`HTTP/2 206` +
+    /// `audio/mpeg` + **无 Location 头**）⇒ 权益是在**第一条**请求上判定并换算成一条签名地址的，
+    /// 为第二跳剥掉凭证**不可能换来任何提权**（匿名那条腿本来就自己拿预览段）。
+    /// 而旧形状里名单上那台桶**按构造永远不可达**，后果是**已购整曲在本 App 里从未播通过**。
+    ///
+    /// 同一批只读实测里两条必须记住的形态：
+    /// · `GET /api/tracks` 20/20 的 `cover` 是封面桶的**无查询**直链 ⇒ 「一条媒体地址出网」这件事
+    ///   今天已经在跑，签名整曲地址只是同一类残留里**多带一段 query** 的那一个；
+    /// · `getaddrinfo` 实测整个 `.cos.ap-shanghai.myqcloud.com` 区域**通配解析**（连不存在的桶名
+    ///   都返回同一组 A）⇒ 拒绝子域挂甲**不是**因为"它不可达"，而是因为"它不是那台桶"：
+    ///   精确匹配的代价就是要拒掉一个解析得动、也确实打在腾讯边缘的名字。别把这条写成"反正解析不到"。
+    ///
+    /// 仍然不可谈判的部分（本函数一条都不松）：
+    /// · 凭证只在「同一权威的生产出口」上延续（第一个分支就是 `mediaRedirectAllowed`）；
+    /// · 走 `case .withoutCredentials` 的那一条**发起地必须是生产出口**（装配漂移关在外面）；
+    /// · 落地必须是**名单上那台存储主机**：换桶、换存储区、子域挂甲、`@userinfo`、
+    ///   非规范端口、`http` 降级一律 `refused` —— 「在 `myqcloud.com` 之下」从来不是放行理由；
+    /// · 名单**永远不构成"把凭证搬过去"的理由**：这里放行的那一跳，出去的是匿名 GET。
+    public static func mediaHopEgress(
+        from original: URL,
+        to landing: URL,
+        carriesCredentials: Bool
+    ) -> MediaHopEgress {
+        if mediaRedirectAllowed(from: original, to: landing, carriesCredentials: carriesCredentials) {
+            return carriesCredentials ? .keepCredentials : .withoutCredentials
+        }
+        guard carriesCredentials, isProductionOrigin(original), isSanctionedStorageLanding(landing) else {
+            return .refused
+        }
+        return .withoutCredentials
     }
 
     /// 取不出主机时的**占位标签**（拒绝信息里宁可点名"没有主机"，也不许回退成整串地址 ——
@@ -153,11 +236,15 @@ public enum CovaEnvironment {
         case unresolvable
     }
 
-    /// **D23① 的唯一跳转裁决面**：一条带凭证的 3xx 能不能追，以及追到哪里。
+    /// **D23① 的凭证腿跳转裁决面**（普通 API 与 SSE 两条腿用）：一条带凭证的 3xx 能不能追，
+    /// 以及追到哪里。
     ///
-    /// 判据本身仍是 `mediaRedirectAllowed`（音频腿、封面腿、这两条凭证腿共用同一个函数），
-    /// 本函数只多做两件它做不到的事：把相对 `Location` 解析出来、把拒绝点名到 host。
-    /// 「许可名单」在这里**不构成**放行理由 —— 凭证永不出生产出口（硬边界 2/3、D5、D7、D10）。
+    /// 判据就是 `mediaRedirectAllowed`，本函数只多做两件它做不到的事：把相对 `Location`
+    /// 解析出来、把拒绝点名到 host。**名单在这里依然不构成放行理由** —— 这两条腿追出去时
+    /// **原样带着 Bearer**（重建请求的那一段就在 `HTTPTransport`），那正是凭证永不出生产出口
+    /// 不能碰的形状（硬边界 2/3、D5、D7、D10）。
+    /// 音频腿**不走本函数**：它追名单桶的那一跳会把凭证整条剥掉（`mediaHopEgress`），
+    /// 所以它多得到一格「落地是名单桶 ⇒ 匿名重发」。两条腿的差别不在名单，在带不带着凭证走。
     public static func decideCredentialedRedirect(
         response: HTTPURLResponse,
         original: URL

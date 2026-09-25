@@ -409,6 +409,11 @@ final class CovaEnvironmentTests: XCTestCase {
     }
 
     /// D23①（不可谈判的一半）：带凭证的请求只能落在**同一权威**，名单不构成放行理由。
+    ///
+    /// ⚠️ 定位要说准（R18-4）：本函数答的是「这一类请求**原样**（凭证照带）跟不跟得出去」。
+    /// 音频腿问的是 `mediaHopEgress` —— 它多一格「落地是名单上的存储主机 ⇒ 剥掉凭证再发」，
+    /// 所以**不能**把这里读成「已授权的整曲播不出来」；那一句已被实测否证，见
+    /// `testMediaHopEgressStripsCredentialsAtTheAllowListBoundary`。
     func testCredentialBearingRedirectPolicyNeverLeavesProductionAuthority() {
         let original = URL(string: "https://covalink.cn/api/tracks/one/preview-stream")!
         XCTAssertTrue(CovaEnvironment.mediaRedirectAllowed(
@@ -627,13 +632,15 @@ final class CovaEnvironmentTests: XCTestCase {
                 "以名单开头但多一个字符 = 另一台主机（钉 hasPrefix 变异）"
             )
             // 方向②（本次补的洞）：我们的全名当**后缀**、前面挂上去 ⇒ `hasSuffix` 会放行。
-            // 2026-09-25 只读 `dig` 实测（**推翻了我自己先前想写的理由**）：
-            // `x.covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com` **确实解析**，
-            // 且与真桶同一串 CNAME（`sh.file.myqcloud.com.`）、同一批 A 记录 ⇒
-            // "子域不存在 / 不可达"不是这里的理由。拒的理由是**身份**：COS 边缘按 `Host`
-            // 头取桶名，多出来那一截就是**另一个（不存在的）桶**，而 D23 钉的是
-            // 「精确桶标号 + 精确存储区」；放行它等于允许任意多层前导 label ——
-            // 那正好就是 `hasSuffix` 的形状。（对照 `….com.attacker.test`：实测**不**解析。）
+            // 2026-09-25 本机 `getaddrinfo` 实测（**推翻了我自己先前准备写的理由**）：
+            // 整个 `.cos.ap-shanghai.myqcloud.com` 区域是**通配解析** —— 桶名的子域、甚至
+            // `totally-not-a-bucket-xyz99999.cos.ap-shanghai.myqcloud.com` 都返回**同一组 A 记录**
+            // ⇒ "子域解析不到 / 不可达"在这里什么也证明不了。而 COS 按 `Host` 头取桶名，
+            // 多出来那一截就是**另一台（我们不认的）桶**。拒绝的唯一硬理由是身份：
+            // D23 钉的是「精确桶标号 + 精确存储区」；放行它等于允许任意多层前导 label ——
+            // 那正好就是 `hasSuffix` 的形状。
+            // （另一侧实测：`….com.attacker.test` **不**解析 —— 那一类要的是"别人域名下的
+            //   一个名字"，与这一类的"同一台边缘上的另一个桶名"是两种不同的失效方式。）
             for spoofed in [
                 "x.\(sanctioned)",                          // 名单主机的**子域**（解析得到，但不是那台桶）
                 "evil.attacker.\(sanctioned)",              // 更深一层的子域
@@ -778,5 +785,159 @@ final class CovaEnvironmentTests: XCTestCase {
             CovaEnvironment.egressHostLabel(of: rootDot),
             "covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com."
         )
+    }
+
+    // MARK: - R18-4：媒体腿一跳的裁决（带凭证 / 剥掉凭证 / 拒）三条腿各是什么形状
+
+    private static let audioBucketLanding =
+        "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3?sig=%2Bx%3D%3D"
+    private static let previewOrigin = "https://covalink.cn/api/tracks/library-0001/preview-stream"
+
+    /// 裁决面**只有一个**：`mediaHopEgress` 的答复必须逐格等于 `mediaRedirectAllowed` 的答复
+    /// 加上「带凭证的腿落在名单桶上 ⇒ 剥掉凭证再发」这一格。这条用例是**等价关系**本身 ——
+    /// 少了它，两个函数会在下一次改动里各漂一半（min-2 那一族）。
+    func testMediaHopEgressIsExactlyMediaRedirectPlusTheStrippedCredentialCase() throws {
+        let original = try XCTUnwrap(URL(string: Self.previewOrigin))
+        let landings = [
+            Self.previewOrigin,
+            "https://covalink.cn:443/api/tracks/library-0001/preview-stream?seg=2",
+            "https://covalink.cn.evil.invalid/x",
+            "https://cdn.covalink.cn/x",
+            Self.audioBucketLanding,
+            "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg",
+            "https://x.covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3",
+            "http://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/x.mp3",
+            "https://other-authority.invalid/x.mp3",
+        ]
+        for carriesCredentials in [true, false] {
+            for text in landings {
+                let landing = try XCTUnwrap(URL(string: text))
+                let allowed = CovaEnvironment.mediaRedirectAllowed(
+                    from: original, to: landing, carriesCredentials: carriesCredentials
+                )
+                let hop = CovaEnvironment.mediaHopEgress(
+                    from: original, to: landing, carriesCredentials: carriesCredentials
+                )
+                if allowed {
+                    let expected: CovaEnvironment.MediaHopEgress =
+                        carriesCredentials ? .keepCredentials : .withoutCredentials
+                    XCTAssertEqual(
+                        hop, expected,
+                        "旧裁决说可以 ⇒ 新裁决只能给出对应的带/不带凭证：\(text)"
+                    )
+                }
+                // 反向只允许这一格新增：带凭证 + 落地是名单上的**存储主机**（不含生产出口）。
+                guard !allowed, case .withoutCredentials = hop else { continue }
+                XCTAssertTrue(carriesCredentials, "公开腿不许新增任何放行：\(text)")
+                XCTAssertTrue(
+                    CovaEnvironment.isSanctionedStorageLanding(landing),
+                    "新增的那一格只属于名单存储主机：\(text)"
+                )
+            }
+        }
+    }
+
+    /// **R18-4 的那一格**：带凭证的音频腿被 302 到名单桶 ⇒ 可以跟，但那一跳**不带凭证**。
+    /// 这就是「已授权整曲第一次能播出来」的判据本体（旧答复是"拒" ⇒ 名单里那台桶按构造不可达）。
+    func testMediaHopEgressStripsCredentialsForSanctionedBucketLandings() throws {
+        let original = try XCTUnwrap(URL(string: Self.previewOrigin))
+        for landing in [
+            Self.audioBucketLanding,
+            "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg",
+            "https://COVALINK-AUDIO-1301797874.COS.AP-SHANGHAI.MYQCLOUD.COM/tracks/full.mp3",
+            "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com:443/tracks/full.mp3?sig=x",
+        ] {
+            XCTAssertEqual(
+                CovaEnvironment.mediaHopEgress(from: original, to: try XCTUnwrap(URL(string: landing)),
+                                               carriesCredentials: true),
+                .withoutCredentials,
+                "名单桶落地必须剥掉凭证再发：\(landing)"
+            )
+        }
+        // 同权威那一格不许被顺手改掉（NEEDS-15 那条腿仍然带着凭证继续）。
+        XCTAssertEqual(
+            CovaEnvironment.mediaHopEgress(
+                from: original, to: try XCTUnwrap(URL(string: "\(Self.previewOrigin)?seg=2")),
+                carriesCredentials: true
+            ),
+            .keepCredentials
+        )
+        // 公开腿（不带凭证）一格都不许多：与旧裁决同答复。
+        XCTAssertEqual(
+            CovaEnvironment.mediaHopEgress(
+                from: original, to: try XCTUnwrap(URL(string: Self.audioBucketLanding)),
+                carriesCredentials: false
+            ),
+            .withoutCredentials
+        )
+    }
+
+    /// R18-4 新增那一格的**边界**（其余一律关）：发起地不是生产出口 ⇒ 凭证不出门；落地是子域 /
+    /// 前缀挂甲 / 换桶 / 换区 / 降级 / userinfo / 非规范端口 / 名单串住在 path ⇒ `refused`。
+    /// 「在 `myqcloud.com` 之下」从来不是放行理由，「以剥凭证为名」也不是。
+    func testMediaHopEgressRefusesEverythingOutsideTheNamedBucketHosts() throws {
+        let original = try XCTUnwrap(URL(string: Self.previewOrigin))
+        for refused in [
+            "https://x.covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3",
+            "https://evil.covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/x.mp3",
+            "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com.attacker.test/x.mp3",
+            "https://evilcovalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/x.mp3",
+            "https://covalink-audio-1301797874.cos.ap-beijing.myqcloud.com/x.mp3",
+            "https://covalink-uploads-1301797874.cos.ap-shanghai.myqcloud.com/x.mp3",
+            "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com:8443/x.mp3",
+            "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com:0443/x.mp3",
+            "http://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/x.mp3",
+            "https://bearer@covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/x.mp3",
+            "https://other-authority.invalid/x.mp3",
+            "https://evil.test/covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/x.mp3",
+            "file:///tmp/pawned.mp3",
+        ] {
+            let landing = try XCTUnwrap(URL(string: refused))
+            XCTAssertEqual(
+                CovaEnvironment.mediaHopEgress(from: original, to: landing, carriesCredentials: true),
+                .refused,
+                "新增那一格不许吃进这些：\(refused)"
+            )
+            XCTAssertEqual(
+                CovaEnvironment.mediaHopEgress(from: original, to: landing, carriesCredentials: false),
+                .refused,
+                "公开腿同样不认：\(refused)"
+            )
+        }
+        // 发起地本身不是生产出口 ⇒ 带凭证的腿连"剥了再发"的资格都没有（配置漂移关在外面）。
+        let foreign = try XCTUnwrap(
+            URL(string: "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg")
+        )
+        XCTAssertEqual(
+            CovaEnvironment.mediaHopEgress(from: foreign, to: try XCTUnwrap(URL(string: Self.audioBucketLanding)),
+                                           carriesCredentials: true),
+            .refused
+        )
+    }
+
+    /// **两条凭证腿的不对称是设计，不是漏**：API 腿与 SSE 腿追出去时**原样带着 Bearer**
+    /// （`HTTPTransport.hoppingCheckedStream` 从 `original` 复制头），所以名单对它们**不构成**
+    /// 放行理由；音频腿能多那一格，只因为它把凭证整条留下。谁把两边"统一"成一个函数，
+    /// 这条用例就会红 —— 那正是把 Bearer 送进对象存储的形状。
+    func testAPIAndSSECredentialedLegStillRefusesWhatTheAudioLegMayFollowAnonymously() throws {
+        let original = try XCTUnwrap(URL(string: Self.previewOrigin))
+        let landing = try XCTUnwrap(URL(string: Self.audioBucketLanding))
+        let response = HTTPURLResponse(
+            url: original, statusCode: 302, httpVersion: "HTTP/1.1",
+            headerFields: ["Location": Self.audioBucketLanding]
+        )!
+        XCTAssertEqual(
+            CovaEnvironment.mediaHopEgress(from: original, to: landing, carriesCredentials: true),
+            .withoutCredentials,
+            "前置：音频腿这一格是放行的（否则本用例只钉住了「两边都关」这种假对称）"
+        )
+        guard case .refused(let refusal) = CovaEnvironment.decideCredentialedRedirect(
+            response: response, original: original
+        ) else {
+            return XCTFail("API/SSE 腿绝不能跟到名单桶：它会把 Bearer 送进对象存储")
+        }
+        XCTAssertEqual(refusal.host, "covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com")
+        XCTAssertEqual(refusal.rule, .credentialLeg)
+        XCTAssertFalse(refusal.host.contains("sig"), "点名只出 host，签名住在查询里：\(refusal.host)")
     }
 }

@@ -16,8 +16,14 @@ public enum PlayerError: Error, Equatable, Sendable, CustomStringConvertible {
     case engineNotReady
     /// 私有音频未完成本地化就被要求播放（D7 硬规则）。
     case notLocalized(String)
-    /// 出站主机被拒绝（只允许 `CovaEnvironment.isProductionOrigin`）。
-    case hostRejected
+    /// 出站主机被拒绝（D23①/②/③ 的三类拒法共用这一条）。
+    ///
+    /// 关联值**只有 host**，而且必须由 `CovaEnvironment.egressHostLabel(of:)` 给出：
+    /// 那个函数只取 host（小写），path / query / fragment 一概不带 —— 签名住在 query 里，
+    /// 而这条错误会经 `PlayerFailure.message` 上屏、也会进日志（AGENTS 硬边界 3）。
+    /// 为什么要带 host（D23③ 的可用性判据）：桶名或存储区一变，失败必须是「看得见的哪一台」，
+    /// 而不是又一句"地址非法"让人去猜（R16-1 那一族的教训就是故障不响、只是不动）。
+    case hostRejected(host: String)
     /// 下载到的字节数为 0（空文件）。
     case emptyDownload
     /// 下载字节数与响应声明的期望长度不符（截断）。
@@ -44,7 +50,7 @@ public enum PlayerError: Error, Equatable, Sendable, CustomStringConvertible {
         case .unknownItem(let id): return "队列中不存在曲目：\(id)"
         case .engineNotReady: return "播放引擎未就绪"
         case .notLocalized(let id): return "私有音频尚未本地化：\(id)"
-        case .hostRejected: return "出站地址被拒绝（非生产出口）"
+        case .hostRejected(let host): return "出站主机被拒绝：\(host)（不是这一类请求可出站的主机，未交付任何字节）"
         case .emptyDownload: return "下载结果为空文件（0 字节）"
         case .truncated(let expected, let actual): return "下载被截断（期望 \(expected) 字节，实得 \(actual)）"
         case .badStatus(let code): return "音频下载响应状态码 \(code)"

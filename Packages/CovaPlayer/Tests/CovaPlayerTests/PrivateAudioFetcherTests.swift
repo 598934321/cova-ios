@@ -259,15 +259,21 @@ final class PrivateAudioFetcherTests: XCTestCase {
 
     // MARK: - 出口守卫与会话守卫（先于任何写入）
 
-    func testNonProductionHostIsRejectedWithoutTransportCall() async {
+    /// D23③：出口守卫拒绝时**必须点名那一台 host**（只有 host，签名与路径一概不带）——
+    /// 桶名/存储区一变，这一句就是唯一能定位故障的线索（R16-1 那一族的教训：不响的故障看不见）。
+    func testNonProductionHostIsRejectedWithoutTransportCall() async throws {
         let directory = TemporaryDirectory()
         defer { directory.remove() }
         let transport = StubPrivateAudioTransport()
         let fetcher = makeFetcher(in: directory, transport: transport)
-        let foreign = try! AudioURL(https: URL(string: "https://cdn.covalink.example/audio/one.m4a")!)
+        let foreign = try! AudioURL(https: URL(string: "https://cdn.covalink.example/audio/LEAK-PATH.m4a?sig=LEAK-SIG")!)
         let result = await fetcher.localizedURL(for: request(source: foreign))
         guard case .failure(let error) = result else { return XCTFail("非生产出口必须被拒绝：\(result)") }
-        XCTAssertEqual(error, .hostRejected)
+        XCTAssertEqual(error, .hostRejected(host: "cdn.covalink.example"))
+        let described = error.description
+        for forbidden in ["LEAK-SIG", "LEAK-PATH", "?", "=", "/"] {
+            XCTAssertFalse(described.contains(forbidden), "错误进日志会带出地址片段：\(described)")
+        }
         let calls = await transport.callCount
         XCTAssertEqual(calls, 0, "出口守卫必须在发起传输之前")
     }

@@ -5,7 +5,9 @@ import Foundation
 ///
 /// 硬性顺序（任何一步失败都不产生可播地址）：
 /// 1. owner 与 generation 必须与凭证快照一致（防跨账号 / 防在途旧代次）；
-/// 2. 出站主机必须是 `CovaEnvironment.isProductionOrigin`（唯一网络出口，D10）；
+/// 2. **发起**那一条必须是 `CovaEnvironment.isProductionOrigin`（唯一网络出口，D10）；
+///    3xx 的落地由传输层按 D23 逐跳裁决 —— 许可名单的存储桶只作为**被核准的那一条落地**
+///    出现，并且那一跳不带任何凭证（R18-4：已授权整曲正是靠这一条才出得来）；
 /// 3. 经**落盘式**传输流式写入临时文件（`HTTPTransport` 整包返回 Data，故不复用它）；
 /// 4. 校验完成性：字节数 > 0，且响应声明长度时必须相等（拒绝空文件与截断）；
 /// 5. 原子 `move` 到 owner 目录，返回 `file://`；
@@ -98,10 +100,13 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
             return .failure(error)
         }
         guard case .https = request.source.scheme else {
-            return .failure(.hostRejected)
+            return .failure(.hostRejected(host: CovaEnvironment.egressHostLabel(of: request.source.value)))
         }
+        // 发起地**只能**是生产出口（D10 + D23①）。整曲桶从来不是"直接发过去"的目标：它是这一条
+        // 请求拿到 302 之后由 `MediaEgressHop` 以**匿名请求**重发的那一条落地（R18-4）——
+        // 少这一道，服务端原文里的任何一台 host 都能被当成私有音频的来源。
         guard CovaEnvironment.isProductionOrigin(request.source.value) else {
-            return .failure(.hostRejected)
+            return .failure(.hostRejected(host: CovaEnvironment.egressHostLabel(of: request.source.value)))
         }
         guard let owner = request.session.owner else {
             return .failure(.credentialUnavailable)

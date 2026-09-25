@@ -496,10 +496,20 @@ final class PlaybackCoordinatorTests: XCTestCase {
 
     /// R16-1a：出口守卫拒绝的是「字节来自不被允许的权威」，而不是「网络不通」。
     /// 线上形态（`web` 仓 `preview-stream/route.ts:47-55`，只读核对）：已授权那一条腿
-    /// 302 到 COS host ⇒ `AudioAuthorityMatch` 判权威换人 → `.hostRejected`。
-    /// 把它桶进 `.network` 就是在骗买家「检查一下网络」，而真相是后端契约缺口。
+    /// 302 到 COS host ⇒ 名单内的落地由音频腿剥掉凭证去取（R18-4），**名单外**的落地
+    /// 与被冒充的权威都仍然是 `.hostRejected`。把它桶进 `.network` 就是在骗买家
+    /// 「检查一下网络」，而真相是「那一台不是许可出口」。
     func testHostRejectedIsClassifiedAsUnavailableSourceNotNetwork() {
-        XCTAssertEqual(PlaybackCoordinator.kind(for: .hostRejected), .invalidSourceURL)
+        XCTAssertEqual(
+            PlaybackCoordinator.kind(for: .hostRejected(host: "covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com")),
+            .invalidSourceURL
+        )
+        // 点名口径（D23③）：错误里带着那台 host，但仍然只有 host —— path/query 一概不出。
+        let rejection = PlayerError.hostRejected(host: "evil.invalid")
+        XCTAssertTrue(rejection.description.contains("evil.invalid"), "拒绝必须看得见是哪一台：\(rejection)")
+        for forbidden in ["?", "=", "/", "Bearer", "://"] {
+            XCTAssertFalse(rejection.description.contains(forbidden), "错误文本带出了地址片段：\(rejection)")
+        }
         // 不许顺手把真·网络形态也一起改判（这三条仍必须是可重试的网络类）。
         XCTAssertEqual(PlaybackCoordinator.kind(for: .badStatus(502)), .network)
         XCTAssertEqual(PlaybackCoordinator.kind(for: .truncated(expected: 10, actual: 4)), .network)
@@ -508,7 +518,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
 
     func testPreparerFailureIsClassifiedAndNeverReachesEngine() async {
         let preparer = StubSourcePreparer()
-        await preparer.configure(.failWith(.hostRejected))
+        await preparer.configure(.failWith(.hostRejected(host: "evil.invalid")))
         let subject = PlaybackCoordinator(engine: engine, clock: clock, sourcePreparer: preparer)
         _ = await subject.replaceQueue([TestItems.make("a", source: .bearerRequired(TestItems.audioURL()))])
         _ = await subject.start()
@@ -961,7 +971,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
 
     /// 缺陷 P2 的同族：迟到的 A **失败**也不得计入新集次（否则用户换曲白扣一次连击）。
     func testStaleLoadFailureAfterSkipIsDiscardedEntirely() async {
-        let preparer = GatedSourcePreparer(gating: ["a"], failing: ["a": .hostRejected])
+        let preparer = GatedSourcePreparer(gating: ["a"], failing: ["a": .hostRejected(host: "evil.invalid")])
         let subject = PlaybackCoordinator(
             engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
         )
@@ -1272,7 +1282,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
 
     /// C1 的同族：teardown 之后迟到的**失败**也不得留下任何账（连击 / lastFailure / 状态）。
     func testLateLocalizationFailureAfterTeardownLeavesNoTrace() async {
-        let preparer = GatedSourcePreparer(gating: ["priv"], failing: ["priv": .hostRejected])
+        let preparer = GatedSourcePreparer(gating: ["priv"], failing: ["priv": .hostRejected(host: "evil.invalid")])
         let subject = PlaybackCoordinator(
             engine: engine, clock: clock, nowPlaying: nowPlaying, sourcePreparer: preparer
         )
