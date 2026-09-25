@@ -281,6 +281,39 @@ public struct MembershipView: View {
     }
 }
 
+// MARK: - 14 的联系区常量（§7：无端点，全部本地静态）
+
+/// 14 §7 钉死的三条本地常量 + §6 钉死的读法串，收成一个源（用例要逐条钉，见
+/// `MineRowsAndPlanLabelTests`：地址错一个字、mailto 多带一个参数，都是屏上看不出来的错）。
+/// §数据源：本屏**没有任何端点**，也不拼用户参数。
+public enum EnterpriseCopy {
+    /// 由 `inventory.md` 行 14 钉死的邮箱地址。
+    public static let contactEmail = "enterprise@covalink.cn"
+    /// 官网落地地址（14 待裁决 3：路径上线前须由产品确认；App 内不拼任何用户参数）。
+    public static let siteURLString = "https://covalink.cn/enterprise"
+    /// §3.E2 展示的是**路径文字**，不是带 scheme 的整串。
+    public static let siteLabel = "covalink.cn/enterprise"
+
+    /// mailto：只带收件人，无 subject / body / 任何用户参数（§7「不拼任何用户参数」）。
+    /// 地址为空 ⇒ nil：宁可行内不动作，也不生成一条 `mailto:` 空壳（那是按了没反应的按钮）。
+    public static func mailto(_ address: String = contactEmail) -> URL? {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+        return URL(string: "mailto:\(trimmed)")
+    }
+
+    /// §6：「发送邮件到 enterprise@covalink.cn，链接，将打开邮件程序」。
+    public static func emailSpoken(_ address: String = contactEmail) -> String {
+        "发送邮件到 \(address)，链接，将打开邮件程序"
+    }
+
+    /// §6：「打开官网企业服务页，链接，将在系统浏览器中打开」。
+    public static let siteSpoken = "打开官网企业服务页，链接，将在系统浏览器中打开"
+
+    /// §7 唯一一处 `entitlements` 消费点的话术（`canRequestProjects == true` 时才出现）。
+    public static let projectLine = "你当前套餐可提交项目需求"
+}
+
 // MARK: - 14 企业服务（零网络请求）
 
 /// 企业服务（design 14）。**这一屏不发任何请求**（连静默的 `me` 刷新都不发），
@@ -289,9 +322,6 @@ public struct MembershipView: View {
 public struct EnterpriseView: View {
     @Environment(AppSession.self) private var session
     @Environment(\.openURL) private var openURL
-
-    private static let contactEmail = "enterprise@covalink.cn"
-    private static let sitePath = "https://covalink.cn/enterprise"
 
     public init() {}
 
@@ -330,40 +360,92 @@ public struct EnterpriseView: View {
         }
     }
 
+    /// §7 唯一一处 `entitlements` 消费点：**只读** `AppSession` 里那份共享的 `/me` 缓存，
+    /// 本屏不为它发请求（§验收第 1 条：进出本屏零网络）。缺字段/未登录 ⇒ 整行不渲染。
+    private var canRequestProjects: Bool {
+        session.me?.entitlements.canRequestProjects == true
+    }
+
+    // MARK: E 联系区（本屏唯一动作集，两行都是**文字行样式**、不是主按钮）
+
     private var contact: some View {
         VStack(alignment: .leading, spacing: CovaSpace.sm) {
             CovaSectionHeader("怎么开始")
-            // 两行都是**文字行样式**，不是主按钮。
-            Button {
-                UIPasteboard.general.string = Self.contactEmail
-                session.showToast("已复制，请在邮件应用里粘贴")
-            } label: {
-                Text("复制邮箱地址 \(Self.contactEmail)")
-                    .font(CovaType.callout).foregroundStyle(CovaColor.accent)
+            if canRequestProjects {
+                Text(EnterpriseCopy.projectLine)
+                    .font(CovaType.caption).foregroundStyle(CovaColor.enterpriseBlue)
+                    .padding(.horizontal, CovaSpace.pageGutter)
             }
-            .buttonStyle(.plain)
+            VStack(spacing: 0) {
+                emailRow
+                CovaRowDivider()
+                siteRow
+            }
+            .padding(CovaSpace.sm)
+            .background(
+                RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous)
+                    .fill(CovaColor.elevated)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous)
+                    .strokeBorder(CovaColor.line, lineWidth: 1)
+            )
             .padding(.horizontal, CovaSpace.pageGutter)
 
-            Button {
-                if let url = URL(string: Self.sitePath) { openURL(url) }
-            } label: {
-                HStack(spacing: CovaSpace.xs) {
-                    Text("在官网了解")
-                    Image(systemName: "arrow.up.right.square")
-                }
-                .font(CovaType.callout).foregroundStyle(CovaColor.accent)
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, CovaSpace.pageGutter)
-
-            Text("长按复制")
+            Text("邮箱地址可长按复制")
                 .font(CovaType.caption).foregroundStyle(CovaColor.muted)
                 .padding(.horizontal, CovaSpace.pageGutter)
         }
     }
 
+    /// E1：✉（enterpriseBlue）+ 地址（`type.mono`）+ `chevron.right`，整行一个 **mailto** 动作。
+    /// 系统拒绝（设备上没邮件程序）由系统处理，**App 内不提示**（§4「错误」）⇒ 这里不接 `openURL` 的返回值。
+    private var emailRow: some View {
+        CovaLinkRow(
+            title: EnterpriseCopy.contactEmail, symbol: "envelope",
+            symbolColor: CovaColor.enterpriseBlue, titleFont: CovaType.mono,
+            minHeight: 44, gutter: CovaSpace.xs,
+            accessibilityLabel: EnterpriseCopy.emailSpoken()
+        ) {
+            Image(systemName: "chevron.right")
+                .font(CovaType.subhead).foregroundStyle(CovaColor.muted)
+                .accessibilityHidden(true)
+        } action: {
+            // 地址不进 query：§7「不拼任何用户参数」，mailto 只带收件人。
+            if let url = EnterpriseCopy.mailto() { openURL(url) }
+        }
+        // §6：长按与 VoiceOver 都走到「复制邮箱地址」。
+        // 用 `contextMenu` 而不是 `onLongPressGesture`：后者与整行的 mailto 按钮**并存**时
+        // 两件事会同时发生（复制 + 弹邮件程序），那既不叫"长按复制"也拦不住误触。
+        .contextMenu {
+            Button("复制邮箱地址") { copyEmail() }
+        }
+        .accessibilityAction(named: "复制邮箱地址") { copyEmail() }
+    }
+
+    /// E2：`globe`（enterpriseBlue）+ 路径文字 + `arrow.up.right.square`，整行一个 Safari 动作。
+    private var siteRow: some View {
+        CovaLinkRow(
+            title: EnterpriseCopy.siteLabel, symbol: "globe",
+            symbolColor: CovaColor.enterpriseBlue, titleFont: CovaType.callout,
+            minHeight: 44, gutter: CovaSpace.xs,
+            accessibilityLabel: EnterpriseCopy.siteSpoken
+        ) {
+            Image(systemName: "arrow.up.right.square")
+                .font(CovaType.subhead).foregroundStyle(CovaColor.muted)
+                .accessibilityHidden(true)
+        } action: {
+            if let url = URL(string: EnterpriseCopy.siteURLString) { openURL(url) }
+        }
+    }
+
+    private func copyEmail() {
+        UIPasteboard.general.string = EnterpriseCopy.contactEmail
+        session.showToast("已复制，请在邮件应用里粘贴")
+    }
+
     private var footnote: some View {
-        Text("套餐说明以官网为准，App 内不售卖。")
+        Text("企业服务按项目范围、交付与授权单独确认，App 内不办理任何业务。")
             .font(CovaType.caption).foregroundStyle(CovaColor.muted)
             .padding(.horizontal, CovaSpace.pageGutter)
     }
