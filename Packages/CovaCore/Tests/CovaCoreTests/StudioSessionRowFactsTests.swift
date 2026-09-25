@@ -236,6 +236,51 @@ final class StudioSessionRowFactsTests: XCTestCase {
         XCTAssertNil(try summary(#"[{"id":"s1","lastMessage":{"text":"怪形态"},"firstCoverUrl":[1,2]}]"#))
     }
 
+    // MARK: - 内存在途账（`AppSession.liveStudioJobs` 的读写语义）
+
+    /// 「有 job 但没有读数」这一档必须**留得住键**：直接用下标 `ledger[id] = nil` 是删键，
+    /// 症状 = 09 刚发起、计划卡还没到的那一段时间里 08 一格环都不出现。
+    func testMarkingWithoutProgressKeepsTheKeyAndRingsIndeterminate() {
+        var ledger: [String: Double?] = [:]
+        ledger.markStudioLive(sessionID: "s1", progress: nil)
+        XCTAssertTrue(ledger.studioHasLiveJob("s1"))
+        XCTAssertNil(ledger.studioProgress("s1"))
+        XCTAssertEqual(ledger.studioRing(for: "s1"), .runningWithoutProgress)
+        // 下标读回来是**双层** optional：`.some(.none)`（有键、无读数）与 `nil`（没这个键）
+        // 要 `?? nil` 拍平才看得懂，而一拍平两档就塌成一档 ⇒ 必须靠 `studioHasLiveJob` 问键。
+        XCTAssertNotNil(ledger["s1"])
+        XCTAssertNil(ledger["s2"])
+    }
+
+    func testMarkingWithProgressThenSettlingRoundTrips() {
+        var ledger: [String: Double?] = [:]
+        ledger.markStudioLive(sessionID: "s1", progress: 0.68)
+        XCTAssertEqual(ledger.studioProgress("s1"), 0.68)
+        XCTAssertEqual(ledger.studioRing(for: "s1"), .running(fraction: 0.68))
+        ledger.settleStudioLive(sessionID: "s1")
+        XCTAssertFalse(ledger.studioHasLiveJob("s1"))
+        XCTAssertEqual(ledger.studioRing(for: "s1"), .idle)
+    }
+
+    /// 账按会话号分格：结算一路不能把另一路的读数一起带走（08 是一次列出多条会话）。
+    func testSettlingOneSessionLeavesTheOthersAlone() {
+        var ledger: [String: Double?] = [:]
+        ledger.markStudioLive(sessionID: "s1", progress: 0.2)
+        ledger.markStudioLive(sessionID: "s2", progress: nil)
+        ledger.settleStudioLive(sessionID: "s1")
+        XCTAssertEqual(ledger.studioRing(for: "s1"), .idle)
+        XCTAssertEqual(ledger.studioRing(for: "s2"), .runningWithoutProgress)
+    }
+
+    /// 没登记过的会话号 ⇒ `.idle`：冷启动那一下整张列表都是这一档，且它**不是**错误态。
+    func testUnknownSessionReadsAsIdleWithoutRegisteringItself() {
+        var ledger: [String: Double?] = [:]
+        XCTAssertEqual(ledger.studioRing(for: "nope"), .idle)
+        XCTAssertFalse(ledger.studioHasLiveJob("nope"))
+        ledger.markStudioLive(sessionID: "nope", progress: 1)
+        XCTAssertEqual(ledger.studioRing(for: "nope"), .running(fraction: 1))
+    }
+
     // MARK: - 测试时钟
 
     /// 参照时刻：2026-09-24 12:00:00 +08:00（= 04:00 UTC）。

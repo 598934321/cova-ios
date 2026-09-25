@@ -5,7 +5,7 @@ import Foundation
 // design 08 §数据源行 140 把这一格的来源钉成一句话：**本设备内存中未终态的 job**
 // （由 09 的发起者持有），并且**明令**不得为列表逐行发详情请求（N+1）、不得造字段。
 // 所以这里只回答「内存里那个值该画成什么」，不回答「那个值从哪来」——
-// 来源接线在 `AppSession`（本仓当前**没有**按会话号存的在途 job 账，见本批报告）。
+// 来源是 `AppSession.liveStudioJobs`（会话号 → 未终态进度），读写语义见本文件末尾那一族扩展。
 //
 // 三个容易做错、于是专门钉死的地方：
 // 1. **没有 job ≠ 进度 0%**：`.idle` 时环、2pt 竖条、「生成中」三者都不出现（§3.C/§5）。
@@ -93,6 +93,47 @@ public enum StudioSessionProgressRing {
                 return value
             }
             .joined(separator: "，")
+    }
+}
+
+// MARK: - 08 §3.C 内存在途账的读写语义（`AppSession.liveStudioJobs`）
+//
+// 账本的形状 `[String: Double?]` 是三档事实压不进两档的结果：
+// 「没有这一路 job」「有 job、没有可读进度」「有 job、进度 0.68」。
+// 后两档**都没有值可写下标**，只能靠"键在不在"区分，而 Swift 的写法会把它们压成一档：
+// · `ledger[id] = nil` 是**删键**（第三档 → 第一档），不是"记一个没有读数的在途"；
+// · `ledger[id]` 读回来，"没这个键"与"有键、值是 nil"都是 `nil`。
+// 症状会是：09 发起了一个还没有计划卡的轮次，回到 08 那一格环**根本不出现**
+// （§3.C 的「生成中」那一档就这么被写没了）。所以这四个入口替调用点记住区别，
+// 别在屏幕两侧各写一遍下标魔法。
+extension Dictionary where Key == String, Value == Double? {
+    /// 「这一路在途」+ 可选读数。`progress: nil` 也**会**留下键。
+    public mutating func markStudioLive(sessionID: String, progress: Double?) {
+        updateValue(progress, forKey: sessionID)
+    }
+
+    /// 收口（终态 / 用户停止 / 换身份）：把键整个拿掉，回到「本机没有这一路」。
+    public mutating func settleStudioLive(sessionID: String) {
+        removeValue(forKey: sessionID)
+    }
+
+    /// 有没有这一路的未终态 job —— 与 `studioProgress` 是两件事，别互相推断。
+    public func studioHasLiveJob(_ sessionID: String) -> Bool {
+        keys.contains(sessionID)
+    }
+
+    /// 这一路的读数（`nil` = 有 job 无读数，或压根没有这一路；判断"有没有"用上面那条）。
+    public func studioProgress(_ sessionID: String) -> Double? {
+        self[sessionID] ?? nil
+    }
+
+    /// 账本 → 08 那一格该画什么。环的三档判据只在 `ring(hasLiveJob:progress:)` 一处，
+    /// 这里只是把"从账本取哪两件事"也收成一处（08/12c 两个消费方共用同一本账）。
+    public func studioRing(for sessionID: String) -> StudioSessionRing {
+        StudioSessionProgressRing.ring(
+            hasLiveJob: studioHasLiveJob(sessionID),
+            progress: studioProgress(sessionID)
+        )
     }
 }
 

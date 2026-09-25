@@ -435,9 +435,10 @@ public struct HomeView: View {
     /// 根本没有艺人端点（16 §7 的同一句裁决）⇒ 人设只从**这份已经取到的曲目**里内嵌的
     /// `artist` 去重（`HomeArtistRail`）。所以它在 `.loading` / `.failed` 两档下**不出现**：
     /// 那份数据还没到，而它没有任何独立的取数路径可标"骨架"或"错误"。
-    /// 点击落点是 16 的 `ArtistHomeView`（`.artist(id)` 路由）——
-    /// §6 原文那个「曲库预填 artistId」需要 `AppSession` 上一个跨屏筛选字段，
-    /// 本批**没有**动那个文件，需求点写在 `HomeArtistCell` 上方与本批报告里。
+    /// 点击落点 = **曲库 + `artistId` 预填**（§6 原文那一句），不是 16 的艺人主页：
+    /// 曲库是 Tab 根屏、不在 `path` 里，所以跨屏递的是 `AppSession.pendingLibraryPreset`
+    /// 这一份一次性载荷（03 进屏 `consumeLibraryPreset()` 读到即销）。
+    /// 16 `ArtistHomeView` 仍然到得了 —— 曲目行「查看艺人」那条菜单项是它的路由入口。
     @ViewBuilder
     private var artistSection: some View {
         if case .ready(_, let tracks) = phase {
@@ -449,7 +450,16 @@ public struct HomeView: View {
                         LazyHStack(alignment: .top, spacing: CovaSpace.md) {
                             ForEach(artists, id: \.id) { artist in
                                 HomeArtistCell(artist: artist) {
-                                    session.path.append(.artist(artist.id))
+                                    // §6 原文那一格：曲库预填 artistId。递的是**一次性载荷**，
+                                    // 不是把 artistId 塞进路由 —— 三个 Tab 共用同一个
+                                    // `NavigationStack(path:)`，栈里的路由会跨 Tab 活着，
+                                    // 所以先清栈再切 Tab（同 `handleNotificationTap` 那一手）。
+                                    session.pendingLibraryPreset = AppSession.LibraryPreset(
+                                        artistID: artist.id,
+                                        artistLabel: HomeArtistRail.displayName(artist)
+                                    )
+                                    session.path = []
+                                    session.tab = .library
                                 }
                             }
                         }
@@ -663,11 +673,10 @@ struct CreationCard: View {
 
 /// §6：圆形头像 64pt + 名字（caption / secondary）。
 ///
-/// §6 原文的第二半句是「点击进音乐人曲目列表（**曲库页预填 artistId 筛选**）」——
-/// 那需要 `AppSession` 上多一个跨屏字段（进 03 时带着艺人名去筛），而 03 的筛选状态
-/// 今天整个在 `LibraryView`/`AppSession` 里（本批不许改）⇒ 落点先取 16 的
-/// `ArtistHomeView`（16 §待裁决 1 建议的就是这一条，且它已经是仓库里存在的路由）。
-/// 需要协调者接的那一根线，名字写在报告里。
+/// §6 原文的第二半句是「点击进音乐人曲目列表（**曲库页预填 artistId 筛选**）」，
+/// 落点因此是 03 而不是 16：载荷 = `AppSession.pendingLibraryPreset`（一次性，03 读到即销），
+/// 03 那边把它落成 `artistId` 查询参数 + 已选行里那颗可撤的「艺人 · 名字」chip。
+/// 16 `ArtistHomeView` 仍然到得了（曲目行右键「查看艺人」），这一格不再替它占位。
 public struct HomeArtistCell: View {
     /// §6 的头像档。
     static let side = CGFloat(HomeArtistRail.avatarDiameter)

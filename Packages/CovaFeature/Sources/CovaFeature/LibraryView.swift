@@ -29,6 +29,11 @@ public struct LibraryView: View {
     /// 326 条词条 + 建树不在每次 body 里做。
     @State private var dimensions: [LibraryFilterDimension] = []
     @State private var selection = LibraryFilterSelection()
+    /// 03 §7 的艺人预填（01 §6 音乐人栏点进来）：它是 `artistId` 参数，**不是** taxonomy 维度，
+    /// 所以进不了 `selection`（那本账的键必须是维度名，硬塞会让 chips 与请求编码两头撒谎）。
+    /// 但它同样是一枚**生效中的筛选** ⇒ 在 §1 的已选行里画得出、也撤得掉。
+    @State private var presetArtistID: String?
+    @State private var presetArtistLabel: String?
     @State private var sort: LibrarySort = .recommended
     @State private var query = ""
     @State private var tracks: [TrackDto] = []
@@ -96,7 +101,7 @@ public struct LibraryView: View {
             if !dimensions.isEmpty {
                 dimensionStrip
             }
-            if !selection.isEmpty {
+            if hasActiveFilters {
                 selectedChipsRow
             }
             resultHeader
@@ -112,7 +117,11 @@ public struct LibraryView: View {
                 DrawerTrigger(opener: .library)
             }
         }
-        .task { await loadTaxonomy(); await reload() }
+        .task {
+            consumeLibraryPreset()
+            await loadTaxonomy()
+            await reload()
+        }
         .sheet(item: $panel) { presented in
             switch presented {
             case .cascade(let id):
@@ -233,8 +242,29 @@ public struct LibraryView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("移除筛选 \(chip.dimensionTitle) \(chip.value)")
                 }
+                // 艺人预填也是"已选"里的一项：发出去了却不上屏的筛选，用户没法解释
+                // 也没法撤（03 §1 那一行的全部意义就是让生效中的筛选看得见）。
+                if let presetArtistID {
+                    Button {
+                        clearArtistPreset()
+                        Task { await reload() }
+                    } label: {
+                        HStack(spacing: CovaSpace.xs) {
+                            Text("艺人 · \(presetArtistLabel ?? presetArtistID)").font(CovaType.subhead)
+                                .foregroundStyle(CovaColor.accentText)
+                            Image(systemName: "xmark").font(CovaType.caption)
+                                .foregroundStyle(CovaColor.accentText)
+                        }
+                        .padding(.horizontal, CovaSpace.md)
+                        .padding(.vertical, CovaSpace.sm)
+                        .background(Capsule().fill(CovaColor.accentSoft))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("移除筛选 艺人 \(presetArtistLabel ?? presetArtistID)")
+                }
                 Button {
-                    selection.clearAll()
+                    clearAllFilters()
                     Task { await reload() }
                 } label: {
                     Text("清除全部").font(CovaType.subhead)
@@ -293,11 +323,11 @@ public struct LibraryView: View {
                 CovaEmptyState(
                     symbol: "magnifyingglass",
                     title: "没有符合条件的曲目",
-                    hint: LibraryView.emptyStateHint(selectionEmpty: selection.isEmpty),
-                    actionTitle: LibraryView.emptyStateActionTitle(selectionEmpty: selection.isEmpty)
+                    hint: LibraryView.emptyStateHint(selectionEmpty: !hasActiveFilters),
+                    actionTitle: LibraryView.emptyStateActionTitle(selectionEmpty: !hasActiveFilters)
                 ) {
-                    guard !selection.isEmpty else { return }
-                    selection.clearAll()
+                    guard hasActiveFilters else { return }
+                    clearAllFilters()
                     Task { await reload() }
                 }
             }
@@ -358,6 +388,35 @@ public struct LibraryView: View {
 
     // MARK: - 取数
 
+    // MARK: - 03 §7 的跨屏预填（01 §6 音乐人栏 → 曲库）
+
+    /// 屏上有**任何**一枚生效中的筛选吗（维度 chips + 那颗艺人预填）。
+    /// §1 的已选行、空态那句「试试放宽条件」与「清除全部」都读这一条 —— 否则艺人筛选单独
+    /// 生效时，那一行既不存在也撤不掉。
+    private var hasActiveFilters: Bool { !selection.isEmpty || presetArtistID != nil }
+
+    /// 只撤艺人那一枚：它不在 `selection` 里，`clearAll()` 碰不到它。
+    private func clearArtistPreset() {
+        presetArtistID = nil
+        presetArtistLabel = nil
+    }
+
+    /// 「清除全部」清的是屏上画得出的**每一项**，漏掉那颗预填就是一句做不到的承诺。
+    private func clearAllFilters() {
+        selection.clearAll()
+        clearArtistPreset()
+    }
+
+    /// 取走 01 递过来的预填载荷：`consumeLibraryPreset()` **读到即销**，所以第二次进屏
+    /// （用户已经自己筛过一轮）不会被同一个 artistId 悄悄重放一遍。
+    /// 维度部分走 `LibraryFilterSelection.merge`（合并去重、带上限），艺人是独立参数键。
+    private func consumeLibraryPreset() {
+        guard let preset = session.consumeLibraryPreset() else { return }
+        presetArtistID = preset.artistID
+        presetArtistLabel = preset.artistLabel
+        selection.merge(preset.dimensions)
+    }
+
     private func loadTaxonomy() async {
         guard let loaded = try? await catalog.taxonomy() else { return }
         dimensions = LibraryFilterSchema.dimensions(from: loaded)
@@ -374,7 +433,9 @@ public struct LibraryView: View {
     private func requestTracks(page: Int) async throws -> TrackPageDto {
         try await session.client.get(
             "/api/tracks",
-            queryItems: selection.queryItems(search: query, sort: sort, page: page)
+            queryItems: selection.queryItems(
+                search: query, sort: sort, artistID: presetArtistID, page: page
+            )
         )
     }
 

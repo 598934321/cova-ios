@@ -178,6 +178,9 @@ public final class AppSession {
         do {
             let user = try await auth.signIn(email: email, password: SecretString(password))
             authPhase = .signedIn(user)
+            // 换号 = 上一条账号的在途账一律作废（D5/D8/D22：这一本账是"这台设备替谁在跑"，
+            // 账号一换就没有替谁的问题了，留着只会串到下一个人的列表上）。
+            resetLiveStudioJobs()
             await bindPlayerSession()
             bindRecents(owner: user.id)
             await refreshCollections()
@@ -219,6 +222,7 @@ public final class AppSession {
         favoriteIDs = []
         savedPlaylistIDs = []
         clearRecents()
+        resetLiveStudioJobs()
         showToast("已登出：队列与私有音频缓存已清理")
     }
 
@@ -232,6 +236,7 @@ public final class AppSession {
         await auth.continueAsGuest()
         authPhase = .guest
         resetMe()   // 游客态不发 `me`（04 §7），也不许留着上一个身份的余额
+        resetLiveStudioJobs()   // 同一族隔离：游客的 08 列表上没有"这台设备在跑"的账
     }
 
     // MARK: 导航与收藏态（design 04/06/07/12a/12b）
@@ -275,6 +280,40 @@ public final class AppSession {
     /// 随待说内容一起带过去的「深度思考」开关（01 输入卡 → 09 首发）。
     public var pendingDeepThinking = false
 
+    /// 03 §7 / 01 §6 的跨屏预填：从 01 的 AI 音乐人栏点进曲库时，曲库要按 `artistId` 筛。
+    ///
+    /// 它是**一次性载荷**，不是路由参数，也不是曲库的常驻状态：
+    /// · 不放进 `Route` —— 曲库是 Tab 根屏，`.library` 不在 `path` 里，而且路由值会进 URL/深链，
+    ///   一个预填筛选跟着导航栈活第三次就不对了；
+    /// · 由 03 在**取数之前**读一次并立刻置 nil（`consumeLibraryPreset()`）——
+    ///   留着它，用户手动清掉筛选后一滚回来又被预填一遍，那是屏上凭空多出来的一条因果。
+    public struct LibraryPreset: Equatable, Sendable {
+        /// `LibraryFilterSelection.queryItems(artistID:)` 那一条腿的参数。
+        public var artistID: String?
+        /// 上面那个号在屏上怎么念（03 §1 的已选 chips 要能**看见**这个筛选、也要能**撤掉**它；
+        /// 只有号没有名字，就会剩下一条"发出去了但屏上不说"的隐藏筛选 —— 那是同一类谎）。
+        /// 由递出这一格的屏（01 §6）把它本来就显示着的那两个字带过来，03 不反查、不猜。
+        public var artistLabel: String?
+        /// 跨维度预置值（`LibraryFilterSelection.merge(_:)` 的入参形态：维度名 → 值）。
+        public var dimensions: [String: [String]]
+
+        public init(
+            artistID: String? = nil, artistLabel: String? = nil, dimensions: [String: [String]] = [:]
+        ) {
+            self.artistID = artistID
+            self.artistLabel = artistLabel
+            self.dimensions = dimensions
+        }
+    }
+    public var pendingLibraryPreset: LibraryPreset?
+
+    /// 取走预填载荷：**读到就销**，第二次调用必然是 `nil`。
+    public func consumeLibraryPreset() -> LibraryPreset? {
+        let preset = pendingLibraryPreset
+        pendingLibraryPreset = nil
+        return preset
+    }
+
     /// 本次运行的 agent 流协调器（**一次发送一个**，`OneStepStreamCoordinator` 是单次使用的）。
     public private(set) var studioCoordinator: OneStepStreamCoordinator?
 
@@ -285,7 +324,49 @@ public final class AppSession {
         return (await studioCoordinator.currentPhase(), await studioCoordinator.degradationTrigger())
     }
 
+    // MARK: 08 §3.C 的「本机在途 job」账（09 写、08 读）
+
+    /// 会话号 → **未终态** job 的进度读数。三档事实必须都能表达，而字典的两种"没有"不一样：
+    /// · 键**缺席** = 本机没有这一路的在途事实 ⇒ 08 无环（冷启动必然这一档，§9 判据第 3 条）；
+    /// · 键在、值为 `nil` = 有 job 在跑但没有可读进度 ⇒ 只说「生成中」，不印也不念百分数；
+    /// · 键在、值有数 = `0...1` 的实测进度。
+    ///
+    /// 来源只有这一个：08 §数据源行 140 钉的「本设备内存中未终态的 job（由 09 的发起者持有）」，
+    /// 所以 08 **不**为列表逐行发请求（N+1 禁令），也不从别处推一个数出来。
+    /// 读写一律走下面三个方法 + `StudioLiveJobLedger` 那几个扩展：`dict[id] = nil` 在 Swift 里
+    /// 是**删键**，直接写下标会把第二档（有 job 无读数）擦成第一档（没 job）。
+    public private(set) var liveStudioJobs: [String: Double?] = [:]
+
+    /// 「这一路是我这台设备发起的、还没收口」⇒ 上环。`progress` 拿不到就传 `nil`（只说生成中）。
+    public func markStudioJobLive(sessionID: String, progress: Double?) {
+        liveStudioJobs.markStudioLive(sessionID: sessionID, progress: progress)
+    }
+
+    /// **只更新已有那条的读数**：屏上重新对到一份权威状态时调它。
+    /// 键不在就什么都不做 —— 冷启动或本机没发起过的会话，凭空 `mark` 会给 08 长出一格
+    /// "这设备在跑"的假事实（§数据源行 140 只要发起者持有）。
+    public func updateStudioJobProgress(sessionID: String, progress: Double?) {
+        guard liveStudioJobs.studioHasLiveJob(sessionID) else { return }
+        liveStudioJobs.markStudioLive(sessionID: sessionID, progress: progress)
+    }
+
+    /// 收口：终态、用户点「停止生成」、以及任何"本机已知这一路结束了"的时刻。
+    public func settleStudioJob(sessionID: String) {
+        liveStudioJobs.settleStudioLive(sessionID: sessionID)
+    }
+
+    /// 整本作废（登出 / 换号 / 转游客）。D5/D8/D22 的按身份隔离：本机内存里的在途账
+    /// 留在上一个身份身上，下一个账号就会看到一格不属于他的「生成中」——
+    /// 这一族缺陷本仓已经吃过一次（`resetMe` / `clearRecents` / 两本收藏账同一个道理）。
+    private func resetLiveStudioJobs() {
+        liveStudioJobs = [:]
+    }
+
     /// 发一句话给 agent，拿回流帧。旧流一定先被有界取消（D16），不留并发尾巴。
+    ///
+    /// 顺带落 08 §数据源行 140 那一本账：这一枪发出去，这一路会话从这一刻起就是
+    /// 「本机持有的未终态 job」⇒ 08 的那一格环有了唯一合法的来源。**已经有一个读数就留着它**
+    /// （计划卡那一轮可能已经推进过），没有就是"有 job、暂无读数"那一档。
     public func beginStudioStream(
         sessionID: String, request: HTTPRequest
     ) async throws -> AsyncStream<CovaSSEFrame> {
@@ -293,7 +374,11 @@ public final class AppSession {
         let coordinator = CovaDependencies.makeStudioStream()
         studioCoordinator = coordinator
         do {
-            return try await coordinator.start(sessionId: sessionID, agentRequest: request)
+            let stream = try await coordinator.start(sessionId: sessionID, agentRequest: request)
+            if !liveStudioJobs.studioHasLiveJob(sessionID) {
+                markStudioJobLive(sessionID: sessionID, progress: nil)
+            }
+            return stream
         } catch {
             studioCoordinator = nil
             throw error

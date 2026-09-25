@@ -150,20 +150,13 @@ public struct AISessionsView: View {
 
     /// 08 §数据源行 140 只承认**一个**进行中来源：本设备内存里未终态的 job（由 09 的发起者持有）。
     ///
-    /// 本仓今天**没有**这样一份按会话号索引的内存账：
-    /// · `AppSession.studioCoordinator` 是**单个**协调器（一次发送一个），且它的 `sessionId`
-    ///   是私有的（`OneStepStream.swift:254`）⇒ 从本屏读不到"是哪一路会话在跑"；
-    /// · 09 一离屏就 `onDisappear { await session.cancelStudioStream() }`（`AISessionDetailView.swift:68`）
-    ///   ⇒ 回到本屏时那条流必然已终态，连"有没有在跑"都读不到。
-    ///
-    /// 于是这里**不猜、也不另建一份账**（那是第二个事实源，比空环更糟）：全部行按 `.idle` 画
-    /// ⇒ 环、2pt 竖条、「生成中」三者都不出现，冷启动同形且不报错（§9 判据第 3 条）。
-    ///
-    /// 接线后的形状（本批**没有** `AppSession` 的改动权限，需求点给协调者）：
-    /// `StudioSessionProgressRing.ring(hasLiveJob: progress != nil, progress: progress)`
-    /// 其中 `progress = session.liveStudioJobs[item.id]`（会话号 → 内存里的未终态进度，可为 `nil`）。
+    /// 那一本账就是 `AppSession.liveStudioJobs`（会话号 → 未终态进度，`nil` = 有 job 无读数）：
+    /// 09 在 `beginStudioStream` 与计划卡刷新处写，终态/停止/登出/换号处清。
+    /// 这里**只读**：不逐行发详情请求（N+1 禁令）、也不从 `updatedAt` 之类推出"应该在跑"。
+    /// 冷启动账本是空的 ⇒ 每一行都落 `.idle`（环、2pt 竖条、「生成中」三者都不出现），
+    /// 这一档按 §9 判据第 3 条是**正确行为**，不是待补的显示缺陷。
     private func liveRing(for item: StudioSessionDto) -> StudioSessionRing {
-        StudioSessionProgressRing.ring(hasLiveJob: false, progress: nil)
+        session.liveStudioJobs.studioRing(for: item.id)
     }
 
     /// 建会话再进详情；失败点名 NEEDS-23（会话条目 schema 未文档化）。
@@ -477,9 +470,13 @@ public struct MyCreationsView: View {
                                 }
                                 // 12c §3.D：**完全复用** 08 §3.C 的行（48 封面、相对时间、最小高 64、
                                 // 1pt 分隔），差异只有「不渲染 ⋯ 与左滑」⇒ 尾饰给空。
-                                // 环同样是 `.idle`：12c 与本屏共用数据源，也共用同一个
-                                // 「没有按会话号索引的内存账」这一事实（见 `liveRing(for:)`）。
-                                SessionRow(item: item, ring: .idle, trailing: { EmptyView() }) {
+                                // 环同样读同一本账（`liveStudioJobs`）：12c 与 08 共用数据源，
+                                // 也共用"只有本机在途的 job 才配一格进行中"这一条判据。
+                                SessionRow(
+                                    item: item,
+                                    ring: session.liveStudioJobs.studioRing(for: item.id),
+                                    trailing: { EmptyView() }
+                                ) {
                                     session.path.append(.aiSession(item.id))
                                 }
                             }

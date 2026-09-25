@@ -331,6 +331,7 @@ public struct AISessionDetailView: View {
             // 免得用户按着一份刚被后端改掉的清单继续选。
             favorites.reseed(from: candidates)
             choosingVersion = false
+            syncStudioJobLedger()   // 同 `openSession`：这份重读就是 08 那一格的对齐时机
             if candidates.contains(where: { DoubleDemoRule.isFailed($0) }) {
                 // §5 行 6 的引导，且只说这一句：不出现"扣费/退款"任何字样（D12）。
                 session.showToast("这一版仍未完成，可以换一句话再来一次")
@@ -511,6 +512,38 @@ public struct AISessionDetailView: View {
         )
     }
 
+    /// 08 §3.C 那一格环的**唯一来源**：本设备内存里这一路的未终态 job（§数据源行 140）。
+    ///
+    /// 写点**只**落在"屏上刚拿到一份权威状态"的那几处（进屏、下拉对账、计划卡帧、启动计划），
+    /// 不为这本账新增任何轮询 —— 08 §数据源明令不得 N+1，09 §8 那条 jobs 轮询本来就是客户端待办。
+    /// 收口同处理由：`update…` 只更新已有那条的读数，本机没发起过的会话（冷启动、别人发起的）
+    /// 在这里既不上环也不报错，与 §9 判据第 3 条同一形状。
+    private func syncStudioJobLedger() {
+        if roundIsSettled {
+            session.settleStudioJob(sessionID: sessionID)
+            return
+        }
+        session.updateStudioJobProgress(
+            sessionID: sessionID, progress: deliveryProgress?.fraction
+        )
+    }
+
+    /// 终态只用本屏**已有**的两把尺子判，不给计划卡的 12 态发明第二套"哪些算结束"：
+    /// · `DoubleDemoRule` —— 硬边界 6 的「前两个候选都 settled 才算终态」（不足两个永不终态）；
+    /// · `GenerationJobStatus` 自己的词表 —— succeeded / failed / cancelled 是后端说"这一路完了"。
+    ///
+    /// `busy`（本机正在读这一轮的流）时**一律算未收口**：那段时间里 `candidates / latestJob`
+    /// 还是这一轮开始**之前**的那份载荷，拿它判终态会把刚上环的格子当场抹掉
+    /// （症状 = 计划卡刚到、环闪一下就没了），而流一结束的下一次对账会说真话。
+    private var roundIsSettled: Bool {
+        if busy { return false }
+        if DoubleDemoRule.isTerminal(DoubleDemoRule.pair(candidates)) { return true }
+        switch latestJob?.status {
+        case .some(.succeeded), .some(.failed), .some(.cancelled): return true
+        default: return false
+        }
+    }
+
     /// §3-I 的形态：左文案（`type.subhead` / `color.secondary`）+ 右列（`type.mono` / `color.muted`）
     /// + 4pt 细轨道（`color.line`）配 `color.accent` 填充。
     ///
@@ -558,8 +591,15 @@ public struct AISessionDetailView: View {
                 CovaChip("深度思考", isSelected: deepThinking) { deepThinking.toggle() }
                 Spacer()
                 if busy {
-                    Button("停止生成") { Task { await session.cancelStudioStream() } }
-                        .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                    Button("停止生成") {
+                        Task {
+                            await session.cancelStudioStream()
+                            // 用户说停 ⇒ 本机这一路的在途账当场收口（08 §3.C 的环与竖条同灭）。
+                            // 只清本机这一条，不替后端断言任务结束了：屏上其余事实仍以下次读为准。
+                            session.settleStudioJob(sessionID: sessionID)
+                        }
+                    }
+                    .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                 }
             }
             HStack(spacing: CovaSpace.sm) {
@@ -618,6 +658,8 @@ public struct AISessionDetailView: View {
             choosingVersion = false
             creditsBalance = try? await session.catalog.me().entitlements.creditsBalance
             phase = .ready
+            // 这份载荷是权威状态 ⇒ 顺手把 08 那一格的在途账对齐（收口/推进读数，不新发请求）。
+            syncStudioJobLedger()
             // 首页输入卡带过来的一句话：进屏后自动发一次（01 §2「提交后跳转创作会话详情」）。
             if let pending = session.pendingPrompt {
                 session.pendingPrompt = nil
@@ -699,6 +741,8 @@ public struct AISessionDetailView: View {
             if let cards = Self.decodeCards(frame.payload) {
                 plans = cards
                 plans.sort { ($0.cardIndex ?? 0) < ($1.cardIndex ?? 0) }
+                // 计划卡就是这一路"走到哪一格"的权威更新点 ⇒ 顺手对齐 08 的在途账读数。
+                syncStudioJobLedger()
             }
         case .error:
             append(.system("这一步暂时卡住了，可以重新描述需求再来一次"))
@@ -765,6 +809,10 @@ public struct AISessionDetailView: View {
                 return
             }
             append(.system("已提交，正在排产"))
+            // 这一路从这一刻起是"本机发起且未收口"⇒ 08 §3.C 那一格的环上。
+            // 读数此刻还没有（`deliveryProgress` 只在补充制作窗口里出现），传 nil 就是
+            // §3.C 那一档「生成中」，不是 0%。
+            session.markStudioJobLive(sessionID: sessionID, progress: nil)
             // 授权时机：spec 明令**只在开始制作成功之后**索权；被拒不再反复索。
             if await StudioNotifier.requestPermissionAfterPlanStart() {
                 await StudioNotifier.scheduleFallback(
