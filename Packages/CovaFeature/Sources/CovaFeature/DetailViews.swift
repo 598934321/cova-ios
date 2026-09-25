@@ -21,6 +21,8 @@ public struct PlaylistDetailView: View {
     @State private var playlist: PlaylistDto?
     @State private var tracks: [TrackDto] = []
     @State private var descriptionExpanded = false
+    /// §8 并发：收藏写请求在途 ⇒ 按钮内嵌菊花、第二次点击被吞。
+    @State private var saveInFlight = false
 
     private enum Phase: Equatable { case loading, ready, failed(CatalogFailure) }
 
@@ -126,20 +128,75 @@ public struct PlaylistDetailView: View {
         return VStack(alignment: .leading, spacing: CovaSpace.xs) {
             Text(playlist.titleCn ?? playlist.title)
                 .font(CovaType.title).foregroundStyle(CovaColor.fg)
+                // §8「头图标题中文优先 **2 行**」+ §6「AX 档 C 文本换 2 行」⇒ 上限就是 2 行，
+                // 不是不限行：旧实现没写 `lineLimit`，长标题把元信息/简介一路顶出首屏。
+                // 截断读法按 TG-17（中文按字、英文按词）由系统尾截承担，不自行加「…」文案。
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
             Text(parts.joined(separator: " · "))
                 .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
         }
         .padding(.horizontal, CovaSpace.pageGutter)
     }
 
+    /// 06 §3.E 操作行：**两**枚按钮（播放全部 / 收藏），不是只有一枚主钮。
+    /// §6 + §9 判据第 6 条：AX 档下两钮**上下堆叠、各占满宽**；默认档一行两钮，
+    /// 主钮吃掉「屏宽 − 2×`spacing.pageGutter` − 收藏钮占位」那一段。
     private var actions: some View {
-        HStack(spacing: CovaSpace.md) {
-            CovaButton("播放全部", style: .primary) {
-                Task { await session.play(tracks: tracks, at: 0) }
+        let stacked = PlaylistActionRowFacts.stacksVertically(axLayout: axLayout)
+        return Group {
+            if stacked {
+                VStack(spacing: CovaSpace.sm) {
+                    playAllButton(stretches: true)
+                    saveButton(stretches: true)
+                }
+            } else {
+                HStack(spacing: CovaSpace.md) {
+                    playAllButton(stretches: true)
+                    saveButton(stretches: false)
+                }
             }
-            .disabled(tracks.isEmpty)
-            .padding(.horizontal, CovaSpace.pageGutter)
         }
+        .padding(.horizontal, CovaSpace.pageGutter)
+    }
+
+    private func playAllButton(stretches: Bool) -> some View {
+        PlaylistPrimaryCapsuleButton(
+            title: "播放全部",
+            symbol: "play.fill",
+            stretches: stretches,
+            // §4 空态：「播放全部」置灰禁用（`color.muted` 底，components §10）；§9 判据
+            // 「无 0 首播放队列被建立」由这一条 `disabled` 兜住，队列构建在 `session.play` 那一侧。
+            isDisabled: !PlaylistActionRowFacts.playAllEnabled(hasTracks: !tracks.isEmpty)
+        ) {
+            Task { await session.play(tracks: tracks, at: 0) }
+        }
+    }
+
+    /// NEEDS-9 未解锁：详情端点不给 `isSaved` ⇒ 收藏态取自 05/12b 列表缓存（§7 第 1 条）。
+    /// 缓存也没有（深链直入 / 游客）时读到的就是 `false`，而 §7 第 2 条要的**中性未选态**
+    /// 与「未收藏」在这一档共用同一个书签轮廓（`bookmark`），所以画面与读法都不冒充「已收藏」；
+    /// 首次点击发 POST，以响应回填真实态。
+    private func saveButton(stretches: Bool) -> some View {
+        let saved = session.savedPlaylistIDs.contains(playlistID)
+        return PlaylistSecondaryCapsuleButton(
+            title: PlaylistActionRowFacts.saveTitle(saved: saved),
+            symbol: PlaylistActionRowFacts.bookmarkSymbol(saved: saved),
+            isSaved: saved,
+            stretches: stretches,
+            isLoading: saveInFlight
+        ) {
+            // §8 并发：连点收藏第二次**被吞**（按钮进入 loading，响应回来按最终态渲染）。
+            guard PlaylistActionRowFacts.acceptsSaveTap(inFlight: saveInFlight) else { return }
+            saveInFlight = true
+            Task {
+                await session.toggleSavedPlaylist(playlistID)
+                saveInFlight = false
+            }
+        }
+        // §6 朗读：「收藏歌单，按钮，已选中/未选中」。
+        .accessibilityLabel("收藏歌单")
+        .accessibilityValue(PlaylistActionRowFacts.saveValue(saved: saved))
     }
 
     /// 书签按钮。`isSaved == nil` 且缓存里也没有 ⇒ **中性未选态**（轮廓），首点发 POST 回填。
@@ -185,6 +242,126 @@ public struct PlaylistDetailView: View {
         } catch {
             phase = .failed(CatalogService.classify(error, decodingNeeds: "NEEDS-9"))
         }
+    }
+}
+
+// MARK: - 06 §3.E 操作行（两钮 · AX 堆叠）
+
+/// 操作行的判据面（§3.E / §4 / §6 / §8）。视图只负责摆，**哪个符号、哪句话、什么时候禁用、
+/// 第二次点击要不要吞**都收在这一个面里 —— §9 判据「歌单收藏用书签、曲目收藏用爱心，全站无混用」
+/// 是一句可测的话，就不该散在 `body` 里。
+enum PlaylistActionRowFacts {
+    /// §3.E 符号裁决：歌单收藏是**书签**语义（后端 `saveAction.kind == "bookmark"`），
+    /// 爱心留给曲目收藏（03/07）。`inventory.md` 行 06 那句「♡」以本条为准（spec 待裁决 1）。
+    static func bookmarkSymbol(saved: Bool) -> String { saved ? "bookmark.fill" : "bookmark" }
+
+    /// §8 文案清单：`收藏` / `已收藏`。
+    static func saveTitle(saved: Bool) -> String { saved ? "已收藏" : "收藏" }
+
+    /// §6 朗读：「收藏歌单，按钮，**已选中/未选中**」。
+    static func saveValue(saved: Bool) -> String { saved ? "已选中" : "未选中" }
+
+    /// §6 Dynamic Type + §9 判据：AX 档 ⇒ 上下堆叠各占满宽；默认档 ⇒ 一行两钮。
+    static func stacksVertically(axLayout: Bool) -> Bool { axLayout }
+
+    /// §4 空态：0 首时只有「播放全部」禁用；**收藏照常可点**（空歌单也可以收藏这个歌单）。
+    static func playAllEnabled(hasTracks: Bool) -> Bool { hasTracks }
+
+    /// §8 并发冲突：连点收藏时第二次点击**被吞**（按钮已在 loading 里）。
+    static func acceptsSaveTap(inFlight: Bool) -> Bool { !inFlight }
+}
+
+/// §3.E / components §10 主按钮：高 50（TG-07）、`radius.capsule`、`gradient.brandButton` 底 + 白字 +
+/// `elevation.primaryButtonShadow`、图标 `play.fill`。禁用态换 `color.muted` 底（§4 空态 + §10 禁用态），
+/// 而不是只降透明度 —— 那一条 spec 点名的就是"置灰"。
+///
+/// 为什么不在这里用 `CovaButton`：那一支是 44 高 / `radius.control` / `color.accent` 实心，
+/// 与本屏这一档三处都不同，而 CovaUI 不在本批可改面内 ⇒ 几何落在屏侧。
+struct PlaylistPrimaryCapsuleButton: View {
+    /// TG-07 按钮高度档。
+    static let height: CGFloat = 50
+    private let title: String
+    private let symbol: String
+    private let stretches: Bool
+    private let isDisabled: Bool
+    private let action: () -> Void
+
+    init(
+        title: String, symbol: String, stretches: Bool = true,
+        isDisabled: Bool = false, action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.symbol = symbol
+        self.stretches = stretches
+        self.isDisabled = isDisabled
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: CovaSpace.sm) {
+                Image(systemName: symbol)
+                Text(title).font(CovaType.headline)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: stretches ? .infinity : nil, minHeight: Self.height)
+            .background(
+                isDisabled ? AnyShapeStyle(CovaColor.muted) : AnyShapeStyle(CovaGradient.brandButton),
+                in: Capsule()
+            )
+            // `elevation.primaryButtonShadow = 0 6pt 18pt rgba(230,96,0,0.22)`：
+            // CSS 的 18pt 是**模糊半径**（=2× 标准差），SwiftUI 的 shadow radius 取一半 ⇒ 9；
+            // 颜色那个 rgba 的三个分量正是 `color.accentHover`（#E66000）。
+            .shadow(color: isDisabled ? .clear : CovaColor.accentHover.opacity(0.22), radius: 9, x: 0, y: 6)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+    }
+}
+
+/// §3.E 次按钮：同高 50、`color.surface` 底 + `color.fg` 字 + 1pt `color.line` 描边（TG-04）；
+/// 已收藏态 `color.accentSoft` 底 + `color.accentText` 字 + 1pt `color.accent` 描边。
+struct PlaylistSecondaryCapsuleButton: View {
+    static let height: CGFloat = 50
+    private let title: String
+    private let symbol: String
+    private let isSaved: Bool
+    private let stretches: Bool
+    private let isLoading: Bool
+    private let action: () -> Void
+
+    init(
+        title: String, symbol: String, isSaved: Bool, stretches: Bool = false,
+        isLoading: Bool = false, action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.symbol = symbol
+        self.isSaved = isSaved
+        self.stretches = stretches
+        self.isLoading = isLoading
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: CovaSpace.sm) {
+                // §8：连点期间**内嵌菊花**并保持宽度（标题换菊花而不塌成一小截）。
+                if isLoading { ProgressView().controlSize(.small) }
+                else { Image(systemName: symbol) }
+                Text(title).font(CovaType.headline)
+            }
+            .foregroundStyle(isSaved ? CovaColor.accentText : CovaColor.fg)
+            // 内边距在 `frame` **之前**：先给文字加横向余量，再决定这一枚要不要吃满宽。
+            // 反过来写（padding 在 frame 之后）会让满宽那档在 AX5 下溢出左右 pageGutter
+            // —— §9 判据第 6 条点名的就是「AX5 档下无横向溢出」。
+            .padding(.horizontal, CovaSpace.lg)
+            .frame(maxWidth: stretches ? .infinity : nil, minHeight: Self.height)
+            .background(isSaved ? CovaColor.accentSoft : CovaColor.surface, in: Capsule())
+            .overlay(Capsule().strokeBorder(isSaved ? CovaColor.accent : CovaColor.line, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 
