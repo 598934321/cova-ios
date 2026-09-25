@@ -64,7 +64,7 @@ public struct MiniPlayerView: View {
     }
 }
 
-/// 全屏播放器（design 02）：大封面 + 波形进度 + 传输控制 + 循环三态 + ±15s。
+/// 全屏播放器（design 02）：大封面 + 波形进度条（§3）+ 传输控制（§4）+ 次级操作行（§5）。
 /// 进度条拖动用本地 state 跟手，松手才 `seek`（避免拖动期间打满 actor）。
 public struct PlayerView: View {
     @Environment(AppSession.self) private var session
@@ -72,6 +72,10 @@ public struct PlayerView: View {
     @State private var dragPosition: Double?
     /// 02 §2/§5：点封面切换底部面板内容（歌词 / 队列）。默认歌词。
     @State private var panel: PlayerPanel = .lyrics
+    /// 02 §3 的波形事实源：`TrackDto.waveformPeaks` 归一后的柱高（空 = 细线退化形态）。
+    @State private var barHeights: [Double] = []
+    /// `highlightStart/End` 折算的时间轴占比（nil = 不放刻度带）。
+    @State private var highlightFraction: ClosedRange<Double>?
 
     enum PlayerPanel { case lyrics, queue }
 
@@ -80,14 +84,7 @@ public struct PlayerView: View {
     public var body: some View {
         let snap = session.snapshot
         VStack(spacing: CovaSpace.xl) {
-            HStack {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.down").font(.headline).foregroundStyle(CovaColor.secondary)
-                }
-                .accessibilityLabel("收起播放器")
-                Spacer()
-                Text(snap?.loopMode.description ?? "").font(CovaType.caption).foregroundStyle(CovaColor.muted)
-            }
+            topBar(snap)
             artwork(snap)
             texts(snap)
             progress(snap)
@@ -98,6 +95,37 @@ public struct PlayerView: View {
         }
         .padding(CovaSpace.pageGutter)
         .covaPage()
+        .task(id: waveformKey(snap?.item)) {
+            await loadWaveform(for: snap?.item)
+        }
+    }
+
+    /// 顶部条（02 §1）：⌄ 收起 + ⋯ 更多。**⋯ 里只放真有 backing 的条目**：
+    /// 面板跳转 + 分享（曲库曲目）。D12 放行前**不构造**「下载」条目（不是置灰、不是隐藏）。
+    private func topBar(_ snap: PlaybackSnapshot?) -> some View {
+        HStack {
+            Button { dismiss() } label: {
+                Image(systemName: "chevron.down").font(.headline).foregroundStyle(CovaColor.secondary)
+                    .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("收起播放器")
+            Spacer()
+            Menu {
+                Button(panel == .lyrics ? "看播放队列" : "看歌词") { togglePanel() }
+                if let item = snap?.item, item.kind == .libraryTrack,
+                   let page = PlayerView.publicTrackPage(itemID: item.id) {
+                    ShareLink(item: page) { Label("分享", systemImage: "square.and.arrow.up") }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(CovaColor.secondary)
+                    .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("更多操作")
+        }
     }
 
     @ViewBuilder
@@ -128,9 +156,36 @@ public struct PlayerView: View {
                     .padding(.horizontal, CovaSpace.sm).padding(.vertical, 2)
                     .background(Capsule().fill(CovaColor.warning.opacity(0.12)))
             }
-            Text(snap?.item?.title ?? "—").font(CovaType.title).foregroundStyle(CovaColor.fg).lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: CovaSpace.sm) {
+                Text(snap?.item?.title ?? "—").font(CovaType.title).foregroundStyle(CovaColor.fg).lineLimit(1)
+                Spacer(minLength: CovaSpace.sm)
+                // 02 §5：♡ 收藏在标题右侧。**私有候选不渲染**（02 §8：候选走候选卡上的
+                // retention 接口，这里没有可收藏的事实源）。
+                if let item = snap?.item, item.kind == .libraryTrack {
+                    favoriteButton(item.id)
+                }
+            }
             Text(snap?.item?.artist ?? "").font(CovaType.callout).foregroundStyle(CovaColor.secondary).lineLimit(1)
         }
+    }
+
+    /// 收藏钮：与 07 详情同一口径 —— 游客点击弹登录（`requireLoginForCollections`），不静默。
+    private func favoriteButton(_ trackID: String) -> some View {
+        let on = session.favoriteIDs.contains(trackID)
+        return Button {
+            Task {
+                if session.requireLoginForCollections() { await session.toggleFavorite(trackID) }
+            }
+        } label: {
+            Image(systemName: on ? "heart.fill" : "heart")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(on ? CovaColor.accent : CovaColor.muted)
+                .symbolEffect(.bounce, value: on)  // 02 §5：选中态缩放弹跳
+                .frame(width: PlayerMetrics.touchMin, height: PlayerMetrics.touchMin)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(on ? "取消收藏" : "收藏")
     }
 
     private func togglePanel() {
@@ -198,47 +253,105 @@ public struct PlayerView: View {
         .frame(maxHeight: 140)
     }
 
+    // MARK: - 02 §3 波形进度条
+
+    /// 02 §3：波形进度条 + 时间行（`00:42` / `-02:18`）。拖动 seek 走的仍是
+    /// 既有的 `session.seek` 单一路径；无波形数据时退化 3pt 细线（同一拖动腿）。
     private func progress(_ snap: PlaybackSnapshot?) -> some View {
         let duration = snap?.duration ?? 0
         let position = dragPosition ?? (snap?.position ?? 0)
         return VStack(spacing: CovaSpace.xs) {
-            Slider(
-                value: Binding(
-                    get: { position },
-                    set: { dragPosition = $0 }
-                ),
-                in: 0...max(duration, 1),
-                onEditingChanged: { editing in
-                    if !editing, let target = dragPosition {
-                        Task { await session.seek(target); dragPosition = nil }
-                    }
-                }
-            )
-            .tint(CovaColor.accent)
+            GeometryReader { geo in
+                WaveformProgress(
+                    fraction: WaveformBars.progress(position: position, duration: duration),
+                    barHeights: barHeights,
+                    highlight: highlightFraction,
+                    isSeeking: dragPosition != nil,
+                    seekText: PlayerTime.elapsed(position)
+                )
+                .contentShape(Rectangle())
+                .gesture(seekGesture(duration: duration, width: geo.size.width))
+            }
+            .frame(height: PlayerMetrics.waveformHeight)
+            .accessibilityElement()
+            .accessibilityLabel("播放进度")
+            .accessibilityValue("\(PlayerTime.elapsed(position))，剩余 \(PlayerTime.remaining(position: position, duration: duration))")
             HStack {
-                CovaType.digits(format(position))
+                CovaType.digits(PlayerTime.elapsed(position))
                 Spacer()
-                CovaType.digits(format(duration))
+                CovaType.digits(PlayerTime.remaining(position: position, duration: duration))
             }
             .font(CovaType.caption)
             .foregroundStyle(CovaColor.muted)
         }
     }
 
+    private func seekGesture(duration: Double, width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard duration > 0, width > 0 else { return }
+                let x = min(max(value.location.x, 0), width)
+                dragPosition = Double(x / width) * duration
+            }
+            .onEnded { _ in
+                if let target = dragPosition {
+                    Task { await session.seek(target); dragPosition = nil }
+                }
+            }
+    }
+
+    private func waveformKey(_ item: PlaybackItem?) -> String? {
+        guard let item else { return nil }
+        return "\(item.kind.rawValue):\(item.id)"
+    }
+
+    /// 波形数据只属于**曲库曲目**：私有候选不在 `/api/tracks` 里（02 §8），不请求、
+    /// 直接细线。取不到（网络失败/字段缺失）也按 §3 退化为细线，不报错打断播放。
+    private func loadWaveform(for item: PlaybackItem?) async {
+        barHeights = []
+        highlightFraction = nil
+        guard let item, item.kind == .libraryTrack else { return }
+        guard let detail = try? await session.catalog.trackDetail(item.id) else { return }
+        let track = detail.track
+        barHeights = WaveformBars.heights(peaks: track.waveformPeaks)
+        let span = track.duration > 0 ? track.duration : (item.duration ?? 0)
+        highlightFraction = WaveformBars.highlightFraction(
+            start: track.highlightStart, end: track.highlightEnd, duration: span
+        )
+    }
+
+    // MARK: - 02 §4 传输控制
+
     private func transport(_ snap: PlaybackSnapshot?) -> some View {
-        HStack(spacing: CovaSpace.xxl) {
+        HStack(spacing: CovaSpace.xl) {
             Button { Task { await session.previous() } } label: {
                 Image(systemName: "backward.fill").font(.system(size: 26, weight: .semibold))
+                    .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("上一首")
+            Button { Task { await session.seek((snap?.position ?? 0) - 15) } } label: {
+                Image(systemName: "gobackward.15").font(.system(size: 24, weight: .medium))
+                    .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("后退 15 秒")
             Button { Task { await session.toggle() } } label: {
                 Image(systemName: snap?.state == .playing ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 64, weight: .regular))
                     .foregroundStyle(CovaColor.accent)
             }
             .accessibilityLabel(snap?.state == .playing ? "暂停" : "播放")
+            Button { Task { await session.seek((snap?.position ?? 0) + 15) } } label: {
+                Image(systemName: "goforward.15").font(.system(size: 24, weight: .medium))
+                    .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("前进 15 秒")
             Button { Task { await session.next() } } label: {
                 Image(systemName: "forward.fill").font(.system(size: 26, weight: .semibold))
+                    .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("下一首")
         }
@@ -246,36 +359,145 @@ public struct PlayerView: View {
         .foregroundStyle(CovaColor.fg)
     }
 
+    // MARK: - 02 §5 次级操作行：循环（三态图标）/ 歌词 / 分享
+
+    /// 「下载」**不构造**：D12 明令 v1.0 不开任何扣费入口（02 §5），合规放行后再接。
     private func secondary(_ snap: PlaybackSnapshot?) -> some View {
-        HStack(spacing: CovaSpace.xl) {
-            Button { Task { await session.seek((snap?.position ?? 0) - 15) } } label: {
-                Label("15", systemImage: "gobackward.15").font(CovaType.callout)
-            }
-            .accessibilityLabel("后退 15 秒")
+        let mode = snap?.loopMode ?? .off
+        return HStack(spacing: CovaSpace.xxl) {
             Button { Task { await session.cycleLoop() } } label: {
-                Image(systemName: loopSymbol(snap?.loopMode)).font(CovaType.headline)
+                loopLabel(mode)
+                    .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("循环模式")
-            .accessibilityValue(snap?.loopMode.description ?? "")
-            Button { Task { await session.seek((snap?.position ?? 0) + 15) } } label: {
-                Label("15", systemImage: "goforward.15").font(CovaType.callout)
+            // 三态靠图标说话，`userLabel`（「不循环/列表循环/单曲循环」）退居无障碍读法。
+            .accessibilityValue(mode.userLabel)
+            .foregroundStyle(mode == .off ? CovaColor.secondary : CovaColor.accentText)
+
+            Button { togglePanel() } label: {
+                VStack(spacing: 2) {
+                    Image(systemName: "text.book.closed")
+                    Text("歌词").font(CovaType.caption)
+                }
+                .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
+                .contentShape(Rectangle())
             }
-            .accessibilityLabel("前进 15 秒")
+            .accessibilityLabel("歌词面板")
+            .foregroundStyle(panel == .lyrics ? CovaColor.accentText : CovaColor.secondary)
+
+            // 02 §8：候选没有公开页 ⇒ 不提供分享（NEEDS-24，与 09 候选卡同一裁决）。
+            if let item = snap?.item, item.kind == .libraryTrack,
+               let page = PlayerView.publicTrackPage(itemID: item.id) {
+                ShareLink(item: page) {
+                    VStack(spacing: 2) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("分享").font(CovaType.caption)
+                    }
+                    .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("分享这首歌")
+                .foregroundStyle(CovaColor.secondary)
+            } else {
+                Color.clear
+                    .frame(width: PlayerMetrics.touchMin, height: PlayerMetrics.touchMin)
+            }
         }
         .buttonStyle(.plain)
-        .foregroundStyle(CovaColor.secondary)
     }
 
-    private func loopSymbol(_ mode: LoopMode?) -> String {
-        switch mode {
-        case .one: return "repeat.1"
-        case .all: return "repeat"
-        case .off, nil: return "arrow.right.arrow.left"
+    /// 三态图标（02 §5）：`repeat` → `repeat`+accent 点 → `repeat.1`。
+    @ViewBuilder
+    private func loopLabel(_ mode: LoopMode) -> some View {
+        Image(systemName: mode == .one ? "repeat.1" : "repeat")
+            .font(.system(size: 22, weight: .medium))
+            .overlay(alignment: .topTrailing) {
+                if mode == .all {
+                    Circle().fill(CovaColor.accent).frame(width: 6, height: 6).offset(x: 4, y: -2)
+                }
+            }
+    }
+
+    /// 分享目标是 web 侧真实存在的公开页 `/tracks/:id`（2026-09 对照
+    /// `web/src/app/tracks/[id]/page.tsx` 的 `window.location.href` 口径）。
+    /// id 已过 `PlaybackItem` 的字符白名单校验，直接拼串不引入注入面。
+    private static func publicTrackPage(itemID: String) -> URL? {
+        URL(string: "https://covalink.cn/tracks/\(itemID)")
+    }
+}
+
+/// 02 §3 的进度条本体：有波形 ⇒ 48 根柱（已播 accent、未播 muted 35%、高亮区间上方
+/// 2pt 刻度带）；无波形 ⇒ 退化为 3pt 细线胶囊（§3 的兜底口径，非占位假数据）。
+private struct WaveformProgress: View {
+    let fraction: Double
+    let barHeights: [Double]
+    let highlight: ClosedRange<Double>?
+    let isSeeking: Bool
+    let seekText: String
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            VStack(spacing: 3) {
+                ZStack(alignment: .leading) {
+                    if let highlight {
+                        Capsule()
+                            .fill(CovaColor.accent.opacity(0.75))
+                            .frame(width: max(2, (highlight.upperBound - highlight.lowerBound) * width), height: 2)
+                            .offset(x: highlight.lowerBound * width)
+                    }
+                }
+                .frame(height: 2)
+                if barHeights.isEmpty {
+                    thinLine
+                } else {
+                    bars(in: geo.size)
+                }
+            }
+            if isSeeking {
+                // §3：拖动中 mono 时间气泡跟随。
+                CovaType.digits(seekText)
+                    .font(CovaType.caption)
+                    .foregroundStyle(CovaColor.fg)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(CovaColor.elevated))
+                    .offset(x: min(max(fraction * width - 28, 0), max(width - 56, 0)), y: -26)
+                    .allowsHitTesting(false)
+            }
         }
     }
 
-    private func format(_ seconds: Double) -> String {
-        let s = max(0, Int(seconds))
-        return String(format: "%d:%02d", s / 60, s % 60)
+    private var thinLine: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(CovaColor.muted.opacity(0.35))
+                Capsule().fill(CovaColor.accent)
+                    .frame(width: max(3, fraction * geo.size.width))
+            }
+            .frame(height: 3)
+            .frame(maxHeight: .infinity, alignment: .center)
+        }
     }
+
+    private func bars(in size: CGSize) -> some View {
+        // 柱数在归一层就已钳成 barHeights.count（48，与 web 紧凑播放器同口径）。
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(barHeights.indices, id: \.self) { index in
+                let played = Double(index + 1) / Double(barHeights.count) <= fraction
+                Capsule()
+                    .fill(played ? CovaColor.accent : CovaColor.muted.opacity(0.35))
+                    .frame(height: max(3, barHeights[index] * size.height))
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .center)
+    }
+}
+
+/// 02 屏反复出现的几何值（对齐 `CovaRootView` 的 `DrawerMetrics` 做法：token 缺口先集中成
+/// 命名常量，不散落字面量）。touchMin = AGENTS/inventory 通用 ≥44pt 触控底线。
+enum PlayerMetrics {
+    static let touchMin: CGFloat = 44
+    static let waveformHeight: CGFloat = 34
 }
