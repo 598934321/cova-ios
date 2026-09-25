@@ -1,6 +1,7 @@
 import CovaCore
 import CovaUI
 import SwiftUI
+import UIKit
 import UserNotifications
 
 // MARK: - 05 歌单广场
@@ -189,6 +190,9 @@ public struct SettingsView: View {
     /// 15 §Dynamic Type：AX 档下「标签 + 右值」的行改成两行堆叠。
     @Environment(\.covaAXLayout) private var axLayout
     @Environment(AppSession.self) private var session
+    /// 跳系统设置用同一个 `openURL` 出口（与 14 的两条外跳同形）；
+    /// §4「错误」：系统拒绝（没浏览器/没邮件程序）由系统处理，**App 内不提示** ⇒ 不读返回值。
+    @Environment(\.openURL) private var openURL
     @State private var cacheBytes: Int64?
     @State private var notifyStatus = "未设置"
     @State private var confirmLogout = false
@@ -210,13 +214,23 @@ public struct SettingsView: View {
             Section("播放与网络") {
                 // design 15：`只连 Wi-Fi 下载` 这一行在**下载门（D12）未放行时整行不渲染**；
                 // v1.0 没有下载入口 ⇒ 这里不出现该行，也不出现「上报」字样。
-                Button("清除缓存" + (cacheText.map { "（\($0)）" } ?? "")) {
+                // §3.D + §4：右值 = 本机算出的缓存占用，测量期显 `--`（TG-29）而不是 0 ——
+                // "还没算出来"与"已经很干净"是两件事。
+                valueRow("清除缓存", value: Self.cacheDisplay(cacheBytes), mono: true) {
+                    guard Self.asksBeforeClearing(cacheBytes) else {
+                        session.showToast("已经很干净了")   // §8：缓存 = 0 → 只 Toast，不弹 Dialog
+                        return
+                    }
                     confirmClear = true
                 }
-                .foregroundStyle(CovaColor.fg)
             }
             Section("通知") {
-                labeledRow("生成完成通知", notifyStatus)
+                // §3.E：**App 内不自建通知开关**（授权归系统管，自建 = "App 里关着、系统里开着"
+                // 的双源真相）。这一行必须存在（NEEDS-7 未就绪时它是用户唯一的可控出口）；
+                // 点击跳系统设置，右值 = 系统授权态回显。
+                valueRow("生成完成通知", value: notifyStatus) {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                }
             }
             Section("条款与说明") {
                 link("隐私政策", "https://covalink.cn/privacy")
@@ -226,13 +240,22 @@ public struct SettingsView: View {
             // 账号段整段（含分组标题）仅已登录渲染；游客顶部不出现登录引导行。
             if case .signedIn = session.authPhase {
                 Section("账号") {
-                    Button("账号删除") { needWebsite = true }
-                        .foregroundStyle(CovaColor.fg)
+                    // §3.G + §7 NEEDS-4：右值「需前往官网」是这条缺口唯一的**可见**形态，
+                    // 不能省 —— 省掉就等于让用户以为点下去能在 App 内删号。
+                    valueRow("账号删除", value: "需前往官网") { needWebsite = true }
+                    // §3.H：整行文字 error 色 = destructive 语义，无尾符号。
                     Button("登出", role: .destructive) { confirmLogout = true }
                 }
             }
             Section("关于") {
-                labeledRow("版本", Self.versionString)
+                // §3.I + §3.H：版本 = `CFBundleShortVersionString (CFBundleVersion)`，**只读**；
+                // 两枚键任一取不到 ⇒ 整行不渲染（装配出错不该被印成产品信息）。
+                if let version = MineCopy.versionValue(short: versionPair.short, build: versionPair.build) {
+                    labeledRow("版本", version)
+                        .accessibilityLabel(
+                            MineCopy.versionSpoken(
+                                short: versionPair.short, build: versionPair.build) ?? version)
+                }
                 // I′ 开源许可：零第三方依赖 ⇒ 这一行**不渲染**（不是"暂无内容"）。
             }
         }
@@ -252,10 +275,12 @@ public struct SettingsView: View {
             Button("登出", role: .destructive) { Task { await session.signOut() } }
             Button("取消", role: .cancel) {}
         } message: {
-            // D8 的四条副作用必须逐条列出，不能只说「确定要退出吗」。
-            Text("退出这台设备上的账号\n正在播的音乐会停止，播放队列会清空\n"
-                 + "AI 生成的试听音频与封面缓存会被删除\n"
-                 + "离线记录（搜索历史、缓存的列表与偏好）将按账号清除")
+            // D8 的四条副作用必须**逐条**列出（§3.H：一行一条、符号 `•`），不能只说「确定要退出吗」。
+            // 这四句是合规告知，不是装饰文案 —— §6 明令不得因长度被截断。
+            Text("• 退出这台设备上的账号\n"
+                 + "• 正在播的音乐会停止，播放队列会清空\n"
+                 + "• AI 生成的试听音频与封面缓存会被删除\n"
+                 + "• 离线记录（搜索历史、缓存的列表与偏好）将按账号清除")
         }
         .alert("需前往官网", isPresented: $needWebsite) {
             Button("复制账号页链接") {
@@ -276,9 +301,63 @@ public struct SettingsView: View {
         )
     }
 
-    private var cacheText: String? {
-        guard let cacheBytes else { return nil }
-        return Self.human(ByteCountFormatter.string(fromByteCount: cacheBytes, countStyle: .file))
+    /// §3.D + §8 的缓存占用读法（三档，各有用例钉一条）：
+    /// · 测量还没回来（nil）→ `--`：§4「唯一异步值计算期右位显 `--`，完成即回填」，
+    ///   把"还没算出来"印成 `0 MB` 会立刻让用户以为没东西可清；
+    /// · 真 0 → 「0 MB」（§8 逐字，不是 ByteCountFormatter 的 "0 bytes"）；
+    /// · ≥1 GB → 一位小数「1.2 GB」（§8），`ByteCountFormatter` 的有效位随量级变，
+    ///   "一位小数"这一条得自己钉住，不交给它。
+    /// `internal`（不是 private）：这三档是**读法判据**，留在 `body` 里就没有用例能钉。
+    static func cacheDisplay(_ bytes: Int64?) -> String {
+        guard let bytes else { return MineCopy.unknownValue }
+        if bytes == 0 { return "0 MB" }
+        if bytes >= 1_000_000_000 {
+            return String(format: "%.1f GB", Double(bytes) / 1_000_000_000)
+        }
+        return human(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))
+    }
+
+    /// §8：缓存**已经是 0** 时点击不弹 Dialog（只 Toast 一句）。一个"要清除吗"的确认框去清
+    /// 一个空的东西，等于暗示用户刚才看到的 0 不算数。`nil` = 还在测量，**不当它是 0** ⇒ 照常弹。
+    static func asksBeforeClearing(_ bytes: Int64?) -> Bool { bytes != 0 }
+
+    /// §7：版本来自本地 `Bundle`（非 API），两枚键的读法与 11 §3.H 共用 `MineCopy` 一个源。
+    private var versionPair: (short: String?, build: String?) { MineCopy.bundleVersion() }
+
+    /// §3 的设置行通用几何：左标签 `type.headline`/`fg` + 右值 `type.subhead`/`secondary`
+    /// （数字走 `type.mono`）+ `chevron.right`；整行一个动作、≥44pt（TG-03）。
+    /// §6：一行 = 一个元素，读成「清除缓存，128 MB，按钮」—— `按钮` 那半由 trait 给，
+    /// 这里只钉前两段（把「按钮」写进 label 会变成 VoiceOver 念两遍）。
+    @ViewBuilder
+    private func valueRow(
+        _ label: String, value: String?, mono: Bool = false, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(alignment: axLayout ? .top : .firstTextBaseline, spacing: CovaSpace.sm) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(CovaType.headline).foregroundStyle(CovaColor.fg)
+                    // §Dynamic Type：AX 档下右值移到标签**下方第二行**（同 11 §6 E 行）。
+                    if axLayout, let value {
+                        Text(value).font(mono ? CovaType.mono : CovaType.subhead)
+                            .foregroundStyle(CovaColor.secondary)
+                    }
+                }
+                Spacer(minLength: CovaSpace.sm)
+                if axLayout == false, let value {
+                    Text(value).font(mono ? CovaType.mono : CovaType.subhead)
+                        .foregroundStyle(CovaColor.secondary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(CovaType.caption).foregroundStyle(CovaColor.muted)
+                    .accessibilityHidden(true)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(value.map { "\(label)，\($0)" } ?? label)
     }
 
     private func link(_ title: String, _ url: String) -> some View {
@@ -309,18 +388,12 @@ public struct SettingsView: View {
         }
     }
 
-    private static var versionString: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "—"
-        let build = info?["CFBundleVersion"] as? String ?? "—"
-        return "\(short) (\(build))"
-    }
-
+    /// 单位与数字之间**恰好一个空格**：`ByteCountFormatter` 在不同版本上给不给空格并不一致，
+    /// 而旧写法 `"MB" → " MB"` 在"已经带空格"的输出上会叠成「128␣␣MB」（用例实测到的正是这个）。
+    /// 所以这里不按单位打补丁，而是**按空白切词再拼**（`isWhitespace` 连不换行空格一起吃掉）。
     private static func human(_ raw: String) -> String {
-        raw.replacingOccurrences(of: " bytes", with: " B")
-            .replacingOccurrences(of: "KB", with: " KB")
-            .replacingOccurrences(of: "MB", with: " MB")
-            .replacingOccurrences(of: "GB", with: " GB")
+        let swapped = raw.replacingOccurrences(of: "bytes", with: "B")
+        return swapped.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
     private func measure() async {
@@ -347,12 +420,12 @@ public struct SettingsView: View {
 
     private func clearCache() async {
         let failures = Self.clearCaches()
-        if failures == 0 {
-            session.showToast("已经很干净了")
-        } else {
+        // §4：只有"删不掉"才 Toast。「已经很干净了」这句在 §8 里属于**缓存本来就是 0** 那一支
+        // （点击时就被早退了），删成功再补一句等于把同一个词用在两件事上。
+        if failures > 0 {
             session.showToast("有些缓存正在使用，稍后再清", isError: true)
         }
-        await measure()
+        await measure()   // §3.D：清完回写占用数字，不进度的百分比不做动画
     }
 
     /// 缓存占用 = **本机 FileManager 计算**，不向后端要数（后端也没有这个端点）。
