@@ -322,6 +322,9 @@ final class PlayReportCoordinatorTests: XCTestCase {
             (.sessionChanged, .transport),
             (.credentialReadFailed, .transport),
             (.invalidRequestURL, .transport),
+            // 第 30 批③新增的分支：这一档的 `.transport` 说的是「没能送达」，不是「可以再来一次」
+            // —— 重投由集次账 + 幂等键把门，`CovaEgressRefusal.isRetryable` 仍然是 false。
+            (.egressRefused(CovaEgressRefusal(host: "evil.invalid", rule: .credentialLeg)), .transport),
             (.unauthorized(apiCode: nil), .unauthorized),
             (.httpStatus(code: 503, apiCode: nil), .rejected),
             (.decoding(field: "recorded"), .decoding),

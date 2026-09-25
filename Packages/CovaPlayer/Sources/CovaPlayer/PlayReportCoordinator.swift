@@ -66,7 +66,12 @@ public enum PlayReportFailure: String, Equatable, Sendable, CustomStringConverti
         if let apiError = error as? CovaAPIError {
             switch apiError {
             case .offline, .timeout, .transport, .invalidResponse,
-                 .cancelled, .sessionChanged, .credentialReadFailed, .invalidRequestURL:
+                 .cancelled, .sessionChanged, .credentialReadFailed, .invalidRequestURL,
+                 .egressRefused:
+                // 这一档在本层的意思是「没能送达」，不是「可以再来一次」：重投的闸门是
+                // 集次账 + 幂等键，不是这个 reason（`CovaEgressRefusal.isRetryable == false`）。
+                // `.egressRefused`（第 30 批③新增的分支）与 `.invalidRequestURL` 同类 ——
+                // 那一次出站根本没发生，换 token 也不会改变裁决。
                 return .transport
             case .unauthorized:
                 return .unauthorized

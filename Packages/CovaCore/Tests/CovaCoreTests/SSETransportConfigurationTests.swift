@@ -324,9 +324,15 @@ final class SSETransportConfigurationTests: XCTestCase {
             XCTAssertTrue(refusal.description.contains("evil.invalid"), "拒绝必须点名 host：\(refusal)")
             // 不许被归一成「可重试的传输故障」：那是刷新/重放环的入口。
             XCTAssertFalse(refusal.isRetryable)
-            XCTAssertEqual(CovaAPIError.normalize(refusal), .invalidRequestURL)
-            XCTAssertFalse(CovaAPIError.normalize(refusal).isRetryable)
-            XCTAssertNil(CovaAPIError.normalize(refusal).httpStatusCode, "不得被读成 401 ⇒ 不触发刷新重放")
+            let normalized = CovaAPIError.normalize(refusal)
+            XCTAssertEqual(normalized, .egressRefused(refusal))
+            XCTAssertEqual(
+                normalized.egressRefusal?.host, "evil.invalid",
+                "第 30 批③：归一之后仍然看得见是哪一台（过去这里被拍平成 .invalidRequestURL）"
+            )
+            XCTAssertFalse(normalized.isRetryable)
+            XCTAssertNil(normalized.httpStatusCode, "不得被读成 401 ⇒ 不触发刷新重放")
+            if case .transport = normalized { return XCTFail("出口拒绝被归成传输档 ⇒ 重试环") }
         }
         XCTAssertEqual(EgressStubURLProtocol.capturedHosts(), ["covalink.cn"], "落地那台一次都不许多")
     }

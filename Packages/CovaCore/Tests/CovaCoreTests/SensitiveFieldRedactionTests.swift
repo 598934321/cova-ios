@@ -89,12 +89,27 @@ final class SensitiveFieldRedactionTests: XCTestCase {
             .transport(code: -1),
             .httpStatus(code: 403, apiCode: "FORBIDDEN"),
             .decoding(field: "url"),
-            .invalidRequestURL
+            .invalidRequestURL,
+            // 第 30 批③：新分支带着**点名的 host**（D23③ 要的就是这个），但 host 是
+            // `egressHostLabel` 的口径 —— 只有那一台主机，签名串与路径段一概不带。
+            .egressRefused(
+                CovaEgressRefusal(
+                    host: CovaEnvironment.egressHostLabel(of: URL(string: signedURL)!),
+                    rule: .publicMediaLeg
+                )
+            ),
         ]
         for error in errors {
             let rendered = renderAllSurfaces(error) + error.redactedDescription
             XCTAssertFalse(rendered.contains(signedURL))
             XCTAssertFalse(rendered.contains("SECRET"))
+            XCTAssertFalse(rendered.contains("LEAK-ERROR"))
+            XCTAssertFalse(rendered.contains("signature"))
+            // 拒绝面上屏的那一句：只有 host（"cdn.invalid" 允许出现，路径 `/audio/` 不允许）。
+            if let refusal = error.egressRefusal {
+                XCTAssertEqual(refusal.host, "cdn.invalid")
+                XCTAssertFalse(error.redactedDescription.contains("/audio"))
+            }
         }
     }
 }

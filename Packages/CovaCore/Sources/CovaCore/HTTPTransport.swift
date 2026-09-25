@@ -64,9 +64,10 @@ extension HTTPResponse: CustomStringConvertible, CustomDebugStringConvertible, C
 /// 传输抽象。生产实现 = `URLSessionTransport`；单测/预览 = 注入的假传输层。
 ///
 /// 实现约定：所有失败都以 `CovaAPIError` 抛出（`URLSessionTransport` 内部完成映射），
-/// **唯一的例外**是 D23① 的出口拒绝 `CovaEgressRefusal` —— 它带着「被拒的是哪台 host」，
-/// 而任何只认 `CovaAPIError` 的调用方都会经 `normalize` 把它归到**不可重试**的
-/// `.invalidRequestURL`（漏了那一支就会被读成 `.transport(code:)` ⇒ 重试环）。
+/// **唯一的例外**是 D23① 的出口拒绝 `CovaEgressRefusal` —— 它带着「被拒的是哪台 host」与
+/// 触发的那条 rule。任何只认 `CovaAPIError` 的调用方都会经 `normalize` 把它归到**不可重试**的
+/// `.egressRefused(refusal)`（第 30 批③之前是 `.invalidRequestURL`，host 在那一步就丢了；
+/// 而漏掉这一支整条拒绝就会被读成 `.transport(code:)` ⇒ 刷新/重放环）。
 public protocol HTTPTransport: Sendable {
     func send(_ request: HTTPRequest) async throws -> HTTPResponse
 }

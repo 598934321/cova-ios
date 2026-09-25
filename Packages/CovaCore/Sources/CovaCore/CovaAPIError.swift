@@ -20,17 +20,22 @@ public struct CovaAPIErrorEnvelope: Codable, Equatable, Sendable {
 /// D23①/② 的**出口拒绝**事实：某一条跳转的落地不在这一类请求允许的出口内，
 /// 于是那一次出站**根本没有发生**（裁决在出站之前，不是投递之后再后悔）。
 ///
-/// 为什么它不是 `CovaAPIError` 的一个新 case（跨模块加 case 会把
-/// `Packages/CovaPlayer/Sources/CovaPlayer/PlayReportCoordinator.swift:66-77` 那道
-/// **无 default 的穷举 switch** 直接编不过 —— 那是本批不许改的文件），而是一件独立错误：
-/// 独立类型既能带上「点名 host」这个新载荷，又逼着每个归一化点显式表态它落在哪一档。
-/// 表态已由 `CovaAPIError.normalize(_:)` 完成：`.invalidRequestURL`
-/// （`isRetryable == false`、`httpStatusCode == nil`）—— **绝不落进 `.transport(code:)`**，
-/// 那一档是可重试的，出口裁决被读成「网络抖了一下」就是一次刷新/重放环
-/// （落地主机不会因为你换了 token 就变成生产出口）。
+/// 载荷只有 `host` + `rule` 两个字符串，类型层面不存在 URL / query / header / token 字段；
+/// 被拒地址上的签名查询串在这里无处可放（AGENTS 硬边界 3）。
 ///
-/// **安全（AGENTS 硬边界 3）**：载荷只有 host 一个字符串，类型层面不存在
-/// URL / query / header / token 字段；被拒地址上的签名查询串在这里无处可放。
+/// 归一化后的落点（第 30 批③改的正是这一格）：`asCovaAPIError` →
+/// **`.egressRefused(self)`**，host 与 rule 随错误一起走。两条属性到今天仍然一个字不改：
+/// · **不可重试**（`isRetryable == false`）；
+/// · **绝不落进 `.transport(code:)`** —— 那一档是可重试的，出口裁决被读成「网络抖了一下」
+///   就是一次刷新/重放环（落地主机不会因为你换了 token 就变成生产出口）。
+///
+/// 为什么第 30 批把「独立类型 + 拍平成 `.invalidRequestURL`」换成「带上 payload 的独立分支」：
+/// 上一批的判断是「跨模块加 case 会撞编译不过的穷举 switch，所以宁可独立」—— 那句话到今天
+/// 只对了一半：真正该付的代价（`LoginFailureCopy.classify`、`PlayReportFailure.classify` 两处
+/// **刻意不带 default** 的穷举）都在本仓、都可改，而省不下的是**信息**：host 在进入
+/// `CovaAPIError` 的那一刻就死了，屏幕上只剩一句「请求地址非法（已拒绝出站）」，
+/// 与 D23③「拒绝必须看得见是哪一台」直接冲突。新增 case 反而把"必须表态"变成编译期义务 ——
+/// 以后每多一个错误消费点，就得显式说一次拒绝算哪一类，拍平不再是静默的默认行为。
 public struct CovaEgressRefusal: Error, Equatable, Hashable, Sendable,
     CustomStringConvertible, LocalizedError
 {
@@ -40,6 +45,15 @@ public struct CovaEgressRefusal: Error, Equatable, Hashable, Sendable,
         case credentialLeg
         /// 不带凭证的一类：落地必须在许可名单的存储主机之内。
         case publicMediaLeg
+
+        /// 给人看的分支名（中文）。`rawValue` 是英文枚举名，只能进代码与日志键，
+        /// 不能进上屏串 —— 本仓「屏上无英文态名」的判据（见 `PlayerFailure.Kind.userLabel`）。
+        public var userLabel: String {
+            switch self {
+            case .credentialLeg: return "凭证腿"
+            case .publicMediaLeg: return "公开媒体腿"
+            }
+        }
     }
 
     /// 被拒的落地主机（`CovaEnvironment.egressHostLabel` 的口径：只有 host，取不出则占位）。
@@ -55,8 +69,10 @@ public struct CovaEgressRefusal: Error, Equatable, Hashable, Sendable,
     /// 出口裁决**不是**传输故障：重试不会改变结果（重放只会把同一条拒绝再判一次）。
     public var isRetryable: Bool { false }
 
-    /// 归一进 `CovaAPIError` 世界的那一档（不可重试、也不是 401 ⇒ 不触发刷新重放）。
-    public var asCovaAPIError: CovaAPIError { .invalidRequestURL }
+    /// 归一进 `CovaAPIError` 世界：带着 host + rule 的独立分支
+    /// （不可重试、也不是 401 ⇒ 不触发刷新重放；第 30 批③之前这里是 `.invalidRequestURL`，
+    /// 一次归一就把 host 和 rule 全丢了）。
+    public var asCovaAPIError: CovaAPIError { .egressRefused(self) }
 
     /// 上屏/日志文本：分支 + 主机名，**没有** scheme 之外的任何地址片段。
     public var description: String {
@@ -78,6 +94,9 @@ public struct CovaEgressRefusal: Error, Equatable, Hashable, Sendable,
 /// - 携带 HTTP 状态码与服务端业务码；
 /// - `redactedDescription` 只输出分支名与码 —— **类型层面不存在 URL/token 字段**，
 ///   因此凭证与签名 URL 不可能被写进日志（AGENTS 硬边界 3）。
+///   唯一的例外是 `.egressRefused`：它输出的是 `CovaEnvironment.egressHostLabel` 口径的
+///   **裸 host**（path / query / fragment 一概不带，取不出 host 时是固定占位串）——
+///   D23③ 要的恰恰是"看得见是哪一台"，而 host 不是秘密、签名才是。
 public enum CovaAPIError: Error, Equatable, Sendable {
     /// 网络不可用（未连接/连接丢失/DNS 失败等）。
     case offline
@@ -91,6 +110,21 @@ public enum CovaAPIError: Error, Equatable, Sendable {
     case invalidResponse
     /// 出站 URL 未通过出口守卫（D10）：非生产 origin、相对路径非法等。请求**未发出**。
     case invalidRequestURL
+    /// **D23 的出口拒绝**（第 30 批③）：某一跳的落地不在这一类请求允许的出口内，
+    /// 那一次出站**没有发生**。payload 带着被点名的 host 与触发的那条 rule。
+    ///
+    /// 为什么不并进 `.invalidRequestURL`（两条都"没出站"，看着是一类）：
+    /// · `.invalidRequestURL` 是**本层构造不出合法地址**（`makeAPIURL` 失败、SSE 入口复核失败），
+    ///   根本没有一个"落地"可点名；`.egressRefused` 是**服务端把我们指向了别家**，
+    ///   那是后端契约（NEEDS-29）的可见面，两者的处理方与话术都不同；
+    /// · 给已有 case 加 payload 会波及三个不相关的构造点（含 out-of-bounds 的
+    ///   `CovaFeature/CatalogService.swift:97,117`），且要它们现编一个"拒绝理由"；
+    /// · 新增 case 逼着两处**刻意无 default** 的穷举 switch（`LoginFailureCopy.classify`、
+    ///   `PlayReportFailure.classify`）当场表态 —— 这正是把"拍平"从静默默认行为变成
+    ///   编译期义务的唯一机制（`CovaEgressRefusal` 的注释记着上一批为什么反过来判）。
+    /// 与今天的用例同源的两条属性：`isRetryable == false`、`httpStatusCode == nil`，
+    /// 且**永远不等于** `.transport(code:)`（那一档可重试 ⇒ 刷新/重放环）。
+    case egressRefused(CovaEgressRefusal)
     /// 会话已变化（换号/登出/新 generation）：在途请求不得用新账号凭证重放（D8）。
     case sessionChanged
     /// 凭证存储读取失败（Keychain 等返回异常状态）——与「本无凭证」不同，必须可观测。
@@ -112,12 +146,24 @@ public enum CovaAPIError: Error, Equatable, Sendable {
     }
 
     /// 是否适合重试（传输类 + 5xx + 429）。
+    ///
+    /// 出口拒绝（`.egressRefused` / `.invalidRequestURL`）**不在**这份名单里：
+    /// 重放只会把同一条拒绝再判一次，落地主机不会因为换了 token 就变成生产出口。
     public var isRetryable: Bool {
         switch self {
         case .offline, .timeout, .transport: return true
         case .httpStatus(let code, _): return code >= 500 || code == 429
         default: return false
         }
+    }
+
+    /// 出口拒绝的事实本身（host + rule），非拒绝分支返回 nil。
+    ///
+    /// 为什么要这个取值面而不是让调用方自己 `switch`：UI 侧要说"是哪一台"时必须拿到
+    /// 那个 host，而 `switch` 一处、`default` 一档的写法正是把拒绝再拍平一次的入口。
+    public var egressRefusal: CovaEgressRefusal? {
+        guard case .egressRefused(let refusal) = self else { return nil }
+        return refusal
     }
 
     /// 可安全写日志的描述：只有分支名与码。
@@ -129,6 +175,11 @@ public enum CovaAPIError: Error, Equatable, Sendable {
         case .transport(let code): return "传输错误(\(code))"
         case .invalidResponse: return "响应格式无效"
         case .invalidRequestURL: return "请求地址非法（已拒绝出站）"
+        case .egressRefused(let refusal):
+            // 只有 host + 分支名（`egressHostLabel` 的口径：path/query 一概不带）。
+            // 分隔符刻意用「，」而不是「/」：拒绝串里出现斜杠就等于把地址形状带了回来，
+            // 而用例钉的是"点名的面里不许有 `/`、`?`、`=`"。
+            return "出口已拒绝(\(refusal.rule.userLabel)，\(refusal.host))"
         case .sessionChanged: return "会话已变化（已放弃重放）"
         case .credentialReadFailed: return "凭证读取失败"
         case .unauthorized(let apiCode): return "未授权(\(apiCode ?? "no_code"))"
@@ -171,8 +222,10 @@ public enum CovaAPIError: Error, Equatable, Sendable {
 
     /// 任意底层错误 → 统一的 `CovaAPIError`（传输层与认证层共用）。
     ///
-    /// 已是 `CovaAPIError` 的原样返回；**出口拒绝**（`CovaEgressRefusal`）→ `.invalidRequestURL`
-    /// （不可重试，且不是 401）—— 这一支必须在 `NSURLErrorDomain` 之前显式判：
+    /// 已是 `CovaAPIError` 的原样返回；**出口拒绝**（`CovaEgressRefusal`）→ `.egressRefused(refusal)`
+    /// （不可重试、不是 401，且 host + rule 随错误一起走 —— 第 30 批③之前它被拍平成
+    /// `.invalidRequestURL`，点名能力在归一那一刻就死了）。
+    /// 这一支必须在 `NSURLErrorDomain` 之前显式判：
     /// 漏掉它并不会崩，而是会掉进末尾的 `.transport(code:)` 那一档，把「主机不对」
     /// 伪装成「网络抖了一下」⇒ 上层按可重试处理 = 刷新/重放环（R17-3b 的错分面）。
     /// `CancellationError` → `.cancelled`；`NSURLErrorDomain` → 整数映射；

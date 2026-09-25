@@ -33,11 +33,18 @@ final class LoginFailureCopyTests: XCTestCase {
         XCTAssertNotEqual(credential, unreachable)
         XCTAssertNotEqual(credential, LoginFailureCopy.offline)
         // 反向：服务器没答上来的时候，屏上不许出现「密码」二字。
+        // `.egressRefused`（第 30 批③）是这条判据最容易被忘掉的一格：那一次出站**根本没发生**，
+        // 服务器从没比较过凭证 ⇒ 说「邮箱或密码不正确」会让用户去改一个本来正确的密码。
         for error: CovaAPIError in [.offline, .timeout, .cancelled, .transport(code: 7), .invalidResponse,
                                     .decoding(field: serverPayload), .sessionChanged, .credentialReadFailed,
-                                    .invalidRequestURL] {
+                                    .invalidRequestURL,
+                                    .egressRefused(CovaEgressRefusal(host: "evil.invalid"))] {
             XCTAssertFalse(LoginFailureCopy.classify(error).contains("密码"), "\(error)")
+            XCTAssertFalse(LoginFailureCopy.classify(error).contains("邮箱"), "\(error)")
         }
+        // 一次真·出口拒绝（`normalize` 之后）也必须拿到那句中性话术。
+        let refusal = CovaEgressRefusal(host: "evil.invalid", rule: .credentialLeg)
+        XCTAssertEqual(LoginFailureCopy.message(for: refusal), "登录没成功，检查一下网络再试")
     }
 
     // MARK: - 离线 / 风控 / 其它状态码
@@ -60,6 +67,7 @@ final class LoginFailureCopyTests: XCTestCase {
         let all: [CovaAPIError] = [
             .offline, .timeout, .cancelled, .transport(code: 12029), .invalidResponse,
             .invalidRequestURL, .sessionChanged, .credentialReadFailed,
+            .egressRefused(CovaEgressRefusal(host: "covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com")),
             .unauthorized(apiCode: serverPayload),
             .httpStatus(code: 400, apiCode: serverPayload),
             .httpStatus(code: 401, apiCode: serverPayload),
@@ -112,12 +120,15 @@ final class LoginFailureCopyTests: XCTestCase {
         XCTAssertEqual(Set(words).count, 4)
     }
 
-    /// 当前 11 个分支逐个过一遍：话术只能来自 §8 那四句（新增 case 时**编译期**就会红 ——
+    /// 当前 12 个分支逐个过一遍：话术只能来自 §8 那四句（新增 case 时**编译期**就会红 ——
     /// `classify` 刻意不写 `default`，所以这里只兜"新分支被随手挂到某句上"之外的语义）。
+    /// 上面那些数组是**手写的**（`CovaAPIError` 不是 `CaseIterable`，为的是新增分支时
+    /// 必须回来加一行 —— 又是一个"漏表态就红"的设计），所以这条数量断言也一起钉着。
     func testEveryErrorCaseResolvesToAWordingFromTheClosedList() {
         let all: [CovaAPIError] = [
             .offline, .timeout, .cancelled, .transport(code: 1), .invalidResponse,
             .invalidRequestURL, .sessionChanged, .credentialReadFailed,
+            .egressRefused(CovaEgressRefusal(host: "evil.invalid", rule: .publicMediaLeg)),
             .unauthorized(apiCode: nil), .httpStatus(code: 401, apiCode: nil), .decoding(field: nil),
         ]
         let allowed: Set<String> = [
@@ -125,6 +136,7 @@ final class LoginFailureCopyTests: XCTestCase {
             LoginFailureCopy.offline, LoginFailureCopy.webVerificationRequired,
         ]
         for error in all { XCTAssertTrue(allowed.contains(LoginFailureCopy.classify(error)), "\(error)") }
+        XCTAssertEqual(all.count, 12, "分支清单与 `CovaAPIError` 的 case 数必须同步（新增分支要回来表态）")
     }
 }
 

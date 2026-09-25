@@ -48,8 +48,16 @@ public enum LoginFailureCopy {
             }
         case .offline:
             return offline
-        case .timeout, .cancelled, .transport, .invalidResponse, .invalidRequestURL,
+        case .egressRefused,
+             .timeout, .cancelled, .transport, .invalidResponse, .invalidRequestURL,
              .sessionChanged, .credentialReadFailed, .decoding:
+            // `.egressRefused`（出口裁决把这一跳关掉了）走的是同一句中性话术，两半都要说清：
+            // · **绝不算凭证错**：一次出站都没发生，服务器根本没答过"邮箱或密码对不对"，
+            //   说 `invalidCredentials` 就是让用户去改一个本来正确的密码（本层第 14 行的判据）；
+            // · 也**不在这里点名 host**：§4/§8 给这一屏钉死的是**固定四句**，第 30 批不现编第五句
+            //   （那是 design 的事，`docs/` 与 `design/` 本批为边界外）。拒绝的点名面在
+            //   `redactedDescription` 与 `egressRefusal` 上 —— 播放器与目录那两类"能命名"的面
+            //   才用它（`CatalogService.classify` 走 `default` 分支，会带出 host）。
             return serverUnreachable
         }
     }

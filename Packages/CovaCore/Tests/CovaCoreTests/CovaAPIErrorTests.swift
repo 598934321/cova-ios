@@ -171,24 +171,70 @@ final class CovaAPIErrorTests: XCTestCase {
 
     // MARK: - D23①：出口拒绝的**分类**（错分就等于重试环）
 
-    /// 归一化必须显式认得 `CovaEgressRefusal`。
+    /// 归一化必须显式认得 `CovaEgressRefusal`，且**带着 host + rule 一起过去**（第 30 批③）。
     ///
     /// 旧口径（本次改动之前）里根本没有这一支 ⇒ 任何出口拒绝都会掉进末尾的
     /// `.transport(code:)`，而 `.transport` 是 `isRetryable == true` ⇒
     /// 「落地主机不对」被上层读成「网络抖了一下」= 刷新/重放环（reviewer 点名的错分面）。
-    /// 这一条断的是**归一之后**仍然不可重试、不是 401（401 会触发 single-flight 刷新再重放）。
+    /// 上一批补了那一支，但把它归成 `.invalidRequestURL` —— 于是 host 在归一那一刻死了，
+    /// 屏幕上只剩一句「请求地址非法（已拒绝出站）」⇒ 本批改成 `.egressRefused(refusal)`。
+    /// 今天钉着的那两条属性一条都不松：**不可重试** + **绝不等于 `.transport(code:)`**。
     func testEgressRefusalNormalizesToANonRetryableBranch() {
         let refusal = CovaEgressRefusal(host: "evil.invalid", rule: .credentialLeg)
         let normalized = CovaAPIError.normalize(refusal)
-        XCTAssertEqual(normalized, .invalidRequestURL)
+        XCTAssertEqual(normalized, .egressRefused(refusal))
+        XCTAssertEqual(normalized.egressRefusal, refusal, "host 与 rule 必须活着到归一之后")
+        XCTAssertEqual(normalized.egressRefusal?.host, "evil.invalid")
+        XCTAssertEqual(normalized.egressRefusal?.rule, .credentialLeg)
         XCTAssertFalse(normalized.isRetryable, "出口裁决不是传输故障：重试不会改变结果")
         XCTAssertNil(normalized.httpStatusCode, "不得被读成 401 ⇒ 不触发刷新重放")
         XCTAssertFalse(normalized.redactedDescription.isEmpty)
+        // 第 30 批③的另一半：拒绝不得被读成任何一种传输档（那是刷新/重放环的门）。
+        if case .transport = normalized { return XCTFail("出口拒绝被归成 .transport(code:) ⇒ 重试环") }
+        XCTAssertNotEqual(normalized, .invalidRequestURL, "拍平回通用错误就是本批要修的那一格")
         // 反面对照（判据不许过宽）：真正的传输故障仍然可重试，本次没顺手收紧别处。
         XCTAssertTrue(CovaAPIError.normalize(URLError(.timedOut)).isRetryable)
         XCTAssertTrue(CovaAPIError.normalize(NSError(domain: "probe.domain", code: 4321)).isRetryable)
         XCTAssertFalse(refusal.isRetryable)
-        XCTAssertEqual(refusal.asCovaAPIError, .invalidRequestURL)
+        XCTAssertEqual(refusal.asCovaAPIError, .egressRefused(refusal))
+        // `egressRefusal` 只对拒绝分支成立（别让调用方拿着一句"地址非法"去读 host）。
+        XCTAssertNil(CovaAPIError.invalidRequestURL.egressRefusal)
+        XCTAssertNil(CovaAPIError.transport(code: 4321).egressRefusal)
+        // 已经归一的错误再走一次 `normalize` 必须原样返回（`CovaAPIClient.send` 就是这么调的）。
+        XCTAssertEqual(CovaAPIError.normalize(normalized), normalized)
+    }
+
+    /// 上屏/日志那一句：点名 host，但**只有** host —— 而且两类规则要能分得开。
+    /// 第 30 批③的判据：`redactedDescription` 是 UI 与日志共用的面，过去它只说
+    /// 「请求地址非法（已拒绝出站）」，谁都不知道是哪一台。
+    func testNormalizedEgressRefusalNamesTheHostAndNothingElse() {
+        let signed = URL(string: "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3?sig=LEAK-SIGNATURE&a-key=LEAK-KEY")!
+        for rule in CovaEgressRefusal.Rule.allCases {
+            let refusal = CovaEgressRefusal(
+                host: CovaEnvironment.egressHostLabel(of: signed), rule: rule
+            )
+            let text = CovaAPIError.normalize(refusal).redactedDescription
+            XCTAssertTrue(text.contains(refusal.host), "必须看得见是哪一台：\(text)")
+            XCTAssertTrue(text.contains(rule.userLabel), "两类规则要在文案上分得开：\(text)")
+            for forbidden in ["LEAK-SIGNATURE", "LEAK-KEY", "sig=", "a-key", "?", "/", "tracks", "https", "://"] {
+                XCTAssertFalse(text.contains(forbidden), "日志面上屏泄漏 \(forbidden)：\(text)")
+            }
+            // 上屏串里不许出现英文枚举名（本仓"屏上无英文态名"判据，`rawValue` 只进代码）。
+            XCTAssertFalse(text.contains(rule.rawValue), "露出了英文枚举名：\(text)")
+        }
+        // 两条 rule 的话不同（名单问题 ≠ 出口问题），两个 host 也不同名（同一台 ≠ 另一台）。
+        let credential = CovaAPIError.egressRefused(CovaEgressRefusal(host: "a.invalid", rule: .credentialLeg))
+        let publicMedia = CovaAPIError.egressRefused(CovaEgressRefusal(host: "a.invalid", rule: .publicMediaLeg))
+        let otherHost = CovaAPIError.egressRefused(CovaEgressRefusal(host: "b.invalid", rule: .credentialLeg))
+        XCTAssertNotEqual(credential.redactedDescription, publicMedia.redactedDescription)
+        XCTAssertNotEqual(credential, otherHost)
+        // 取不出 host 时仍是那个占位串，绝不回退成整条地址。
+        let unnamed = CovaAPIError.egressRefused(
+            CovaEgressRefusal(host: CovaEnvironment.egressHostLabel(of: URL(string: "file:///tmp/pawned.mp3?sig=LEAK")!))
+        )
+        XCTAssertEqual(unnamed.egressRefusal?.host, CovaEnvironment.unnameableHostLabel)
+        XCTAssertFalse(unnamed.redactedDescription.contains("LEAK"))
+        XCTAssertFalse(unnamed.redactedDescription.contains("pawned"))
     }
 
     /// 拒绝必须**点名 host**（桶名/存储区一变要看得见），且一个签名字符都不许带。
