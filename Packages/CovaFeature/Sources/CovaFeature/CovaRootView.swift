@@ -136,6 +136,10 @@ public struct CovaRootView: View {
             if let playID = ProcessInfo.processInfo.environment["COVA_PREVIEW_PLAY"], !playID.isEmpty,
                let detail = try? await session.catalog.trackDetail(playID) {
                 await session.play(tracks: [detail.track], at: 0)
+                // `player.start` 落的是**待播**（02 §9：选曲后从未起播的静默态是合法形态，不是暂停了一次
+                // 正在响的播放）⇒ 只建队列不会出声。这里补一次 `toggle()`，走的正是 ⏯ 那颗钮的同一条腿
+                // （`session.toggle()` → `player.toggle()`），不是往状态里塞一个假的"正在播"。
+                await session.toggle()
                 session.playerSheetOpen = true
             }
         }
