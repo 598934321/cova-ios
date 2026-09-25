@@ -12,6 +12,17 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
     public let title: String?
     public let titleCn: String?
     public let summary: String?
+    /// 08 §3.C 行摘要的**真实来源**。2026-09-26 用 owner 给的测试账号实测
+    /// `GET /api/find-my-song/sessions`（HTTP 200 / 5 条），每行给的键是
+    /// `lastMessage` 而**不是** `summary` —— 后者只写在契约文档里。
+    /// 两个键都建模、不裁决谁更权威（见 `displaySummary`）：列表行今天靠这一个键。
+    public let lastMessage: String?
+    /// 08 §3.C 的 48pt 封面槽来源，**逐行可空**：同一账号 5 条会话（全是 `workflowMode:"one-step"`）
+    /// 这里逐条是 `null` ⇒ 「没封面」是正常态而不是故障，占位分支必须留着，
+    /// 也**不得**为它补一次详情请求（§数据源行 140 禁 N+1）。
+    /// 地址形态与其余美术腿同源（站内相对 + 带查询串都出现过）⇒ 消费侧一律走
+    /// `CovaArtworkResolution(serverValue:)`（D23 出口判定面，查询串逐字节带走），不在这里补全或裁剪。
+    public let firstCoverUrl: String?
     public let workflowMode: String?
     public let status: String?
     /// `session.workflowState` —— **JSON 字符串**，不是嵌套对象
@@ -31,6 +42,8 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
         case title
         case titleCn
         case summary
+        case lastMessage
+        case firstCoverUrl
         case workflowMode
         case status
         case workflowState
@@ -64,6 +77,11 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
         title = try container.decodeIfPresent(String.self, forKey: .title)
         titleCn = try container.decodeIfPresent(String.self, forKey: .titleCn)
         summary = try container.decodeIfPresent(String.self, forKey: .summary)
+        lastMessage = (try? container.decodeIfPresent(String.self, forKey: .lastMessage)) ?? nil
+        // 「值出现了但不是字符串」与「键不在」同等对待（同下面 `workflowState` 的口径）：
+        // 后端哪天把封面换成 `{url:…}` 那种对象时，症状应该是「这一格没封面」，
+        // 不是「整个 08 打不开」。
+        firstCoverUrl = (try? container.decodeIfPresent(String.self, forKey: .firstCoverUrl)) ?? nil
         workflowMode = try container.decodeIfPresent(String.self, forKey: .workflowMode)
         status = try container.decodeIfPresent(String.self, forKey: .status)
         // 「值出现了但**不是字符串**」（后端哪天改成真对象）与「键不在」在这里同等对待：
@@ -83,9 +101,17 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
     }
 
     /// 摘要行取不到 ⇒ **整行不渲染**（spec：省略该行，不放占位符）。
+    ///
+    /// 两个键都看、**不看优先级谁"更对"**：`summary` 是契约文档写的那个（详情面可能给），
+    /// `lastMessage` 是列表行实测给的那个（见两个属性上的实测记录）。
+    /// 空串/纯空白与缺失同一口径 —— 都不足以撑起那一行（撑起来会是一行看不见的空白）。
     public var displaySummary: String? {
-        guard let summary, !summary.isEmpty else { return nil }
-        return summary
+        for candidate in [summary, lastMessage] {
+            guard let candidate else { continue }
+            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty == false { return trimmed }
+        }
+        return nil
     }
 
     /// `workflowState` 的结构化视图（同 `GenerationJobDto.decodedMetadata()` 的口径：

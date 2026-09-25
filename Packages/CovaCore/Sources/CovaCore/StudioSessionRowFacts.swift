@@ -191,12 +191,25 @@ public enum StudioRelativeTime {
 // 这一格只回答「列表里那一份载荷能不能撑起封面」，让「拿不到 ⇒ `sparkles` 占位」这条
 // 降级成为**可测**判据，而不是注释里的一句愿望。
 public enum StudioSessionCover {
-    /// 会话列表 DTO **没有任何**封面字段（`StudioSessionDTOs.swift` 里 `cover/imageUrl/thumbnail/coverUrl`
-    /// 零命中；线上列表实际给的是 `firstCoverUrl`，见 `docs/NEEDS.md` 候选 `SESSION-LIST-FIELDS`）。
-    /// 于是本屏封面恒走 §3.C 的符号占位：`color.surface` 底 + `sparkles`（`color.accentText`）。
+    /// 「**每一行**都带着一张可显示的封面」——**不成立**：2026-09-26 用 owner 给的测试账号实测
+    /// `GET /api/find-my-song/sessions`，键 `firstCoverUrl` **在**（`StudioSessionDto` 已建模），
+    /// 但那 5 条（全 `workflowMode:"one-step"`）逐条给 `null`。
+    /// 所以本常量回答的是"能不能不写占位分支"，而不是"载荷里有没有这个键"（有）——
+    /// 两件事混成一个布尔，就会在下一个 `null` 行上长成一张空白封面。
     ///
-    /// 这里刻意**不**为封面逐行发 `GET …/sessions/:id` —— §数据源行 140 明令不得 N+1。
+    /// 消费方：`HomeView` 的 01 §5 小卡整格继续走像素占位（`HomeCreationGridTests` 钉的就是这一条）；
+    /// 08 §3.C 那一格自本批起按 `usableCover(_:)` **逐行**分流。
     public static var hasCoverFieldInListPayload: Bool { false }
+
+    /// 逐行判据：这一行到底给了没有一张可用的封面地址。**纯空白算没给**
+    /// （撑起来会是一张取不到图的空白 + 一枚出口拒绝警示，那是把"没给"演成"给了坏地址"）。
+    ///
+    /// 有值时**原样交出、连空白都不 strip**：`%2B` 这类查询串是按字节保真的地址的一部分，
+    /// 判据只负责"有没有"，绝不负责"改写"—— 改写属于 `CovaEnvironment.resolveMediaURL` 那一道。
+    public static func usableCover(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : raw
+    }
 
     /// 无封面时的符号（§3.C 行 62）。
     public static let placeholderSymbol = "sparkles"

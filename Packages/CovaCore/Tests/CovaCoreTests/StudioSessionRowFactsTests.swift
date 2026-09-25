@@ -183,25 +183,57 @@ final class StudioSessionRowFactsTests: XCTestCase {
         XCTAssertNil(StudioRelativeTime.text("24/09/2026 09:59", now: referenceNow, calendar: utcCalendar))
     }
 
-    // MARK: - §3.C 封面降级
+    // MARK: - §3.C 封面降级（逐行判据）
 
-    /// 列表载荷里**没有**封面字段 ⇒ 封面槽恒走 `sparkles` 占位。
-    /// 这一条是「本屏不发明字段、也不为封面逐行发详情请求（N+1）」的地板：
-    /// 等 `firstCoverUrl` 进 DTO（`docs/NEEDS.md` 候选 `SESSION-LIST-FIELDS`）时，改这一条常量、别改判据。
-    func testCoverSlotIsPlaceholderBecauseListPayloadCarriesNoCoverField() {
+    /// 2026-09-26 实测更正：列表载荷**确实**带 `firstCoverUrl` 这个键，但同一账号 5 条
+    /// one-step 会话逐条给 `null` ⇒ 「每行都有封面」仍然不成立（01 §5 那一格继续像素占位，
+    /// `HomeCreationGridTests` 钉的是这一条），而 08 §3.C 那一格改成**逐行**分流。
+    /// `placeholderSymbol` 这一条判据不变：没给的那一行还是 `sparkles`。
+    func testCoverSlotIsPerRowBecauseTheKeyIsNullOnEveryOneStepRow() {
         XCTAssertFalse(StudioSessionCover.hasCoverFieldInListPayload)
         XCTAssertEqual(StudioSessionCover.placeholderSymbol, "sparkles")
+        // 「没给」有三形态：键缺席、空串、纯空白 —— 都不足以撑起一张封面。
+        XCTAssertNil(StudioSessionCover.usableCover(nil))
+        XCTAssertNil(StudioSessionCover.usableCover(""))
+        XCTAssertNil(StudioSessionCover.usableCover("  \n"))
+        // 给了就**原样**交出，一个字节都不动：站内相对 + 带查询串都在线上出现过，
+        // 而 `%2B` 一旦被重编码就是另一张图（判据只判"有没有"）。
+        XCTAssertEqual(
+            StudioSessionCover.usableCover("  /api/proxy/image?a=1&sig=abc%2Bd  "),
+            "  /api/proxy/image?a=1&sig=abc%2Bd  "
+        )
+        XCTAssertEqual(
+            StudioSessionCover.usableCover("https://covalink.cn/c/1.png?sig=a%2Bb"),
+            "https://covalink.cn/c/1.png?sig=a%2Bb"
+        )
     }
 
-    func testSessionDtoIgnoresTheCoverKeyTheContractDoesNotDocument() throws {
-        // 容忍未知键是既有解码口径：后端今天就在列表里给 `firstCoverUrl`，
-        // 客户端**没建模**它 ⇒ 解码照常成功，行不显示封面（而不是崩、也不是显示）。
+    func testSessionDtoNowModelsTheCoverKeyTheListActuallySends() throws {
+        // 建模之后：值原样交出（**不**补全、**不**裁剪查询串 —— `%2B` 那一类的字节保真有过缺陷）。
         let json = """
-        [{"id":"s1","title":"夏夜城市","firstCoverUrl":"https://covalink.cn/c/1.png"}]
+        [{"id":"s1","title":"夏夜城市","firstCoverUrl":"https://covalink.cn/c/1.png?sig=a%2Bb",
+          "lastMessage":"帮我做一首夏日广告配乐"}]
         """.data(using: .utf8)!
         let list = try JSONDecoder().decode(StudioSessionListDto.self, from: json)
         XCTAssertEqual(list.sessions.count, 1)
         XCTAssertEqual(list.sessions[0].displayTitle, "夏夜城市")
+        XCTAssertEqual(list.sessions[0].firstCoverUrl, "https://covalink.cn/c/1.png?sig=a%2Bb")
+        XCTAssertEqual(list.sessions[0].displaySummary, "帮我做一首夏日广告配乐")
+    }
+
+    /// 两个摘要键都在时看 `summary`（契约文档那个）；`summary` 缺席或空串时用 `lastMessage`；
+    /// 两者皆空 ⇒ `nil` ⇒ 那一行不渲染（§数据源行 137：不放占位符）。
+    func testRowSummaryFallsThroughBothWireKeys() throws {
+        func summary(_ line: String) throws -> String? {
+            try JSONDecoder().decode(StudioSessionListDto.self, from: Data(line.utf8)).sessions[0].displaySummary
+        }
+        XCTAssertEqual(try summary(#"[{"id":"s1","summary":"三段草稿","lastMessage":"最后一句"}]"#), "三段草稿")
+        XCTAssertEqual(try summary(#"[{"id":"s1","summary":"","lastMessage":"最后一句"}]"#), "最后一句")
+        XCTAssertEqual(try summary(#"[{"id":"s1","lastMessage":"最后一句"}]"#), "最后一句")
+        XCTAssertNil(try summary(#"[{"id":"s1","summary":"  ","lastMessage":""}]"#))
+        XCTAssertNil(try summary(#"[{"id":"s1"}]"#))
+        // 「值不是字符串」不能把整行打成读不到（同 `workflowState` 的容错口径）。
+        XCTAssertNil(try summary(#"[{"id":"s1","lastMessage":{"text":"怪形态"},"firstCoverUrl":[1,2]}]"#))
     }
 
     // MARK: - 测试时钟

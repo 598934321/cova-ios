@@ -348,9 +348,12 @@ public struct HomeView: View {
     /// 你的创作（design 01 §5）：双列网格（卡宽 = (屏宽−2×gutter−md)/2，圆角 `card`）
     /// + 封面 + 标题（subhead）+ 状态徽标。
     ///
-    /// **封面今天恒为像素占位**，这一句是实话不是保守：会话列表载荷里没有任何封面字段
-    /// （`StudioSessionCover.hasCoverFieldInListPayload == false`），而 §数据源明令不得为封面
-    /// 逐行发详情请求（N+1）⇒ 不发明 cover URL，按 §5 的另一支走 PixelCard 式像素占位呼吸。
+    /// **封面今天恒为像素占位**，这一句是实话不是保守：列表行确实带 `firstCoverUrl` 这个键，
+    /// 但线上逐行可以是 `null`（2026-09-26 实测那 5 条 one-step 会话全是 `null`）⇒
+    /// 「每行都有一张封面」不成立（`StudioSessionCover.hasCoverFieldInListPayload == false`），
+    /// 而 §数据源明令不得为封面逐行发详情请求（N+1）⇒ 这一格继续按 §5 的另一支走
+    /// PixelCard 式像素占位呼吸。**01 §5 尚未接逐行的那张图**：08 §3.C 已接（`SessionCoverSlot`），
+    /// 这一格要接的是同一份 `firstCoverUrl`，改的是本屏而不是 08 那批的口径 —— 需求点已记在本批报告。
     /// 同理，**状态徽标今天也不会出现**：`HomeCreationGrid.statusFieldInListPayload == false`
     /// （线上 `listOwnedSessions` 连 status 列都没有）⇒ 映射与色档已照 spec 施工好，
     /// 字段一上线就点亮，界面上不出现"猜出来的状态"。

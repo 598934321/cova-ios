@@ -262,7 +262,10 @@ struct SessionRow<Trailing: View>: View {
     var body: some View {
         Button(action: action) {
             HStack(alignment: .center, spacing: CovaSpace.md) {
-                SessionCoverSlot()
+                SessionCoverSlot(
+                    serverValue: StudioSessionCover.usableCover(item.firstCoverUrl),
+                    title: item.displayTitle
+                )
                 VStack(alignment: .leading, spacing: CovaSpace.xs) {
                     // §6：AX 档把时间搬到标题行右端，避免「标题/摘要/时间」三块同时长高。
                     if axLayout {
@@ -328,22 +331,39 @@ struct SessionRow<Trailing: View>: View {
     }
 }
 
-/// §3.C 的 48 方封面槽。**当前恒为符号占位**，这一句是实话而不是保守：
-/// 会话列表载荷里没有封面字段（`StudioSessionCover.hasCoverFieldInListPayload == false`，
-/// `StudioSessionDTOs.swift` 里 `cover/coverUrl/imageUrl/thumbnail` 零命中），
-/// 而 §数据源行 140 明令**不得**为封面逐行发详情请求（N+1）。
-/// 线上其实给的是 `firstCoverUrl`（web `src/lib/find-my-song/session.ts` 的 `listOwnedSessions`），
-/// 但那一格**没进 DTO** ⇒ 本屏不读它、也不画一张不存在的图。DTO 补上后这里换成
-/// `CovaArtwork(resolution: CovaArtworkResolution(serverValue: …))`，占位分支保留。
+/// §3.C 的 48 方封面槽：`firstCoverUrl` **有值才上图**，没值仍然是 §3.C 行 62 的那枚符号。
+///
+/// 为什么"没值"这一支必须长期留着（不是保守，是实测）：2026-09-26 用 owner 给的测试账号读线上
+/// 列表，5 条会话（全 `workflowMode:"one-step"`）的 `firstCoverUrl` 逐条是 `null`。
+/// 地址一律走 `CovaArtworkResolution(serverValue:)` —— 站内相对补全、查询串**逐字节**带走、
+/// host 出口名单裁决三件事都只在那一道里（D23；`%2B` 那个缺陷就是从这里绕过去才发生的），
+/// 这里不 `URL(string:)`、不裁剪查询、也不为封面逐行补发详情请求（§数据源行 140 禁 N+1）。
 struct SessionCoverSlot: View {
+    private let resolution: CovaArtworkResolution
+    private let title: String
+
+    init(serverValue raw: String?, title: String) {
+        self.resolution = CovaArtworkResolution(serverValue: raw)
+        self.title = title
+    }
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: CovaRadius.control, style: .continuous)
                 .fill(CovaColor.surface)
-            Image(systemName: StudioSessionCover.placeholderSymbol)
-                .foregroundStyle(CovaColor.accentText)
+            switch resolution {
+            case .absent:
+                // 「这一行没给封面」= 正确行为 ⇒ §3.C 的符号占位。
+                Image(systemName: StudioSessionCover.placeholderSymbol)
+                    .foregroundStyle(CovaColor.accentText)
+            case .resolved, .refused:
+                // `.refused` 不在这里改写成占位：出口拒绝必须长得跟"没图"不一样（R18-2），
+                // 那一档由 `CovaArtwork` 自己画警示三角并在标签里点名 host。
+                CovaArtwork(resolution: resolution, title: title)
+            }
         }
         .frame(width: SessionRowMetrics.coverSide, height: SessionRowMetrics.coverSide)
+        .clipShape(RoundedRectangle(cornerRadius: CovaRadius.control, style: .continuous))
         // §6：整行单元素 ⇒ 封面不单独占焦点（标题已经在行标签里）。
         .accessibilityHidden(true)
     }

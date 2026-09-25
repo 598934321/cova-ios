@@ -7,10 +7,10 @@ import SwiftUI
 // components §5 CandidateCard「封面（或像素呼吸占位）」。
 //
 // 这一格为什么必须存在（而不是继续画那张音符）：`StudioSessionCover.hasCoverFieldInListPayload`
-// 是 `false` —— 会话列表载荷里没有任何封面字段（`StudioSessionDTOs.swift` 里
-// `cover` / `coverUrl` / `imageUrl` / `thumbnail` 零命中），§数据源又明令**不得**为封面逐行
-// 去发详情请求（N+1）。所以"没有封面"在这些屏里是**长期事实**而不是故障，
-// 需要一个诚实的、不成其为"某张真图"的形状：像素网格只说"这里是一格还没有内容的封面位"。
+// 是 `false` —— 它回答的是"**每一行**都带着一张可显示的封面吗"，而线上不是：
+// 2026-09-26 实测 `GET /api/find-my-song/sessions` 的 `firstCoverUrl` 在 one-step 会话上逐条是
+// `null`，§数据源又明令**不得**为封面逐行去发详情请求（N+1）。所以"这一格没有封面"在这些屏里是
+// **长期事实**而不是故障，需要一个诚实的、不成其为"某张真图"的形状：像素网格只说"这里是一格还没有内容的封面位"。
 public struct CovaPixelCover: View {
     /// 档名与取值理由（4×4、0.9s 与 §S1 不做扫过的关系、Reduce Motion 的静态那一档）
     /// 全部写在 `PixelCoverFacts`（CovaCore）：CovaUI 没有测试目标，数字放在这里就是
