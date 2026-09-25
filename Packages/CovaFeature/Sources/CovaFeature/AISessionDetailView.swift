@@ -471,7 +471,7 @@ public struct AISessionDetailView: View {
             startTokens.invalidate(sessionID: sessionID, planCardID: planCardID, revision: revision)
             candidates = newest.candidates()
             degradeLabel = nil
-            append(.system("已核到任务：\(newest.status.rawValue)"))
+            append(.system("已核到任务：\(newest.status.userLabel)"))
         } else {
             degradeLabel = "会话里还没有任务，若额度已变动请到官网核对"
         }
@@ -523,7 +523,24 @@ public struct AISessionDetailView: View {
     /// 在这里既不上环也不报错，与 §9 判据第 3 条同一形状。
     private func syncStudioJobLedger() {
         if roundIsSettled {
+            // 「本机是否看着这一路跑过」必须在 `settleStudioJob` **之前**读：settle 会把这一路
+            // 从在途账里摘掉，之后再问就永远是"没有" ⇒ 迟到的终态会被当成不该发的那一档。
+            let watchedInFlight = session.liveStudioJobs.studioHasLiveJob(sessionID)
+            let terminalJob = latestJob
+            let terminalPlanCardID = latestPlan?.planCardId
+            let terminalOwner = session.meUser?.id
             session.settleStudioJob(sessionID: sessionID)
+            // 18 的真终态通知：`StudioNotificationPlanner` 此前**只有规划器没有调用点**，
+            // 用户收到的只有那条 30 分钟兜底串。判据与账本都在 CovaCore，这里只交事实。
+            Task {
+                await StudioNotifier.reconcileTerminal(
+                    job: terminalJob,
+                    sessionID: sessionID,
+                    planCardID: terminalPlanCardID,
+                    owner: terminalOwner,
+                    watchedInFlight: watchedInFlight
+                )
+            }
             return
         }
         session.updateStudioJobProgress(
