@@ -349,6 +349,54 @@ final class LibraryFilterCascadeTests: XCTestCase {
         XCTAssertEqual(LibraryResultCount.grouped(1_000_000), "1,000,000")
     }
 
+    // MARK: - 面板词条搜索（03 §2）
+
+    private var genreTree: [LibraryCascadeNode] {
+        LibraryFilterSchema.cascadeTree(of: LibraryFilterDimension(
+            id: "genre", title: "风格",
+            terms: [
+                LibraryFilterTerm(value: "电子", parent: nil),
+                LibraryFilterTerm(value: "节奏布鲁斯", parent: nil),
+                LibraryFilterTerm(value: "House", parent: "电子"),
+                LibraryFilterTerm(value: "Deep House", parent: "House"),
+                LibraryFilterTerm(value: "Neo Soul", parent: "节奏布鲁斯"),
+            ],
+            childDimensionID: "subgenre"
+        ))
+    }
+
+    func testFilteringKeepsAncestorChainAndPrunesSiblings() {
+        let pruned = LibraryFilterSchema.filtering(genreTree, matching: "Deep")
+        XCTAssertEqual(pruned.map(\.term.value), ["电子"])
+        XCTAssertEqual(pruned[0].children.map(\.term.value), ["House"])
+        XCTAssertEqual(pruned[0].children[0].children.map(\.term.value), ["Deep House"])
+    }
+
+    func testFilteringParentMatchKeepsWholeSubtree() {
+        let pruned = LibraryFilterSchema.filtering(genreTree, matching: "电子")
+        XCTAssertEqual(pruned[0].children.map(\.term.value), ["House"])
+    }
+
+    func testFilteringBlankTextIsIdentityAndNoMatchIsEmpty() {
+        XCTAssertEqual(LibraryFilterSchema.filtering(genreTree, matching: "   "), genreTree)
+        XCTAssertTrue(LibraryFilterSchema.filtering(genreTree, matching: "zzz").isEmpty)
+        // 大小写不敏感：英文风格名屏幕上显示的是 "deep house" 也该命中。
+        XCTAssertEqual(LibraryFilterSchema.filtering(genreTree, matching: "deep house").count, 1)
+    }
+
+    func testExpansionPathPointsAtTheMatchedBranch() {
+        // 返回的是「一路展开到命中项」的整条链（含命中项本身）：末位是叶子时它没有子列，
+        // 对渲染是无效的，但省掉了调用方各自补一位的二次分歧。
+        XCTAssertEqual(
+            LibraryFilterSchema.expansionPath(genreTree, matching: "Deep"),
+            ["电子", "House", "Deep House"]
+        )
+        XCTAssertEqual(LibraryFilterSchema.expansionPath(genreTree, matching: "Neo"), ["节奏布鲁斯", "Neo Soul"])
+        XCTAssertEqual(LibraryFilterSchema.expansionPath(genreTree, matching: "电子"), ["电子"])
+        XCTAssertEqual(LibraryFilterSchema.expansionPath(genreTree, matching: "zzz"), [])
+        XCTAssertEqual(LibraryFilterSchema.expansionPath(genreTree, matching: ""), [])
+    }
+
     // MARK: - 词表侧的 helper（parent 解析）
 
     func testParentPrefixParsingToleratesMissingAndBlank() throws {

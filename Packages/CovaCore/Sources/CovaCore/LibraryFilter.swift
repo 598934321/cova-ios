@@ -209,6 +209,38 @@ public enum LibraryFilterSchema {
         for n in nodes { out.insert(n.term.value); collect(n.children, into: &out) }
     }
 
+    /// 面板顶部的词条搜索（03 §2）：命中的节点**连同整条父链**保留，父链上其它分支剪掉。
+    ///
+    /// 返回的仍是树而不是扁平命中表 —— 搜 "Deep House" 时用户要看见的是「电子 › House ›
+    /// Deep House」这条路径（父级就是这一档的语义），扁平表会把它抹平。
+    /// 父级本身命中时整枝留下（父级命中 = 它下面这些都相关）。
+    public static func filtering(
+        _ nodes: [LibraryCascadeNode], matching text: String
+    ) -> [LibraryCascadeNode] {
+        let needle = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return nodes }
+        return nodes.compactMap { node in
+            if node.term.value.localizedCaseInsensitiveContains(needle) { return node }
+            let kept = filtering(node.children, matching: needle)
+            guard !kept.isEmpty else { return nil }
+            return LibraryCascadeNode(term: node.term, children: kept)
+        }
+    }
+
+    /// 搜索时该自动展开到哪条路径（各级首个命中节点的 value）。
+    /// 没有这一条，过滤后的二/三栏会停在空位上 —— 树过滤对了但屏幕上什么都看不见。
+    public static func expansionPath(
+        _ nodes: [LibraryCascadeNode], matching text: String
+    ) -> [String] {
+        let needle = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+        for node in filtering(nodes, matching: needle) where node.term.value.localizedCaseInsensitiveContains(needle) {
+            return [node.term.value]   // 父级命中即止：它整枝都要显示
+        }
+        guard let first = filtering(nodes, matching: needle).first else { return [] }
+        return [first.term.value] + expansionPath(first.children, matching: needle)
+    }
+
     private static func node(
         term: LibraryFilterTerm,
         childrenByParent: [String: [LibraryFilterTerm]],
@@ -349,7 +381,7 @@ public struct LibraryFilterSelection: Equatable, Sendable {
 
     /// chips 行的一个条目（§1「咖啡馆 ✕」）。值本身就够人读（词表值 = label），
     /// 维度名另给一个字段，供 UI 在两个维度撞词时区分。
-    public struct Chip: Equatable, Sendable {
+    public struct Chip: Equatable, Hashable, Sendable {
         public let dimension: String
         public let dimensionTitle: String
         public let value: String
