@@ -135,6 +135,18 @@ final class OneStepLyricsEditingTests: XCTestCase {
 
     // MARK: - 段落顺序与拆行
 
+    /// 只读平铺印的正文**不含段标行**（段名另有标题行；旧版把整条 `text` 直接印出来，
+    /// 于是"主歌一"这种段名在同一段里出现两回）。
+    func testReadOnlyBodyDropsTheHeaderLine() throws {
+        let plan = healthyPlan
+        let sections = OneStepLyricsEditor.orderedSections(of: plan)
+        XCTAssertEqual(sections.count, 2)
+        XCTAssertEqual(OneStepLyricsEditor.bodyText(of: sections[0]), "第一段第一行\n第二行")
+        XCTAssertEqual(OneStepLyricsEditor.bodyText(of: sections[1]), "合唱词")
+        // 没段标的段 ⇒ 整条都是正文，不剥、也不误吞第一行
+        XCTAssertEqual(OneStepLyricsEditor.bodyText(of: sections[0].replacingText("纯正文一行")), "纯正文一行")
+    }
+
     /// `order` 升序；**缺 order / 重号时按后端数组序**，不许被 Swift 的排序打乱。
     func testSectionOrderIsDeterministicAndNeverShuffled() throws {
         let missingOrder = decoded(cardJSON(lyrics: lyricsJSON(sections: """

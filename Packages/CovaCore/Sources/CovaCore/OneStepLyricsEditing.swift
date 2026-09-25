@@ -168,7 +168,10 @@ public struct OneStepLyricsEditor: Equatable, Sendable {
 
     /// 按 `order` 升序，**缺号/重号时用数组原序兜底**（Swift 的 `sorted` 不保证稳定，
     /// 而"未编辑的段不许被我的排序打乱顺序"是数据完整性问题，不能交给运气）。
-    static func sortedSections(_ raw: [OneStepLyricsSectionDto]) -> [OneStepLyricsSectionDto] {
+    ///
+    /// 公开它是为了让只读平铺与编辑器**排的是同一份序**：两处各排一次就会出现
+    /// "屏上第 2 段"和"保存时第 2 段"不是同一段这种事。
+    public static func sortedSections(_ raw: [OneStepLyricsSectionDto]) -> [OneStepLyricsSectionDto] {
         raw.enumerated()
             .sorted { lhs, rhs in
                 let l = lhs.element.order ?? lhs.offset
@@ -176,6 +179,17 @@ public struct OneStepLyricsEditor: Equatable, Sendable {
                 return l == r ? lhs.offset < rhs.offset : l < r
             }
             .map(\.element)
+    }
+
+    /// 只读平铺该显示的**正文**：剥掉段标行（段名另有标题行 ⇒ 不重复印一遍）。
+    /// 屏上以前是「标题行 + 整条 text」，于是"主歌一"同一段名连着出现两回。
+    public static func bodyText(of section: OneStepLyricsSectionDto) -> String {
+        trimTrailing(split(header: section.text ?? "").body)
+    }
+
+    /// 只读平铺用的同一把序（编辑器外的屏上顺序与编辑时的序号必须同源，见上）。
+    public static func orderedSections(of plan: OneStepPlanCardDto) -> [OneStepLyricsSectionDto] {
+        sortedSections(plan.lyrics?.sections ?? [])
     }
 
     /// 剥段标行：行首（允许水平缩进）一个 `[...]` 或 `【...】`，其后只允许行内空白 + 换行。
@@ -493,6 +507,15 @@ public struct OneStepLyricsRegenerateOutcome: Equatable, Sendable {
     public let balance: Int?
     /// 后端明说"结算时扣不动"（`llm-metering.ts:152-154`：`charged:0` + `insufficient:true`）。
     public let insufficient: Bool?
+
+    public init(
+        card: OneStepPlanCardDto?, charged: Int?, balance: Int?, insufficient: Bool?
+    ) {
+        self.card = card
+        self.charged = charged
+        self.balance = balance
+        self.insufficient = insufficient
+    }
 
     /// 扣费话术：三种事实各说各的，**绝不把"没读到"说成"没扣"**。
     public var chargeCopy: String {

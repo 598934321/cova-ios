@@ -76,6 +76,90 @@ public struct StudioService: Sendable {
         )
     }
 
+    // MARK: 歌词编辑（design 09 §1「歌词编辑均在本屏内」）
+
+    /// 就地保存歌词改动（`PATCH /api/studio/one-step/plans/:planCardId`）。
+    ///
+    /// **这一条不扣费**：写路径是纯补丁（`web/src/lib/one-step/patch.ts:55`），
+    /// 一次模型调用都没有 ⇒ 没有 `credits` 那一段，与下面的重做**不是一类**。
+    /// 幂等键在 `request` 里，由调用方的 `OneStepLyricsEditTokenLedger` 按载荷指纹分派
+    /// （AGENTS 硬边界 5）：同键同载荷 = 后端重放，不产生第二次写。
+    ///
+    /// 三条口径值得写在签名旁边而不是注释里：
+    /// · 本方法**不**在本屏之外缓存/回落任何卡面状态 —— 返回的就是后端刚给的那一份；
+    /// · 2xx 但回显读不出来 ⇒ `.landedWithoutEcho`（写发生了。说"失败"会诱导用户再改一次，
+    ///   而下一次是**新的一次写**、新键、真的会再改一遍数据）；
+    /// · 非 2xx ⇒ 抛 `CovaAPIError` 原样，由 `OneStepLyricsEditRejection.classify` 分诊
+    ///   （409 `conflict` 与 409 `idempotency_conflict` 必须分得开，两句话完全不同）。
+    public func saveLyrics(_ request: OneStepLyricsPatchRequestDto) async throws
+        -> OneStepLyricsEditOutcome {
+        let response: OneStepLyricsPatchResponseDto
+        do {
+            response = try await client.patch(
+                "/api/studio/one-step/plans/\(request.planCardId)", body: request
+            )
+        } catch {
+            if Self.isUnreadableSuccessEcho(error) { return .landedWithoutEcho }
+            throw error
+        }
+        guard let card = response.planCard else { return .landedWithoutEcho }
+        return response.replayed == true ? .replayed(card) : .saved(card)
+    }
+
+    /// 回读 2xx 但响应形状解不开 ⇒ 记成「已落地、回显读不出」。
+    ///
+    /// 单独成函数只为了让那条判据可测：`CovaAPIClient` 只在 **2xx 之后**才解码
+    /// （非 2xx 先抛 `.httpStatus`），所以 `.decoding` 落在这里时写已经成功了。
+    static func isUnreadableSuccessEcho(_ error: Error) -> Bool {
+        guard let api = error as? CovaAPIError else { return false }
+        if case .decoding = api { return true }
+        return false
+    }
+
+    /// 重做整篇歌词（`POST …/plans/:planCardId/lyrics/regenerate`）。
+    ///
+    /// **这一条按 token 实扣** —— 大声写一遍，因为它是本屏第二贵的动作：
+    /// 服务端在 `web/src/app/api/studio/one-step/plans/[planCardId]/lyrics/regenerate/route.ts:34-60`
+    /// 走 `enterLlmTurn → llmTurnPrecheck → 模型 → settleLlmTurn`，响应带
+    /// `credits:{charged, balance, insufficient}`。三条由此而来的硬要求：
+    /// · **调用前必须已经拿到用户的明确确认**（本方法不做确认，确认在 09 屏的
+    ///   `confirmationPrompt` 上；绕开它直接调 = 替用户花钱）；
+    /// · **失败绝不自动重试**：402 `topup_required` 是"预检就拦下、一次调用都没发"（没扣费），
+    ///   而 2xx 后结算扣不动是另一件事（`insufficient:true`）—— 两句话必须能分开，
+    ///   所以这里把 `credits` 原样带回，不替后端把"没读到"折算成"没扣"；
+    /// · 幂等键同样必带（同一次确认的重发复用同键 ⇒ 后端重放，不会再扣一次）。
+    public func regenerateLyrics(sessionID: String, plan: OneStepPlanCardDto, key: IdempotencyKey) async throws
+        -> OneStepLyricsRegenerateOutcome {
+        guard let revision = plan.revision else {
+            // 没有 revision 就发 = 后端无法判断我看的是哪一份 ⇒ 宁可不发。
+            throw CatalogFailure.backendGap("NEEDS-13（计划卡缺 revision）")
+        }
+        let response: OneStepLyricsRegenerateResponseDto = try await client.post(
+            "/api/studio/one-step/plans/\(plan.planCardId)/lyrics/regenerate",
+            body: OneStepLyricsRegenerateRequestDto(
+                sessionId: sessionID, expectedRevision: revision, idempotencyKey: key
+            )
+        )
+        return OneStepLyricsRegenerateOutcome(
+            card: response.planCard,
+            charged: response.credits?.charged,
+            balance: response.credits?.balance,
+            insufficient: response.credits?.insufficient
+        )
+    }
+
+    /// 歌词字段的版本列表（`GET …/plans/:planCardId/versions?field=lyrics`，**只读**）。
+    ///
+    /// 本屏只拿它核一件事：「当前这一版还在不在列表里」。不做版本翻页 ——
+    /// 那是 web 的段级版本导航（`VersionNavFrame.tsx`）那一整块产品面，09 没写。
+    public func lyricVersions(planCardID: String) async throws -> [OneStepFieldVersionDto] {
+        let response: OneStepFieldVersionsResponseDto = try await client.get(
+            "/api/studio/one-step/plans/\(planCardID)/versions",
+            queryItems: [URLQueryItem(name: "field", value: "lyrics")]
+        )
+        return response.versions ?? []
+    }
+
     /// agent 请求体（`POST /api/studio/agent`，SSE）。
     ///
     /// 字段族按 web 源码与推断实现（NEEDS-13 已登记「请求体 schema 未文档化」）：
