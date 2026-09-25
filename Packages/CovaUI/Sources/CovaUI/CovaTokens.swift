@@ -108,11 +108,19 @@ public enum CovaRadius {
 /// 侧修饰符，`Font` 上没有对应能力；原先那个 `tracking:` 形参是个从不读取的死参数（本次删掉），
 /// 所以观感与既有验收截图一致 —— 字距保真留给 G2 逐屏验收按屏补，不在这里谎称已做。
 public enum CovaType {
-    public static let largeTitle = Font.system(.largeTitle).weight(.bold)
-    public static let title = Font.system(.title).weight(.bold)
-    public static let headline = Font.system(.headline)
-    public static let body = Font.system(.body)
-    public static let callout = Font.system(.callout)
+    // 字阶整体**下移一档**（D24）：原 largeTitle 34 / title 28 在 402pt 宽的手机上会把
+    // 一屏挤成两三块，且与 headline 17 之间没有过渡 ⇒ 整屏没有"小"的层次，读起来是堆叠。
+    // 下移用**更小的文本样式**实现而不是 `Font.system(size:)`：固定 point 不跟随 Dynamic Type
+    // （这条判据本仓已为它登记过一次，见上方注释）。iPhone 默认档实测：
+    //   largeTitle 34→22(.title2)｜title 28→20(.title3)｜headline 17→15(.subheadline+半粗)
+    //   body 17→16(.callout)｜callout 16→15(.subheadline)｜subhead 13、caption 11 不动
+    public static let largeTitle = Font.system(.title2).weight(.bold)
+    public static let title = Font.system(.title3).weight(.semibold)
+    /// 区块标题与卡标题：15 半粗。原来吃 `.headline`（17 半粗）⇒ 与正文只差 1pt、又没有
+    /// 大小写可依赖（中文），层级出不来；降一档后靠**字重 + 间距**分主次。
+    public static let headline = Font.system(.subheadline).weight(.semibold)
+    public static let body = Font.system(.callout)
+    public static let callout = Font.system(.subheadline)
     public static let subhead = Font.system(.footnote)
     /// 设计档 `caption` 是 11pt ⇒ Apple `.caption2`（`.caption` 为 12pt，不是这一档）。
     public static let caption = Font.system(.caption2)
