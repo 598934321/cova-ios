@@ -3,8 +3,8 @@ import XCTest
 
 /// D7 / 09 §5 双 Demo 终态硬规则（唯一判定处）。夹具仍走 `JSONSerialization` 造真实响应形态。
 ///
-/// 这四条最容易被写歪的地方各钉一条：只取前二、ready 必须带地址、不足两个不终态、
-/// 以及「终态但两版全失败」不给可挑。
+/// 这几条最容易被写歪的地方各钉一条：只取前二、ready 必须带地址、不足两个不终态、
+/// 「终态但两版全失败」不给可挑、以及 settled ≠ 可以试听（失败卡被画成 ready 形状的那处缺陷）。
 final class DoubleDemoRuleTests: XCTestCase {
     private func candidate(
         id: String, status: String? = nil, url: String? = nil
@@ -93,5 +93,33 @@ final class DoubleDemoRuleTests: XCTestCase {
             ["id": "b", "audioDownloadStatus": "ready", "audioUrl": "https://x/b"],
         ])
         XCTAssertTrue(DoubleDemoRule.canChooseVersion(bothReady))
+    }
+
+    /// **settled ≠ 可以试听**：`failed` 也是终局（D7 的终态定义就是 ready 或 failed），
+    /// 但那一版没有可播的音频。09 §5 的卡面因此是两条分支：就绪 = 封面 + 播放钮，
+    /// 失败 = error 遮罩 + 「重试」。把 `isSettled` 当可播性用，就会把失败卡画成 ready 形状
+    /// （`AISessionDetailView` 原样如此，D0 抓的三条之一）—— 这条用例钉的就是不许再合并回去。
+    func testSettledIsNotTheSameAsPlayable() {
+        let failed = candidate(id: "a", status: "failed")
+        XCTAssertTrue(DoubleDemoRule.isSettled(failed), "失败也算终局，否则本轮永远到不了终态")
+        XCTAssertFalse(DoubleDemoRule.isReady(failed), "但失败不给可播性")
+
+        let pending = candidate(id: "b", status: "pending")
+        XCTAssertFalse(DoubleDemoRule.isSettled(pending))
+        XCTAssertFalse(DoubleDemoRule.isReady(pending))
+
+        let ready = candidate(id: "c", status: "ready", url: "https://x/c")
+        XCTAssertTrue(DoubleDemoRule.isSettled(ready))
+        XCTAssertTrue(DoubleDemoRule.isReady(ready))
+
+        // §5 行 3「failed + pending」：一张失败不得把另一张 pending 带成"有进展"，也不得算终态。
+        let failedPending = decode([
+            ["id": "a", "audioDownloadStatus": "failed"],
+            ["id": "b", "audioDownloadStatus": "pending"],
+        ])
+        XCTAssertEqual(DoubleDemoRule.failedCount(failedPending), 1)
+        XCTAssertEqual(DoubleDemoRule.readyCount(failedPending), 0)
+        XCTAssertFalse(DoubleDemoRule.isTerminal(failedPending))
+        XCTAssertFalse(DoubleDemoRule.canChooseVersion(failedPending))
     }
 }

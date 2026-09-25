@@ -46,6 +46,8 @@ public struct AISessionDetailView: View {
     @State private var thinkingSteps = 0
     /// 本轮是否**已经问过要挑哪一版**（09 §5 终态行：主钮按下去之后，已就绪的卡上才出「选这版继续制作」）。
     @State private var choosingVersion = false
+    /// 失败卡「重试」的那一次**读**在不在途（连点吞后发，同 §10 对 ♡ 的口径）。
+    @State private var reconciling = false
     @State private var lineCounter = 0
     @State private var agentBuffer = ""
 
@@ -184,31 +186,60 @@ public struct AISessionDetailView: View {
     private func candidateRow(
         _ candidate: GenerationCandidateDto, index: Int, terminal: Bool
     ) -> some View {
-        // 「settled」只有一处定义（`DoubleDemoRule`，D7），终态条 / 主钮 / 这一行读同一本账；
+        // 「settled」与「可以试听」是两件事：`DoubleDemoRule.isSettled` 含 **failed**（D7 的终局定义），
+        // 原实现把它当可播性用 ⇒ 失败卡印「可以试听」+ 播放图标、ready 形状套在 failed 数据上，
+        // 正是 §5 行 3/5/6 要的「失败卡 error 遮罩 + 「重试」」没落地那一处。
         // 是否**可选**另说：占位卡与失败卡在操作条上不出选择钮（见 `versionChoice`）。
-        let settled = DoubleDemoRule.isSettled(candidate)
+        let ready = DoubleDemoRule.isReady(candidate)
+        let failed = DoubleDemoRule.isFailed(candidate)
         return VStack(alignment: .leading, spacing: CovaSpace.xs) {
             CovaListRow(
                 title: candidate.title ?? "版本 \(index + 1)",
-                subtitle: settled ? "可以试听" : "制作中",
+                subtitle: failed ? Self.failedStatusText : (ready ? "可以试听" : "制作中"),
                 artwork: CovaArtwork(url: URL(string: candidate.coverUrl ?? ""), title: candidate.title ?? "")
             ) {
-                Image(systemName: settled ? "play.circle" : "hourglass").foregroundStyle(CovaColor.muted)
+                // 失败卡不给 ▶ 也不给菊花：§5 的失败卡面只有 error 遮罩 + 重试，
+                // 摆一个播放图标就是"这里能播"的谎。符号沿用本屏 §3-F 给 `run_failed` 定的一枚。
+                Image(systemName: failed ? "xmark.octagon" : (ready ? "play.circle" : "hourglass"))
+                    .foregroundStyle(failed ? CovaColor.error : CovaColor.muted)
             } action: {
-                guard settled, let raw = candidate.audioUrl?.rawValue, let url = URL(string: raw),
+                if failed {
+                    // 点整张失败卡 = 点它那颗「重试」：只做一次重读，不碰任何写操作。
+                    Task { await reconcileRound() }
+                    return
+                }
+                guard ready, let raw = candidate.audioUrl?.rawValue, let url = URL(string: raw),
                       let item = Self.playbackItem(for: candidate, url: url) else {
                     session.showToast("试听文件没取到，重试", isError: true)
                     return
                 }
                 Task { await session.play(items: [item], at: 0) }
             }
-            candidateActionBar(
-                candidate, index: index, ready: DoubleDemoRule.isReady(candidate), terminal: terminal
-            )
+            // error 遮罩（09 §5 / components §5）：只盖卡面，不吃点击（整行本身是按钮）。
+            .overlay { if failed { candidateErrorScrim } }
+            candidateActionBar(candidate, index: index, ready: ready, terminal: terminal)
         }
     }
 
-    /// 候选卡底部操作条（09 §3-H 列了三件：♡ 收藏 / ↓ 下载 / ⤴ 分享）。
+    /// 失败卡的状态文案。**不在这里再立一张中文表**：09 §9 行 11 的「未完成，可重试」
+    /// 是本仓已有、语义正好对上的那一份（`PlanStatusCopy`，design 09 §9 权威表的实现）。
+    private static let failedStatusText = PlanStatusCopy.label(.retryableFailure)
+
+    /// 失败卡的 error 遮罩。`color.errorSoft` 衬底档未入库（09 TG-21）⇒ 与 04 §2 的 scrim 同一处理：
+    /// 不自己挑一个品牌色透明度配方，只取 `color.error` 的一层低不透明度衬底，
+    /// 数值收在命名常量里，裁决落 token 时只改这一处。
+    /// `.allowsHitTesting(false)`：遮罩是**表现层**，不许把整行的点击吞掉（那会藏掉「重试」这条路）。
+    private var candidateErrorScrim: some View {
+        RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous)
+            .fill(CovaColor.error.opacity(Self.errorScrimOpacity))
+            .allowsHitTesting(false)
+    }
+
+    /// TG-21（`errorSoft` 未入库）期间的占位强度：比 04 那层 30% 的屏遮罩更轻，
+    /// 因为它压在卡面的标题行与状态行底下，还得让那两行照读。
+    private static let errorScrimOpacity: Double = 0.12
+
+    /// 候选卡底部操作条（09 §3-H 列了三件：♡ 收藏 / ↓ 下载 / ⤴ 分享；§5 另要失败卡有「重试」）。
     ///
     /// · **↓ 下载** —— **不渲染**：D12 明令 v1.0 不开任何扣费入口，09 §5 的终态行原文即
     ///   「下载入口仍按 D12 隐藏」，合规评审放行后再接。
@@ -220,6 +251,8 @@ public struct AISessionDetailView: View {
     ///   剩下唯一能拿到的地址是 `audioUrl` / `audioDownloadUrl`，那是 Bearer 授权地址：
     ///   把它交给系统分享面板等于把凭证送出设备（硬边界 3 / D7 / TD-23 三面禁止）。
     ///   ⇒ 少一个钮，不编一个分享目标。后端补上公开页或分享端点后，在这里接 `ShareLink`。
+    /// · **重试** —— 只挂在**失败**那一版上（§5 行 3/5/6）。它的动作不是 `plans/start`，
+    ///   理由整段写在 `retryControl` 上（09 §待裁决 4 自己都没裁完，那一刀我不替它裁）。
     @ViewBuilder
     private func candidateActionBar(
         _ candidate: GenerationCandidateDto, index: Int, ready: Bool, terminal: Bool
@@ -229,10 +262,86 @@ public struct AISessionDetailView: View {
             if CandidateFavoriteLedger.canFavorite(candidate) {
                 favoriteButton(candidate)
             }
+            if DoubleDemoRule.isFailed(candidate) {
+                retryControl()
+            }
             versionChoice(candidate, index: index, ready: ready, terminal: terminal)
             Spacer(minLength: 0)
         }
         .padding(.leading, CovaSpace.pageGutter)
+    }
+
+    /// 失败卡上的「重试」（09 §5 卡面列「失败卡 error 遮罩 + 「重试」」；§7 触控目标清单里也有它）。
+    ///
+    /// **它按下的不是「再来一次制作」** —— 这一步必须说清，因为规格自己也没裁完：
+    /// · 契约里没有任何"单候选重试"端点（`docs/api-contracts.md` §4 的一步模式全表 =
+    ///   sessions / plans / plans/start / generation-jobs / retention / agent），
+    ///   09 行 209 原文即「重试该候选需后端支持（未见端点）」；
+    /// · 退一步按 §待裁决 4 的临时读法改走 `plans/start` 也**不成立**：那条要求**换新幂等键**，
+    ///   而本屏对同一 `(会话, 计划卡, revision)` 的账是按 D8 **复用同一个键**的
+    ///   （`startTokens` / `PlanStartTokenLedger`）。复用 ⇒ 后端把它当同一次操作去重，这颗钮永远
+    ///   不会有结果（造的正是本仓最反对的那种点了没反应的假控件）；换新键 ⇒ 为同一张卡再扣一次费，
+    ///   恰好是"重试不得变成第二次扣费"要防的那件事。
+    /// · 何况产出失败候选的那一轮，计划卡状态是 `demos_ready` / `manual_recovery` /
+    ///   `retryable_failure`，§9 行 7/10 明令「开始制作」禁用，而"重新制作"这颗本来就在
+    ///   **计划卡**上（`PlanStatusCopy.primaryAction`），不该在候选卡上再长一颗。
+    /// ⇒ 于是这一枚做本屏唯一**既有真实效果、又不碰钱**的动作：重新核对这一轮
+    ///   （`GET sessions/:id` + `plans`，与 §8「下拉刷新」同一口径）。这也不是空转 ——
+    ///   本屏**从不轮询 jobs**（见 `deliveryProgress` 那段），所以屏上的"失败"完全可能是
+    ///   上一次进屏时的旧快照，重读恰好是能纠正它的那一下。仍然失败时按 §5 行 6 引导
+    ///   「换一句话再来一次」，全程不出现扣费/退款话术（D12）。
+    /// 这一枚不接 candidate 参数：今天它做的是**整轮**重读，与是哪一版无关。等后端真的补出
+    /// 「只补做失败那一版」的端点（§待裁决 4 点名的那个缺口），这里才需要把候选身份带进动作。
+    @ViewBuilder
+    private func retryControl() -> some View {
+        Button {
+            Task { await reconcileRound() }
+        } label: {
+            HStack(spacing: CovaSpace.xs) {
+                Image(systemName: reconciling ? "hourglass" : "arrow.clockwise")
+                Text("重试")
+            }
+            .font(CovaType.callout)
+            .foregroundStyle(CovaColor.accentText)
+            // §7：文字钮的热区 ≥44pt（与 `versionChoice` 同一把尺子）。
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(reconciling)
+        .accessibilityLabel("重试这一版")
+        .accessibilityHint("重新核对这一轮的制作结果，不会重新发起制作")
+    }
+
+    /// 「重试」的落地：一次**只读**的对账。与 `openSession()` 读同一批事实、用同一套播种口径，
+    /// 但不进 `.loading`（整屏骨架会把已经在的对话流抽走，而这里只是核一眼后端），
+    /// 也不重发首页带过来的那句话。`plans` 只在取到时覆盖（取不到 ≠ 后端说"没有卡"）。
+    private func reconcileRound() async {
+        guard !reconciling else { return }
+        reconciling = true
+        defer { reconciling = false }
+        do {
+            let detail = try await session.studio.session(sessionID)
+            let jobs = detail.generationJobs
+            latestJob = jobs.last
+            candidates = jobs.last?.candidates() ?? []
+            workflow = detail.session?.decodedWorkflowState()
+            if let cards = try? await session.studio.planCards(sessionID: sessionID) { plans = cards }
+            // 服务端为事实源：♡ 账整本重播种，"已经问过挑哪一版"也随之作废（同 `openSession` 口径），
+            // 免得用户按着一份刚被后端改掉的清单继续选。
+            favorites.reseed(from: candidates)
+            choosingVersion = false
+            if candidates.contains(where: { DoubleDemoRule.isFailed($0) }) {
+                // §5 行 6 的引导，且只说这一句：不出现"扣费/退款"任何字样（D12）。
+                session.showToast("这一版仍未完成，可以换一句话再来一次")
+            } else {
+                session.showToast("已重新核对，这一轮的状态更新了")
+            }
+        } catch {
+            session.showToast(
+                "没读到最新状态：\(StudioService.classify(error).uiMessage)", isError: true
+            )
+        }
     }
 
     /// 「选这版继续制作」（§5 行 2/4/5）。**只对已就绪的那一版渲染** ——
