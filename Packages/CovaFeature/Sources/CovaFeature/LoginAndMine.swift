@@ -255,7 +255,8 @@ public struct MineView: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: CovaSpace.xl) {
+            // D24 紧凑：主栈 24→16（列表行本身已由 `CovaListRow` 收到约 48pt 行高）。
+            VStack(alignment: .leading, spacing: CovaSpace.lg) {
                 identity
                 balanceCard
                 assets

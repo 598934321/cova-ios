@@ -205,8 +205,17 @@ public struct AISessionDetailView: View {
             ) {
                 // 失败卡不给 ▶ 也不给菊花：§5 的失败卡面只有 error 遮罩 + 重试，
                 // 摆一个播放图标就是"这里能播"的谎。符号沿用本屏 §3-F 给 `run_failed` 定的一枚。
-                Image(systemName: failed ? "xmark.octagon" : (ready ? "play.circle" : "hourglass"))
-                    .foregroundStyle(failed ? CovaColor.error : CovaColor.muted)
+                // D24 构图：♡ 原来掉在行的**下面一行**，与行脱开（屏上就是一枚孤立的心）——
+                // 这一屏的候选行不是卡片，没有容器把它兜在一起，所以"另起一行"直接读成堆叠。
+                // 并回行内，排在试听钮左侧；「重试 / 选一版」仍留在下面那条动作条（它们有文字，
+                // 挤进行内会把行高顶回去）。
+                HStack(spacing: CovaSpace.xs) {
+                    if CandidateFavoriteLedger.canFavorite(candidate) {
+                        favoriteButton(candidate)
+                    }
+                    Image(systemName: failed ? "xmark.octagon" : (ready ? "play.circle" : "hourglass"))
+                        .foregroundStyle(failed ? CovaColor.error : CovaColor.muted)
+                }
             } action: {
                 if failed {
                     // 点整张失败卡 = 点它那颗「重试」：只做一次重读，不碰任何写操作。
@@ -263,10 +272,9 @@ public struct AISessionDetailView: View {
         _ candidate: GenerationCandidateDto, index: Int, ready: Bool, terminal: Bool
     ) -> some View {
         HStack(spacing: CovaSpace.sm) {
-            // 「无 mediaReferenceId 时整钮不渲染」（09 §5 / §8）：不是 disabled，是不进视图树。
-            if CandidateFavoriteLedger.canFavorite(candidate) {
-                favoriteButton(candidate)
-            }
+            // ♡ 已并到行内（D24 构图），这里只剩**带文字**的动作：失败卡的「重试」与「选一版」。
+            // 「无 mediaReferenceId 时整钮不渲染」（09 §5 / §8）那条判据跟着 moved 到行内那一处，
+            // 由 `CandidateFavoriteLedger.canFavorite` 同一个入口把关，没有第二份口径。
             if DoubleDemoRule.isFailed(candidate) {
                 retryControl()
             }
