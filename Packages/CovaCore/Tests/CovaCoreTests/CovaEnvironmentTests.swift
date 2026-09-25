@@ -601,4 +601,182 @@ final class CovaEnvironmentTests: XCTestCase {
         )
         XCTAssertFalse(CovaEnvironment.unnameableHostLabel.contains("LEAK"))
     }
+
+    // MARK: - R18-1：host 「精确匹配」的**两个方向**都要钉住（旧用例只钉了一个方向）
+
+    /// 为什么这一条必须存在（R18-1，变异存活 ⇒ 真洞）：`isSanctionedStorageHost` 与 D23 都
+    /// 声称「既不是前缀也不是通配」，但旧用例只测了**名单串当前缀**那一个方向
+    /// （`….myqcloud.com.attacker.test` ⇒ 真 host 是 attacker.test）。于是把实现改成
+    /// `host.hasSuffix(sanctioned)` 之后 **488 tests / 0 failures / EXIT=0** —— 门禁看不见行为改变。
+    /// 反方向（真 host **以**我们的桶名**结尾**：桶名的子域、拼在前面的串）一个用例都没有。
+    /// 本用例从 `sanctionedStorageBuckets` + `storageZoneSuffix` **推导**输入，
+    /// 于是扩容/换区时它自动跟着变，不是一串写死的死名字。
+    func testSanctionedHostMatchingRefusesBothThePrefixAndTheSuffixDirection() {
+        XCTAssertFalse(CovaEnvironment.sanctionedStorageBuckets.isEmpty, "前置：名单不能是空的（空名单会让本用例恒真）")
+        for bucket in CovaEnvironment.sanctionedStorageBuckets {
+            let sanctioned = bucket + CovaEnvironment.storageZoneSuffix
+            XCTAssertTrue(CovaEnvironment.isSanctionedStorageHost(sanctioned), "前置：名单全名必须放行")
+            // 方向①（旧用例已覆盖）：我们的全名当**前缀**、后面挂攻击者的域。
+            XCTAssertFalse(
+                CovaEnvironment.isSanctionedStorageHost("\(sanctioned).attacker.test"),
+                "名单当前缀挂甲必须拒（真 host 是 attacker.test）"
+            )
+            // 钉 `hasPrefix` 这一支变异：以名单开头、尾巴再长一个字符就不是那台主机。
+            XCTAssertFalse(
+                CovaEnvironment.isSanctionedStorageHost("\(sanctioned)X"),
+                "以名单开头但多一个字符 = 另一台主机（钉 hasPrefix 变异）"
+            )
+            // 方向②（本次补的洞）：我们的全名当**后缀**、前面挂上去 ⇒ `hasSuffix` 会放行。
+            // 2026-09-25 只读 `dig` 实测（**推翻了我自己先前想写的理由**）：
+            // `x.covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com` **确实解析**，
+            // 且与真桶同一串 CNAME（`sh.file.myqcloud.com.`）、同一批 A 记录 ⇒
+            // "子域不存在 / 不可达"不是这里的理由。拒的理由是**身份**：COS 边缘按 `Host`
+            // 头取桶名，多出来那一截就是**另一个（不存在的）桶**，而 D23 钉的是
+            // 「精确桶标号 + 精确存储区」；放行它等于允许任意多层前导 label ——
+            // 那正好就是 `hasSuffix` 的形状。（对照 `….com.attacker.test`：实测**不**解析。）
+            for spoofed in [
+                "x.\(sanctioned)",                          // 名单主机的**子域**（解析得到，但不是那台桶）
+                "evil.attacker.\(sanctioned)",              // 更深一层的子域
+                "evil\(sanctioned)",                        // 无点粘连：仍"以名单结尾"
+                "1\(sanctioned)",                           // 数字粘连（DNS 上就是另一个 label）
+            ] {
+                XCTAssertFalse(
+                    CovaEnvironment.isSanctionedStorageHost(spoofed),
+                    "名单当后缀挂甲必须拒（钉 hasSuffix 变异）：\(spoofed)"
+                )
+            }
+            // 只认「桶名 + 存储区」那一个组合：拆开的两半、换了区、只剩存储区都不算。
+            XCTAssertFalse(CovaEnvironment.isSanctionedStorageHost(bucket), "桶名单独不是主机全名：\(bucket)")
+            XCTAssertFalse(
+                CovaEnvironment.isSanctionedStorageHost("\(bucket).cos.ap-beijing.myqcloud.com"),
+                "换存储区就是换主机，必须显式过 D23"
+            )
+            XCTAssertFalse(
+                CovaEnvironment.isSanctionedStorageHost(CovaEnvironment.storageZoneSuffix),
+                "存储区后缀本身（前面没有桶名）不是名单"
+            )
+            XCTAssertFalse(CovaEnvironment.isSanctionedStorageHost("myqcloud.com"), "公共后缀不是名单")
+            XCTAssertFalse(CovaEnvironment.isSanctionedStorageHost(""), "空串不是名单")
+            XCTAssertFalse(CovaEnvironment.isSanctionedStorageHost(sanctioned + " "), "带空白的 host 不是名单")
+            // URL 形态的同一批挂甲也不能从 `isSanctionedMediaURL` 那一道漏出去。
+            for refused in ["https://x.\(sanctioned)/a.mp3", "https://evil\(sanctioned)/a.mp3"] {
+                XCTAssertFalse(
+                    CovaEnvironment.isSanctionedMediaURL(URL(string: refused)!),
+                    "URL 形态的同方向挂甲必须拒：\(refused)"
+                )
+                XCTAssertFalse(
+                    CovaEnvironment.mediaRedirectAllowed(
+                        from: CovaEnvironment.apiBaseURL.appendingPathComponent("api/tracks/one/preview-stream"),
+                        to: URL(string: refused)!,
+                        carriesCredentials: false
+                    ),
+                    "跳转腿也不许跟到它：\(refused)"
+                )
+            }
+        }
+    }
+
+    /// 名单串出现在 **path / query / fragment** 里不是 host（R18-1 要的第三个方向）：
+    /// 必须拒，而且拒绝时点名的必须是**真 host**（`evil.test`），一个 path/query 字符都不带出去 ——
+    /// 签名住在 query（硬边界 3），D23③ 要的只是「看得见是哪一台」。
+    func testSanctionedNameInsidePathOrQueryIsRefusedAndNamedByItsRealHostOnly() {
+        let bucketHost = CovaEnvironment.sanctionedStorageHosts[0]
+        let cases: [(address: String, named: String)] = [
+            ("https://evil.test/\(bucketHost)/a.jpeg?sig=LEAK-SIG", "evil.test"),
+            ("https://evil.test/?url=https%3A%2F%2F\(bucketHost)%2Fa.mp3&sig=LEAK-SIG", "evil.test"),
+            ("https://evil.test/redir#\(bucketHost)", "evil.test"),
+            ("https://\(bucketHost).attacker.test/a.jpeg?sig=LEAK-SIG", "covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com.attacker.test"),
+        ]
+        for (address, named) in cases {
+            guard let url = URL(string: address) else { return XCTFail("夹具本身必须可解析：\(address)") }
+            XCTAssertFalse(CovaEnvironment.isSanctionedMediaURL(url), "名单住在 path/query 里不是名单：\(address)")
+            XCTAssertEqual(CovaEnvironment.egressHostLabel(of: url), named, "点名必须是真 host：\(address)")
+            let label = CovaEnvironment.egressHostLabel(of: url)
+            for forbidden in ["LEAK", "/", "?", "#", "="] {
+                XCTAssertFalse(label.contains(forbidden), "标签带出了地址片段 \(forbidden)：\(label)")
+            }
+            XCTAssertFalse(CovaEnvironment.isProductionOrigin(url), "这些都不是生产出口：\(address)")
+        }
+        // 对照（同一台真 host，名单串只在 path 里）：**生产出口**那条腿的 path 不构成逃逸，
+        // 但点名口径仍然只出 host —— 这条钉的是「点名函数不会被 path 里的名单串带偏」。
+        let productionWithBucketInPath = CovaEnvironment.apiBaseURL.appendingPathComponent(bucketHost)
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(productionWithBucketInPath))
+        XCTAssertEqual(CovaEnvironment.egressHostLabel(of: productionWithBucketInPath), "covalink.cn")
+        XCTAssertFalse(CovaEnvironment.egressHostLabel(of: productionWithBucketInPath).contains(bucketHost))
+    }
+
+    /// 收紧**不许**误杀合法形态（TD-9 口径：判据不许过宽）：大写 host、显式规范端口 `:443`、
+    /// 签名查询里的 `%2B`（R17-6 刚修过的字节保真，不许在这里退回去）全部照常放行。
+    func testLegitimateSanctionedShapesSurviveTheExactMatch() throws {
+        let accepted = [
+            "https://COVALINK-AUDIO-1301797874.COS.AP-SHANGHAI.MYQCLOUD.COM/tracks/full.mp3",
+            "https://Covalink-Covers-1301797874.Cos.Ap-Shanghai.Myqcloud.Com/covers/a.jpeg",
+            "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com:443/covers/a.jpeg",
+            "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3?sig=%2Bx%3D%3D&region=ap-shanghai",
+            "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com:443/tracks/full.mp3?sig=%2Bx",
+        ]
+        for text in accepted {
+            let url = try XCTUnwrap(URL(string: text), "夹具本身必须可解析：\(text)")
+            XCTAssertTrue(CovaEnvironment.isSanctionedMediaURL(url), "合法形态被误杀：\(text)")
+            XCTAssertTrue(
+                CovaEnvironment.mediaRedirectAllowed(
+                    from: CovaEnvironment.apiBaseURL.appendingPathComponent("api/tracks/one/preview-stream"),
+                    to: url,
+                    carriesCredentials: false
+                ),
+                "公开媒体腿的合法落地被误杀：\(text)"
+            )
+        }
+        // R17-6 的保真前提在此钉住：判定用 host，绝不碰查询原文（`%2B` 一旦解成 `+`，
+        // 部署侧的 HMAC 就对不上 —— 服务端把 `+` 当空格解）。
+        let signed = try XCTUnwrap(
+            URL(string: "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3?sig=%2Bx%3D%3D")
+        )
+        XCTAssertTrue(CovaEnvironment.isSanctionedMediaURL(signed))
+        XCTAssertEqual(
+            URLComponents(url: signed, resolvingAgainstBaseURL: false)?.percentEncodedQuery,
+            "sig=%2Bx%3D%3D",
+            "出口判定不得改写签名查询原文"
+        )
+        XCTAssertEqual(signed.absoluteString, "https://covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com/tracks/full.mp3?sig=%2Bx%3D%3D")
+    }
+
+    /// **本次写下的发现（不迁就、只如实钉住）**：`URL.host()` 会**原样保留** DNS 根标签的那个尾点
+    /// （`https://…myqcloud.com./x` 的 `host()` 就是带尾点那串），于是精确匹配把 FQDN 绝对形态
+    /// 判成**另一台主机**。本仓早就在另一条腿上把这条钉死了：
+    /// `testIsProductionOriginRejectsHostLookalikes` 里 `https://covalink.cn.` 是**拒**的。
+    /// 因此名单这一侧同样拒 —— 两侧一致（要放宽就必须同时在 `normalizedEgressHost` 与
+    /// `normalizedAuthority` 做一次归一，否则会出现「出口放行、来源证明判换人」的两套口径，
+    /// 并要翻掉上面那条既有断言；那是放宽已钉判据，属 D23 归属面，留待协调者裁决）。
+    /// 真实风险面：尾点形态在我们的 `Location` / `audioUrl` 里从未出现过（30 个样本端点实测），
+    /// 而带尾点的**近亲**主机仍然必须拒。
+    func testTrailingRootDotIsRefusedConsistentlyOnBothEgressLegs() throws {
+        let plain = try XCTUnwrap(
+            URL(string: "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg")
+        )
+        let rootDot = try XCTUnwrap(
+            URL(string: "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com./covers/a.jpeg")
+        )
+        XCTAssertEqual(
+            rootDot.host,
+            "covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com.",
+            "前置（发现本体）：Foundation 不折叠根标签尾点，精确匹配因此必然把它判成别台"
+        )
+        XCTAssertTrue(CovaEnvironment.isSanctionedMediaURL(plain))
+        XCTAssertFalse(CovaEnvironment.isSanctionedMediaURL(rootDot), "尾点形态今天一律 fail-closed")
+        XCTAssertFalse(
+            CovaEnvironment.isSanctionedStorageHost("covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com.")
+        )
+        // 两侧同口径：生产出口那一侧早就钉了「带尾点不是生产 host」。
+        XCTAssertFalse(CovaEnvironment.isProductionOrigin(URL(string: "https://covalink.cn./api/tracks")!))
+        // 带尾点的**近亲**（子域 + 尾点）两种口径下都必须拒。
+        XCTAssertFalse(CovaEnvironment.isSanctionedMediaURL(
+            URL(string: "https://x.covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com./a.jpeg")!
+        ))
+        // 标签面：点名时把尾点**原样如实**报出来（那是真收请求的那台），不借机折叠。
+        XCTAssertEqual(
+            CovaEnvironment.egressHostLabel(of: rootDot),
+            "covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com."
+        )
+    }
 }
