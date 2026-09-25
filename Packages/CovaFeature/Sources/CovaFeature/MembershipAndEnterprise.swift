@@ -8,22 +8,23 @@ import SwiftUI
 /// · B 卡只读、**卡内不放任何按钮**、整卡不可点；
 /// · 未登录 ⇒ B 卡整卡不渲染（也不出现「登录后查看」这种引导卡）；
 /// · 额度数字（30/200/800）**没有端点来源** ⇒ 渲染「—」+「额度以官网为准」，不编数；
-/// · 脚注 F 必须逐字存在（缺失按 Critical 计）；
+/// · 脚注 F 必须逐字存在（缺失按 Critical 计，`Scripts/d12-copy-check.sh` 按字面量扫本文件）；
 /// · 全屏文案（含 VoiceOver 标签）**禁止**出现：购买 / 充值 / 支付 / 立即开通 / 升级 /
 ///   订阅管理 / 付款 / 价格 / ¥ / 元/月 / 限时 / 优惠 / 恢复购买；
-/// · `me` 取不到时**静默**（本屏按 spec 无骨架、无 Toast、无整屏错误态）。
+/// · `me` 取不到时**静默**（本屏按 spec 无骨架、无 Toast、无整屏错误态），
+///   并且**当前列不高亮** —— 猜一个档位比不画更坏。
 public struct MembershipView: View {
     @Environment(AppSession.self) private var session
     /// 13 §Dynamic Type：AX 档下权益对照表换形态（表 → 逐套餐纵向卡片）。
     @Environment(\.covaAXLayout) private var axLayout
-    @State private var entitlements: Entitlements?
-    @State private var activeUntil: String?
 
     public init() {}
 
     /// 对比表的内容是**本地静态常量**（spec 明令：无端点）。这里只列「能力有没有」，
     /// 不列额度数字与任何金额；额度那一行统一给「额度以官网为准」。
-    private static let rows: [(label: String, values: [String])] = [
+    /// `internal`（不是 private）：用例要钉「每行的值数 == 列数」——对不齐时表不会崩，
+    /// 只会把「支持」印到错的套餐头上，那正是这张表最贵的错。
+    static let rows: [(label: String, values: [String])] = [
         ("商用授权", ["支持", "支持", "支持", "定制"]),
         ("AI 生成（Cova AI）", ["支持", "支持", "支持", "定制"]),
         ("下载与扣费", ["不支持", "支持", "支持", "定制"]),
@@ -31,12 +32,32 @@ public struct MembershipView: View {
         ("每月额度", ["—", "—", "—", "—"]),
     ]
 
-    private static let planNames = ["免费版", "创作版", "专业版", "企业版"]
+    /// 列序 = `CovaPlan` 四档（13 §7 硬要求「与枚举严格同集，不增不减」）。
+    /// 表头中文由 `CovaPlan.userLabel`（11 §8 唯一源）生成，**本文件不再另立一张表**；
+    /// 而"枚举多了第五档"这件事由 `MineCopy`/各处穷举 switch 在编译期拦住。
+    static let columns: [CovaPlan] = [.free, .creator, .pro, .enterprise]
+    static let planNames: [String] = columns.map { $0.userLabel }
+    /// 单元格宽度：4 列 × 56 + 首列弹性，是横向表在设计档下的排印宽度（TG-37 未入库）。
+    private static let cellWidth: CGFloat = 56
+    private static let currentEdgeWidth: CGFloat = 2    // §3.C：当前列 2pt `color.accent` 顶边（TG-04）
+
+    /// §3.C 的「当前套餐列」：只有登录且 `plan` 取得到才有。**取不到 = 不高亮**（游客、
+    /// `me` 失败、NEEDS-3 未解锁三支都落这里 —— §4 明令这些形态下"其余完全一致"）。
+    private var currentPlan: CovaPlan? {
+        guard case .signedIn = session.authPhase else { return nil }
+        return session.me?.entitlements.plan
+    }
+
+    /// §3.B 的 B 卡数据：同上，只读 `AppSession` 那一份共享账（§并发：本屏**不**发独立请求）。
+    private var entitlements: Entitlements? {
+        guard case .signedIn = session.authPhase else { return nil }
+        return session.me?.entitlements
+    }
 
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: CovaSpace.xl) {
-                if let entitlements, case .signedIn = session.authPhase {
+                if let entitlements {
                     myPlanCard(entitlements)
                 }
                 comparison
@@ -48,31 +69,59 @@ public struct MembershipView: View {
         .covaPage()
         .navigationTitle("会员权益")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await read() }
+        // 与 11/04 同一本 `/me` 账：`loadMe` 自己合并同身份的在途请求，游客直接早退。
+        .task { await session.loadMe() }
     }
 
     /// 只读卡：**内部没有任何按钮**，也不可点。
+    /// §3.B 底 `memberGoldSoft` + 1pt `memberGoldBorder`（双主题的深浅两值全在 token 里，§5）。
     private func myPlanCard(_ entitlements: Entitlements) -> some View {
-        CovaCard {
-            VStack(alignment: .leading, spacing: CovaSpace.sm) {
-                Text("当前套餐").font(CovaType.caption).foregroundStyle(CovaColor.muted)
-                Text(Self.planName(for: entitlements.plan))
-                    .font(CovaType.title).foregroundStyle(CovaColor.fg)
-                // free 无有效期 ⇒ 副行整行不渲染（不是显示「—」，也不是显示未同步）。
-                if let until = Self.expiryText(activeUntil) {
-                    Text("有效期至 \(until)")
-                        .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+        VStack(alignment: .leading, spacing: CovaSpace.xs) {
+            HStack(alignment: .firstTextBaseline, spacing: CovaSpace.sm) {
+                Text(entitlements.plan.userLabel)
+                    .font(CovaType.headline).foregroundStyle(CovaColor.memberGold)
+                Spacer(minLength: CovaSpace.sm)
+                // §4：有缓存但最近一次失败 → 「未同步」（muted），不弹 Toast、不整屏。
+                if session.meState == .outOfSync {
+                    Text("未同步").font(CovaType.caption).foregroundStyle(CovaColor.muted)
                 }
-                Text("剩余 co 币：\(entitlements.creditsBalance)")
-                    .font(CovaType.callout).foregroundStyle(CovaColor.accentText)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // free 无有效期 ⇒ 副行整行不渲染（不是显示「—」，也不是显示未同步）。
+            if let expiry = MineCopy.expiryText(entitlements.activeUntil) {
+                Text(expiry).font(CovaType.caption).foregroundStyle(CovaColor.memberGold)
+            }
+            // D12：只读余额，卡内无动作（11 §3.C 同规则）。取不到时走 `--`，不显 0。
+            Text("剩余 co 币：\(MineCopy.balance(entitlements.creditsBalance))")
+                .font(CovaType.callout).foregroundStyle(CovaColor.memberGold)
+                .accessibilityLabel(MineCopy.balanceSpoken(entitlements.creditsBalance))
         }
+        .padding(CovaSpace.lg)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous)
+                .fill(CovaColor.memberGoldSoft)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous)
+                .strokeBorder(CovaColor.memberGoldBorder, lineWidth: 1)
+        )
         .padding(.horizontal, CovaSpace.pageGutter)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(planCardSpoken(entitlements))
+    }
+
+    /// §6：「当前套餐，创作版，有效期至 …」——一条元素说完，顺序与 §3.B 的视觉顺序一致。
+    private func planCardSpoken(_ entitlements: Entitlements) -> String {
+        var parts = [MineCopy.planSpoken(entitlements.plan)]
+        if let expiry = MineCopy.expiryText(entitlements.activeUntil) { parts.append(expiry) }
+        parts.append(MineCopy.balanceSpoken(entitlements.creditsBalance))
+        if session.meState == .outOfSync { parts.append("未同步") }
+        return parts.joined(separator: "，")
     }
 
     private var comparison: some View {
-        VStack(alignment: .leading, spacing: CovaSpace.md) {
+        let current = columnIndex
+        return VStack(alignment: .leading, spacing: CovaSpace.md) {
             CovaSectionHeader("权益对比")
             // 表体那 56pt 的单元格是**为对照密度设计的**：字号一放大就截断，
             // 与其让「不支持」变成「不支…」，不如在 AX 档换成逐套餐卡片（13 §Dynamic Type）。
@@ -82,9 +131,8 @@ public struct MembershipView: View {
                 VStack(spacing: 0) {
                     HStack(spacing: CovaSpace.sm) {
                         Text(" ").frame(maxWidth: .infinity, alignment: .leading)
-                        ForEach(Self.planNames, id: \.self) { name in
-                            Text(name).font(CovaType.caption).foregroundStyle(CovaColor.muted)
-                                .frame(width: 56)
+                        ForEach(Array(Self.planNames.enumerated()), id: \.offset) { index, name in
+                            headerCell(name, isCurrent: index == current)
                         }
                     }
                     .padding(.vertical, CovaSpace.xs)
@@ -92,11 +140,8 @@ public struct MembershipView: View {
                         HStack(spacing: CovaSpace.sm) {
                             Text(row.label).font(CovaType.subhead).foregroundStyle(CovaColor.fg)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            ForEach(Array(row.values.enumerated()), id: \.offset) { _, value in
-                                Text(value)
-                                    .font(CovaType.caption)
-                                    .foregroundStyle(Self.cellColor(value))
-                                    .frame(width: 56)
+                            ForEach(Array(row.values.enumerated()), id: \.offset) { index, value in
+                                cell(value, isCurrent: index == current)
                             }
                         }
                         .padding(.vertical, CovaSpace.sm)
@@ -110,21 +155,72 @@ public struct MembershipView: View {
         }
     }
 
+    /// 当前列的下标（`columns` 与 `planNames`/每行 `values` 同序）。取不到 → nil ⇒ 一格都不点亮。
+    private var columnIndex: Int? {
+        guard let current = currentPlan else { return nil }
+        return Self.columns.firstIndex(of: current)
+    }
+
+    /// §3.C：表头 = 套餐名 `type.callout` / `color.memberGold`；当前列另加 2pt `color.accent`
+    /// 顶边 + 列底 `color.accentSoft` + 「当前套餐」徽标（§8 允许措辞里就这三个词）。
+    private func headerCell(_ name: String, isCurrent: Bool) -> some View {
+        VStack(spacing: CovaSpace.xs) {
+            Text(name)
+                .font(CovaType.callout)
+                .foregroundStyle(CovaColor.memberGold)
+                .lineLimit(1)
+                .layoutPriority(1)
+            // 徽标位**恒存在**（当前/非当前都占同一格高度），否则点亮的瞬间整表会跳一行
+            // —— 而 §4 要求那一帧的过渡是「一帧到位」，不是布局抖动。
+            Text(isCurrent ? "当前套餐" : " ")
+                .font(CovaType.caption)
+                .foregroundStyle(CovaColor.accentText)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .frame(width: Self.cellWidth)
+        .padding(.top, isCurrent ? Self.currentEdgeWidth : 0)
+        .background(isCurrent ? CovaColor.accentSoft : Color.clear)
+        .overlay(alignment: .top) {
+            if isCurrent {
+                Rectangle().fill(CovaColor.accent).frame(height: Self.currentEdgeWidth)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(isCurrent ? "当前套餐 \(name)" : name)
+    }
+
+    private func cell(_ value: String, isCurrent: Bool) -> some View {
+        Text(value)
+            .font(CovaType.caption)
+            .foregroundStyle(Self.cellColor(value))
+            .frame(width: Self.cellWidth)
+            .background(isCurrent ? CovaColor.accentSoft : Color.clear)
+    }
+
     /// AX 档的替代形态：每套餐一张卡，卡内是「权益名 : 值」的纵向列表（13 §Dynamic Type）。
     /// 取值走 `indices.contains` 而不是直接下标 —— `rows`/`planNames` 是两处静态常量，
     /// 长度对不上时**宁可显示「—」也不能崩**。
     private var axPlanCards: some View {
-        VStack(alignment: .leading, spacing: CovaSpace.md) {
-            ForEach(Array(Self.planNames.enumerated()), id: \.offset) { index, plan in
+        let current = currentPlan
+        return VStack(alignment: .leading, spacing: CovaSpace.md) {
+            ForEach(Array(Self.columns.enumerated()), id: \.offset) { index, plan in
                 CovaCard {
                     VStack(alignment: .leading, spacing: CovaSpace.xs) {
-                        Text(plan).font(CovaType.headline).foregroundStyle(CovaColor.fg)
+                        HStack(spacing: CovaSpace.xs) {
+                            Text(plan.userLabel)
+                                .font(CovaType.headline)
+                                .foregroundStyle(CovaColor.memberGold)
+                            if plan == current {
+                                Text("当前套餐")
+                                    .font(CovaType.caption).foregroundStyle(CovaColor.accentText)
+                            }
+                        }
                         ForEach(Self.rows, id: \.label) { row in
                             HStack(alignment: .firstTextBaseline) {
                                 Text(row.label).font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                                 Spacer(minLength: CovaSpace.sm)
                                 Text(row.values.indices.contains(index) ? row.values[index] : "—")
-                                    .font(CovaType.subhead)
+                                    .font(CovaType.caption)
                                     .foregroundStyle(
                                         Self.cellColor(
                                             row.values.indices.contains(index) ? row.values[index] : "—"))
@@ -172,42 +268,16 @@ public struct MembershipView: View {
         .padding(.top, CovaSpace.lg)
     }
 
-    private static func planName(for plan: CovaPlan) -> String {
-        switch plan {
-        case .free: return "免费版"
-        case .creator: return "创作版"
-        case .pro: return "专业版"
-        case .enterprise: return "企业版"
-        }
-    }
-
     /// 颜色只表达「有没有」；「不支持」用 muted 而不是 error（spec 明令 ✕ 不用错误色）。
-    private static func cellColor(_ value: String) -> Color {
+    /// 支持/不支持的色档同样照 §3.C 走：✓=memberGold、✕=muted、文字值（定制/—）=secondary
+    /// —— 上一版给「定制」上了 warning 橙，那是 §3.C 与 §5 都没有的一档自造色。
+    /// `internal`：这三条是「色 == 语义」的映射，用例逐格钉（尤其钉死"不支持 ≠ error"）。
+    static func cellColor(_ value: String) -> Color {
         switch value {
-        case "支持": return CovaColor.success
+        case "支持": return CovaColor.memberGold
         case "不支持": return CovaColor.muted
-        default: return CovaColor.warning
+        default: return CovaColor.secondary
         }
-    }
-
-    /// `activeUntil` 不是契约字段（NEEDS-3 未闭合）⇒ 取不到就**不渲染副行**，
-    /// 也不显示「未同步」这类催促话术。
-    private static func expiryText(_ raw: String?) -> String? {
-        guard let raw, !raw.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        guard let date = formatter.date(from: raw) else { return nil }
-        let out = DateFormatter()
-        out.locale = Locale(identifier: "zh_CN")
-        out.dateFormat = "yyyy年M月d日"
-        return out.string(from: date)
-    }
-
-    private func read() async {
-        guard case .signedIn = session.authPhase else { return }
-        // 本屏无骨架、无错误态：取不到就按「未登录之外什么都不显示」处理（spec §静默）。
-        guard let me = try? await session.catalog.me() else { return }
-        entitlements = me.entitlements
-        activeUntil = nil   // `activeUntil` 在 `Entitlements` 里是真实响应附加字段，缺失即不渲染
     }
 }
 
