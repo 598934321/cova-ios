@@ -189,10 +189,10 @@ public final class AppSession {
             case .decoding:
                 authPhase = .failed("后端返回的用户字段不完整（NEEDS-1 已登记），登录暂不可用")
             default:
-                authPhase = .failed("登录失败：\(error.redactedDescription)")
+                authPhase = .failed(LoginFailureCopy.message(for: error))
             }
         } catch {
-            authPhase = .failed("登录失败：\(error.localizedDescription)")
+            authPhase = .failed(LoginFailureCopy.message(for: error))
         }
     }
 

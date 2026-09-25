@@ -784,7 +784,7 @@ private struct DrawerAccountCard: View {
     private var planBadge: some View {
         // §7：`plan` 缺 → 整枚不渲染（`/me` 没回来时就属此列）。
         if let plan = session.me?.entitlements.plan {
-            let name = Self.planName(for: plan)
+            let name = plan.userLabel
             Text(name)
                 .font(CovaType.caption)
                 .foregroundStyle(foreground(for: plan))
@@ -926,15 +926,4 @@ private struct DrawerAccountCard: View {
     /// 「/me 还没回答」的数值占位（04 §4 钉的 `--`；TG-29「数值占位符」档未入库）。
     private static let unknownValue = "--"
 
-    /// 套餐四档中文：**唯一源在 11 §8**（13 会员页与 04 引用同一张表）。
-    /// `MembershipView.planName` 是 private 且那个文件本轮不可改 ⇒ 这里按**同一张表**
-    /// 另写一份，并把"该抽成公共映射"上报，不改表内任何一字。
-    private static func planName(for plan: CovaPlan) -> String {
-        switch plan {
-        case .free: return "免费版"
-        case .creator: return "创作版"
-        case .pro: return "专业版"
-        case .enterprise: return "企业版"
-        }
-    }
 }
