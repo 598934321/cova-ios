@@ -25,7 +25,9 @@ import SwiftUI
 public struct LibraryView: View {
     @Environment(AppSession.self) private var session
     private let catalog: CatalogService
-    @State private var taxonomy: TaxonomyDto?
+    /// 词表摊平结果（取到词表时算一次；DTO 原始载荷不留 —— 级联只认这一份）。
+    /// 326 条词条 + 建树不在每次 body 里做。
+    @State private var dimensions: [LibraryFilterDimension] = []
     @State private var selection = LibraryFilterSelection()
     @State private var sort: LibrarySort = .recommended
     @State private var query = ""
@@ -91,8 +93,8 @@ public struct LibraryView: View {
     public var body: some View {
         VStack(spacing: 0) {
             searchBar
-            if let taxonomy {
-                dimensionStrip(LibraryFilterSchema.dimensions(from: taxonomy))
+            if !dimensions.isEmpty {
+                dimensionStrip
             }
             if !selection.isEmpty {
                 selectedChipsRow
@@ -172,7 +174,7 @@ public struct LibraryView: View {
     // MARK: - §2 维度 chips 条
 
     @ViewBuilder
-    private func dimensionStrip(_ dimensions: [LibraryFilterDimension]) -> some View {
+    private var dimensionStrip: some View {
         let inline = Array(dimensions.prefix(LibraryFilterSchema.inlineDimensionCount))
         let hidden = dimensions.dropFirst(LibraryFilterSchema.inlineDimensionCount)
         ScrollView(.horizontal, showsIndicators: false) {
@@ -198,16 +200,11 @@ public struct LibraryView: View {
     }
 
     private var hiddenDimensions: [LibraryFilterDimension] {
-        guard let taxonomy else { return [] }
-        return Array(
-            LibraryFilterSchema.dimensions(from: taxonomy)
-                .dropFirst(LibraryFilterSchema.inlineDimensionCount)
-        )
+        Array(dimensions.dropFirst(LibraryFilterSchema.inlineDimensionCount))
     }
 
     private func dimension(named id: String) -> LibraryFilterDimension? {
-        guard let taxonomy else { return nil }
-        return LibraryFilterSchema.dimensions(from: taxonomy).first { $0.id == id }
+        dimensions.first { $0.id == id }
     }
 
     // MARK: - §1 已选 chips 行
@@ -362,7 +359,8 @@ public struct LibraryView: View {
     // MARK: - 取数
 
     private func loadTaxonomy() async {
-        taxonomy = try? await catalog.taxonomy()
+        guard let loaded = try? await catalog.taxonomy() else { return }
+        dimensions = LibraryFilterSchema.dimensions(from: loaded)
     }
 
     /// 03 §2 的取数腿：**跨维度**多选（场景 AND 情绪 AND 风格…）。
