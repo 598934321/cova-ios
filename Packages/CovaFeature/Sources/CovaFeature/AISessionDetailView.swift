@@ -754,12 +754,12 @@ struct PlanCardView: View {
                         }
                     }
                 }
-                let chips = parameterChips(plan.parameters)
+                let chips = parameterChips(plan)
                 if !chips.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: CovaSpace.sm) {
                             ForEach(chips, id: \.self) { chip in
-                                CovaChip(chip, isSelected: false) {}
+                                parameterChip(chip)
                             }
                         }
                     }
@@ -797,17 +797,30 @@ struct PlanCardView: View {
         (plan.lyrics?.sections ?? []).sorted { ($0.order ?? .max) < ($1.order ?? .max) }
     }
 
-    /// 参数胶囊只由**契约里真实存在的字段**拼，一个都不发明；全取不到 ⇒ 整段不渲染。
-    private func parameterChips(_ parameters: OneStepPlanParametersDto?) -> [String] {
-        guard let parameters else { return [] }
-        var chips: [String] = []
-        if let vocalGender = parameters.vocalGender, !vocalGender.isEmpty { chips.append(vocalGender) }
-        if let duration = parameters.targetDurationSec ?? parameters.durationSec {
-            chips.append("\(duration)s")
-        }
-        if let weirdness = parameters.weirdness { chips.append("weirdness \(weirdness)") }
-        if let styleWeight = parameters.styleWeight { chips.append("styleWeight \(styleWeight)") }
-        return chips
+    /// 参数胶囊的**取值与文案一律不在本屏拼**：裁决面在 CovaCore 的
+    /// `OneStepPlanParameterCopy`（09 §3-G 的中文标签 + 百分数 + 「不认识的取值不渲染」三条口径，
+    /// 那边有用例钉着），本屏只负责摆。
+    /// 这里曾是「后端原值上屏」在本仓的第三处：上一版直接
+    /// `chips.append("weirdness \(weirdness)")`，把英文键名和 0–1 原值一起印上屏
+    /// （另两处 `LoginAndMine` 的 `plan.rawValue`、`status.rawValue` 同样是把判据挪进可测层才闭的）。
+    /// 只由契约里真实存在的字段拼、一个都不发明；全取不到 ⇒ 空数组 ⇒ 整段不渲染。
+    private func parameterChips(_ plan: OneStepPlanCardDto) -> [String] {
+        OneStepPlanParameterCopy.chips(parameters: plan.parameters, type: plan.type)
+    }
+
+    /// 参数行的一枚 chip。09 §3-G 给的是**展示形态**（`type.caption` / `color.secondary` +
+    /// `color.surface` 底），不是可点控件 ⇒ 不再借 `CovaChip(action:)`：
+    /// 原先写的是 `CovaChip(chip, isSelected: false) {}`，一个 action 为空的按钮，
+    /// VoiceOver 念它是"按钮"、按下什么都没有（本仓反对的就是这种假控件），字号也是 subhead 不是 caption。
+    /// 横滑容器沿用原结构 —— §7「AX 档下参数 chips 换行」这一条**本轮未做**（要另起一个换行容器），
+    /// 记在交付说明里，不在这一刀里静默扩大改动面。
+    private func parameterChip(_ text: String) -> some View {
+        Text(text)
+            .font(CovaType.caption).foregroundStyle(CovaColor.secondary)
+            .padding(.horizontal, CovaSpace.md)
+            .padding(.vertical, CovaSpace.xs)
+            .background(Capsule().fill(CovaColor.surface))
+            .fixedSize()
     }
 
     private var badgeColor: Color {
