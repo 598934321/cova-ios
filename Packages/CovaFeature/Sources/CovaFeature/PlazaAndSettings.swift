@@ -15,7 +15,9 @@ public struct PlaylistsPlazaView: View {
     @Environment(AppSession.self) private var session
     @State private var phase: Phase = .loading
     @State private var playlists: [PlaylistDto] = []
-    @State private var scenes: [(id: String, label: String)] = []
+    /// 一枚场景 chip：`key` 就是拿去和 `playlist.scene` 比的那个值，`label` 是屏上那两个字
+    /// （今天两者同源，都来自 03 那份摊平的 `LibraryFilterTerm.value`）。
+    @State private var scenes: [(key: String, label: String)] = []
     @State private var scene: String?
 
     private enum Phase: Equatable { case loading, ready, failed(CatalogFailure) }
@@ -39,8 +41,8 @@ public struct PlaylistsPlazaView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: CovaSpace.sm) {
                 CovaChip("全部", isSelected: scene == nil) { scene = nil }
-                ForEach(scenes, id: \.id) { item in
-                    CovaChip(item.label, isSelected: scene == item.id) { scene = item.id }
+                ForEach(scenes, id: \.key) { item in
+                    CovaChip(item.label, isSelected: scene == item.key) { scene = item.key }
                 }
             }
             .padding(.horizontal, CovaSpace.pageGutter)
@@ -167,11 +169,20 @@ public struct PlaylistsPlazaView: View {
             async let taxonomy = session.catalog.taxonomy()
             let (items, tree) = (try await list, try? await taxonomy)
             playlists = items
-            // chips 顺序/中文来自 taxonomy 的 scene 维度；取不到就只剩「全部」——
-            // 不硬编码一份中文表冒充后端。
-            let sceneTerms = (tree?.taxonomy.scene ?? [])
-                .sorted { ($0.sortOrder ?? 0) < ($1.sortOrder ?? 0) }
-                .map { (id: $0.id, label: $0.label ?? $0.id) }
+            // 05 的场景 chips 现在吃 03 那份摊平（`LibraryFilterSchema.dimensions(from:)`），
+            // 不再自己读 `taxonomy.scene` 的原始词条（审计那条「05 chips 取了全量 taxonomy」）。
+            // 换过来实际差三件事，全是"少骗一点"：
+            // · 词条走 `LibraryFilterTerm.value`（= `label ?? id` 去空白）：解出来是空的词条
+            //   **不出 chip** —— 旧写法 `label ?? $0.id` 不判空，一枚空白胶囊点得动却筛不出东西；
+            // · 顺序沿用服务端原序（03 同一口径）；旧写法在这里再按 `sortOrder` 排一次，
+            //   而 `sortOrder ?? 0` 会把**没有**这个字段的词条排到最前面 —— 把"读不到"排成第一名；
+            // · 03 那一维会把 `subscene` 并进来 ⇒ 后端补出子维度那天，05 与 03 是同一张表，
+            //   不是 05 少一级（今天 `subscene` 还不在 DTO 里，见 `LibraryView` 顶部的数据事实）。
+            // 筛选键 = 词条值，与 `playlist.scene` 的原文同一把尺子（线上 scene 词条的 id 就是
+            // 那个中文标签，见 `Fixtures/taxonomy.json`；01 §4 分组的也是这串原文）。
+            let sceneTerms = (tree.flatMap { taxonomy in
+                LibraryFilterSchema.dimensions(from: taxonomy).first { $0.id == "scene" }?.terms
+            } ?? []).map { (key: $0.value, label: $0.value) }
             if !sceneTerms.isEmpty { scenes = sceneTerms }
             phase = .ready
         } catch {
