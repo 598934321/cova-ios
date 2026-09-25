@@ -16,6 +16,22 @@ public struct HomeView: View {
     /// §3 播放钮的在途标记：点一下要先发 `GET /api/playlists/:id` 取曲目，
     /// 期间吞掉第二次点击（连点会建出两条队列，第二条盖掉第一条）。
     @State private var featuredPlaying = false
+    /// §5「你的创作」：**分区独立加载**（§8），这一格走的是**要登录**的会话列表，
+    /// 与上面那两段匿名内容不共命运 —— 它失败只该盖住它自己那一格。
+    @State private var creations: CreationPhase = .pending
+    /// §5 空态的 CTA 是「聚焦会话框」⇒ 输入框得先有一个可被聚焦的身份。
+    @FocusState private var promptFocused: Bool
+
+    /// §5 + §8 的登录门槛四档。`pending` 单独存在（而不是并进 `loading`）的理由：
+    /// 登录态回读期间既不是"游客"也不该发一个必 401 的请求 —— 那是硬边界里
+    /// 「未登录不播放/不写」的同一条判据在取数侧的形态。
+    private enum CreationPhase: Equatable {
+        case pending
+        case guest
+        case loading
+        case ready([StudioSessionDto])
+        case failed(CatalogFailure)
+    }
 
     /// 输入卡的三种模式。**只有 UI 状态**：`POST /api/studio/agent` 的请求体 schema 未文档化
     /// （NEEDS-13），所以这里**不发明** `mode` 之类的键去发后端 —— 默认「自动」由 agent 自己判意图。
@@ -36,6 +52,7 @@ public struct HomeView: View {
                 promptCard
                 content
                 recentlyPlayed
+                creationsSection
             }
             .padding(.vertical, CovaSpace.lg)
         }
@@ -49,7 +66,13 @@ public struct HomeView: View {
             }
         }
         .task { await load() }
-        .refreshable { await load() }
+        // 登录态一落定就决定这一格取不取：`authPhase` 是 Equatable ⇒ `task(id:)` 只在
+        // restoring → guest / signedIn 那一次跳变上重跑，不被别的状态变动牵着重发。
+        .task(id: session.authPhase) { await loadCreations() }
+        .refreshable {
+            await load()
+            await loadCreations()
+        }
     }
 
     private var header: some View {
@@ -265,6 +288,9 @@ public struct HomeView: View {
                     .font(CovaType.body).foregroundStyle(CovaColor.fg)
                     .lineLimit(1...3)
                     .labelsHidden()
+                    // §5 空态 CTA 的落点：「CTA 聚焦会话框」要有真东西可聚焦，
+                    // 而不是一个把用户丢在原地、什么都不发生的按钮。
+                    .focused($promptFocused)
                 Spacer(minLength: 0)
             }
             HStack(spacing: CovaSpace.sm) {
@@ -313,6 +339,87 @@ public struct HomeView: View {
             session.path.append(.aiSession(id))
         } catch {
             session.showToast("会话没建起来：\(StudioService.classify(error).uiMessage)", isError: true)
+        }
+    }
+
+    /// 你的创作（design 01 §5）：双列网格（卡宽 = (屏宽−2×gutter−md)/2，圆角 `card`）
+    /// + 封面 + 标题（subhead）+ 状态徽标。
+    ///
+    /// **封面今天恒为像素占位**，这一句是实话不是保守：会话列表载荷里没有任何封面字段
+    /// （`StudioSessionCover.hasCoverFieldInListPayload == false`），而 §数据源明令不得为封面
+    /// 逐行发详情请求（N+1）⇒ 不发明 cover URL，按 §5 的另一支走 PixelCard 式像素占位呼吸。
+    /// 同理，**状态徽标今天也不会出现**：`HomeCreationGrid.statusFieldInListPayload == false`
+    /// （线上 `listOwnedSessions` 连 status 列都没有）⇒ 映射与色档已照 spec 施工好，
+    /// 字段一上线就点亮，界面上不出现"猜出来的状态"。
+    @ViewBuilder
+    private var creationsSection: some View {
+        VStack(alignment: .leading, spacing: CovaSpace.xs) {
+            CovaSectionHeader("你的创作", trailing: "全部 ›") {
+                guard session.requireLoginForCollections() else { return }
+                session.path.append(.aiSessions)
+            }
+            switch creations {
+            case .pending, .loading:
+                CovaSkeleton(rows: 2)
+            case .guest:
+                creationGuide
+            case .failed(let failure):
+                // §8：分区级错误（error 色 + 「重试」），不阻塞整页。
+                CovaErrorState(kind: errorKind(failure)) { Task { await loadCreations() } }
+            case .ready(let items):
+                if items.isEmpty {
+                    creationGuide
+                } else {
+                    LazyVGrid(
+                        columns: Array(
+                            repeating: GridItem(.flexible(), spacing: CovaSpace.md),
+                            count: HomeCreationGrid.columnCount
+                        ),
+                        spacing: CovaSpace.md
+                    ) {
+                        ForEach(items.prefix(HomeCreationGrid.cardLimit)) { item in
+                            CreationCard(item: item) {
+                                session.path.append(.aiSession(item.id))
+                            }
+                        }
+                    }
+                    .padding(.horizontal, CovaSpace.pageGutter)
+                }
+            }
+        }
+    }
+
+    /// §5 的空态引导：未登录 / 无创作两支共用同一句话，CTA 是把焦点交给会话输入框
+    /// （spec 原话「CTA 聚焦会话框」），**不是**替用户建一个会话 —— 建会话是 POST，
+    /// 游客点了就该先被带去登录，而不是凭空多出一条会话。
+    private var creationGuide: some View {
+        CovaEmptyState(
+            symbol: "sparkles",
+            title: "用一句话开始你的第一首歌",
+            hint: "说场景、说情绪、说时长都行，剩下的交给 Cova。",
+            actionTitle: "写一句话",
+            action: { promptFocused = true }
+        )
+    }
+
+    /// §5 的取数：游客**不发**这一枪（`GET /api/find-my-song/sessions` 实测回 401），
+    /// 直接把这一格切成空态引导 —— 把「你还没登录」演成一个错误态是撒谎，也是噪音。
+    private func loadCreations() async {
+        switch session.authPhase {
+        case .restoring:
+            creations = .pending
+            return
+        case .guest, .failed:
+            creations = .guest
+            return
+        case .signedIn:
+            break
+        }
+        creations = .loading
+        do {
+            creations = .ready(try await session.studio.sessions())
+        } catch {
+            creations = .failed(StudioService.classify(error))
         }
     }
 
@@ -433,6 +540,80 @@ public struct ScenePlaylistCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(scene)，\(playlist.titleCn ?? playlist.title)")
+    }
+}
+
+// MARK: - 01 §5 你的创作（候选小卡）
+
+/// 徽标三档 → token 色（§5：生成中 `warning` / 完成 `success` / 失败 `error`）。
+///
+/// 形状**沿用本仓已有的那一档状态徽标**（`PlayerViews.swift` 的「生成候选 · 仅本人可见」：
+/// `caption` 字 + 同色 12% 胶囊底），不再为首页长第二种徽标形状。
+enum CreationBadgeFacts {
+    static func color(_ badge: HomeCreationGrid.Badge) -> Color {
+        switch badge {
+        case .generating: return CovaColor.warning
+        case .done: return CovaColor.success
+        case .failed: return CovaColor.error
+        }
+    }
+    /// §5 徽标的胶囊底不透明度：与 02 §8 那一枚同一个值（同一个组件族就该同一个数）。
+    static let backgroundAlpha = 0.12
+}
+
+/// §5 的小卡：像素占位封面 + 标题（subhead）+ 状态徽标。
+///
+/// 封面腿在这里**不接任何 URL**：会话列表没有封面字段（见 `HomeView.creationsSection`
+/// 的说明），而 §数据源禁止为封面逐行发详情请求 ⇒ 像素占位是这一格今天的正确形态。
+/// 点了进 09 会话详情（08/12c 同一条路由，不另开入口）。
+struct CreationCard: View {
+    private let item: StudioSessionDto
+    private let action: () -> Void
+    /// §Dynamic Type：网格里的标题在 AX 档多给一行（图不放大，字要放得下）。
+    @Environment(\.covaAXLayout) private var axLayout
+
+    init(item: StudioSessionDto, action: @escaping () -> Void) {
+        self.item = item
+        self.action = action
+    }
+
+    private var badge: HomeCreationGrid.Badge? { HomeCreationGrid.badge(forStatus: item.status) }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: CovaSpace.xs) {
+                ZStack(alignment: .topTrailing) {
+                    CovaPixelCover()
+                        .aspectRatio(1, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
+                    if let badge {
+                        Text(HomeCreationGrid.label(of: badge))
+                            .font(CovaType.caption)
+                            .foregroundStyle(CreationBadgeFacts.color(badge))
+                            .padding(.horizontal, CovaSpace.sm).padding(.vertical, 2)
+                            .background(
+                                Capsule().fill(
+                                    CreationBadgeFacts.color(badge)
+                                        .opacity(CreationBadgeFacts.backgroundAlpha)
+                                )
+                            )
+                            .padding(CovaSpace.xs)
+                    }
+                }
+                Text(item.displayTitle)
+                    .font(CovaType.subhead).foregroundStyle(CovaColor.fg)
+                    .lineLimit(axLayout ? 3 : 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    /// 一张卡一个可聚焦元素（08 §6 同口径）；没有徽标时**不**念一个"没有状态"。
+    private var accessibilityText: String {
+        guard let badge else { return item.displayTitle }
+        return "\(item.displayTitle)，\(HomeCreationGrid.label(of: badge))"
     }
 }
 

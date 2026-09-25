@@ -119,3 +119,97 @@ public enum HomeSceneRail {
         return trimmed.isEmpty ? nil : trimmed
     }
 }
+
+// MARK: - 01 §5 你的创作（生成候选小卡）
+//
+// §5 的三格：封面（**这里恒为像素占位**，见下）、标题（subhead）、状态徽标
+// （生成中 `warning` / 完成 `success` / 失败 `error`）。
+public enum HomeCreationGrid {
+    /// 双列（§5 第一行）。列数与卡宽的算法是同一件事：两列 + `md` 列距 + 左右 `pageGutter`
+    /// ⇒ 卡宽自然等于 §5 写的 (屏宽 − 2×gutter − md)/2，视图侧不再自己算一遍除法。
+    public static let columnCount = 2
+    /// §5 是首页的一格，不是 08 的整屏：线上 `GET /api/find-my-song/sessions` 服务端自己
+    /// 封顶 50 条（`listOwnedSessions` 的 `.limit(50)`），首页只取最近 6 条（= 3 行双列）。
+    /// 这个 6 是 **UI 取舍**（spec 没给这一区的条数），钉在这里可测。
+    public static let cardLimit = 6
+
+    /// 徽标的三个档（§5 逐字只有这三档）。
+    public enum Badge: String, Equatable, Sendable {
+        case generating
+        case done
+        case failed
+    }
+
+    /// 「生成中」这个词**复用** 08 那一批发在 `StudioSessionProgressRing.runningLabel` 的常量，
+    /// 不在这里再打一遍字：同一句话在两屏长得不一样，是文案漂移的开始。
+    public static let generatingLabel = StudioSessionProgressRing.runningLabel
+    public static let doneLabel = "完成"
+    public static let failedLabel = "失败"
+
+    public static func label(of badge: Badge) -> String {
+        switch badge {
+        case .generating: return generatingLabel
+        case .done: return doneLabel
+        case .failed: return failedLabel
+        }
+    }
+
+    /// 状态取值。**只认后端自己的那套任务态词表**（`GenerationJobStatus`，
+    /// 注释逐字写着「对齐后端 generationJobStatus」）—— 不去猜一份新的会话态词表。
+    ///
+    /// 三条降级都是"不说没根据的话"：
+    /// · `nil` / 空 / 认不出的值 ⇒ **不出徽标**（§5 的三档装不下一个未知态，硬贴一个色就是把
+    ///   未知画成已知；也不把英文态名印上屏 —— 本仓早有「英文态名不得外溢」的判据）；
+    /// · `cancelled` ⇒ 也不出徽标：它既不是「生成中」也不是「失败」，§5 没有第三态可给它；
+    /// · 线上这一格今天**恒不出现** —— 见 `statusFieldInListPayload`。
+    public static func badge(forStatus raw: String?) -> Badge? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let status = GenerationJobStatus(rawValue: trimmed) else { return nil }
+        switch status {
+        case .queued, .submitted, .processing: return .generating
+        case .succeeded: return .done
+        case .failed: return .failed
+        case .cancelled: return nil
+        }
+    }
+
+    /// **实测事实（2026-09-25 对着后端的部署面读源码核对）**：
+    /// `GET /api/find-my-song/sessions` 的行来自 `listOwnedSessions`，它 select 出来的键是
+    /// `id / title / titleLocked / proposedTitle / pinned / archived / lastMessage /
+    /// createdAt / updatedAt / projectId / workflowMode` + `generatedTrackCount / firstCoverUrl`，
+    /// **没有 `status`**（`find_my_song_sessions` 表里也没有 status 列）⇒
+    /// `StudioSessionDto.status` 在真实数据上永远是 `nil`。
+    ///
+    /// 于是 §5 的状态徽标今天**不可能**出现：映射、颜色、无障碍标签都照 spec 施工好了，
+    /// 字段一上线就点亮，不需要再改这里。缺口登记需求点在本批报告里
+    /// （`docs/NEEDS.md` 的 `SESSION-LIST-FIELDS` 候选，同一处已经为 `firstCoverUrl` 立过案）。
+    public static var statusFieldInListPayload: Bool { false }
+}
+
+// MARK: - 像素占位的取值（01 §5 / 02 §2 / components §5 共用）
+//
+// 数字放在 CovaCore 的唯一理由：**CovaUI 没有测试目标**（`Packages/CovaUI/Package.swift`
+// 里只有 `.target`，没有 `.testTarget`），写在视图里的档永远不会红。
+public enum PixelCoverFacts {
+    /// 网格边长格数。spec 只写「像素网格」，没给档（tokens 与 Token 缺口表里都没有这一项）
+    /// ⇒ 4×4：16 格在 140pt 见方的槽里每格 ≈ 35pt，"像素"读得出来又不至于变成噪点。
+    public static let cellsPerSide = 4
+    /// 呼吸周期：与 `CovaStates.swift` 的 `CovaSkeleton`（骨架屏「整块呼吸」）同一档 0.9s。
+    /// §S1「不做的事」明令不做高光扫过 ⇒ 本 App 所有"占位在呼吸"共用一个节奏，
+    /// 而不是每屏各挑一个数。
+    public static let breatheDuration = 0.9
+    /// 棋盘互换的亮/暗两档，与 Reduce Motion 那一档的静态值。
+    public static let cellAlphaHigh = 0.28
+    public static let cellAlphaLow = 0.12
+    public static let cellAlphaStatic = 0.2
+
+    /// 棋盘互换：亮的那批与暗的那批每半个周期**对调**，读起来是整格在呼吸；
+    /// 如果只让同一批格子变亮，那是一道方向性的光 —— 也就是 §S1 禁掉的那种扫过。
+    public static func cellAlpha(row: Int, column: Int, lit: Bool, reduceMotion: Bool) -> Double {
+        guard !reduceMotion else { return cellAlphaStatic }
+        let darkCell = (row + column) % 2 == 0
+        if darkCell { return lit ? cellAlphaHigh : cellAlphaLow }
+        return lit ? cellAlphaLow : cellAlphaHigh
+    }
+}
