@@ -187,7 +187,7 @@ public struct PlaylistsPlazaView: View {
             phase = .ready
         } catch {
             if silent { session.showToast("刷新失败，可下拉重试", isError: true) }
-            else { phase = .failed(CatalogService.classify(error, decodingNeeds: "NEEDS-1")) }
+            else { phase = .failed(CatalogService.classify(error)) }
         }
     }
 }

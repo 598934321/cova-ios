@@ -396,7 +396,13 @@ public struct CovaErrorState: View {
     private var hint: String {
         switch kind {
         case .network: return "检查连接后重试；播放中的曲目不受影响。"
-        case .server: return "稍后再试。已登记在服务端待办中。"
+        // 原文是「稍后再试。已登记在服务端待办中。」—— 后半句是替服务端**编**的：App 没有任何
+        // 向服务端登记这条的通道（NEEDS.md 是本仓自己的账，不是服务端待办）。
+        // ⚠️ 已知的可诊断性缺口：`CatalogFailure.server` 带着调用方知道的细节（HTTP 码 /
+        // 未指认的解码失败，见 `StudioViews.swift:527` 那一支就用上了），但**本层的 kind 没有载荷**
+        // ⇒ 细节在这一道映射上被丢掉。要接上得给 `Kind.server` 加关联值并改 11 处穷举 switch，
+        // 留给后续批次；这里先把谎去掉，不拿"稍后再试"冒充"已经上报"。
+        case .server: return "稍后再试。"
         case .unauthenticated: return "请重新登录后继续。本机不会替你保留未同步的写操作。"
         case .backendGap(let id): return "后端契约缺口 \(id) 已登记（NEEDS.md），上线后此处自动可用。"
         }
