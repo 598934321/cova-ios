@@ -83,10 +83,19 @@ final class AVPlayerEngineTests: XCTestCase {
             return XCTFail("MAJ-8：非生产出口的公开直链必须被拒绝（旧实现返回 .success）")
         }
         XCTAssertEqual(rejected.kind, .invalidSourceURL)
-        XCTAssertFalse(
-            rejected.description.contains("cdn-other"),
-            "拒绝理由不得回显被拒主机：\(rejected.description)"
+        // D23③（第 30 批）：拒绝必须**点名那一台主机** —— 旧口径反过来钉着「不得回显被拒主机」，
+        // 于是桶名/存储区一变只剩一句"地址用不了"让人去猜是哪台（同一族缺陷的第三次）。
+        // 钉的仍是**只有** host：path / query / fragment 一概不许跟着上屏（硬边界 3）。
+        XCTAssertTrue(
+            rejected.description.contains("cdn-other.invalid"),
+            "拒绝必须看得见是哪一台：\(rejected.description)"
         )
+        for forbidden in ["/", "?", "=", "a.m4a", "://", "https"] {
+            XCTAssertFalse(
+                rejected.description.contains(forbidden),
+                "拒绝理由带出了地址片段 \(forbidden)：\(rejected.description)"
+            )
+        }
         // 显式非规范端口不是生产出口（`isProductionOrigin` 已有判据，这里验的是引擎真的吃到它）。
         let oddPort = TestItems.make("port", source: .publicDirect(
             try! AudioURL(https: URL(string: "https://covalink.cn:8443/a.m4a")!)
@@ -110,12 +119,17 @@ final class AVPlayerEngineTests: XCTestCase {
         }
     }
 
-    /// MAJ-8：引擎侧的出口判定本身（纯函数穷举，零 AVPlayer）。
+    /// 引擎侧的出口判定本身（纯函数穷举，零 AVPlayer）。
+    ///
+    /// 第 30 批：这张表原本钉在 `AVPlayerEngine.isAllowedEgress` 上 —— 那是同一个判定的**第二份**
+    /// 实现（`PlayerEgress.isPlayable` 是第一份，两者只差一次注释），本批把两份都收成
+    /// `CovaEnvironment.isPublicDirectEgressAllowed` 一份。表本身一条不减，只是换了个入口，
+    /// 并且新增一条「两份实现不可能再各说各话」的对照（同一个 URL 在两个入口上必须同判）。
     func testEngineEgressJudgementTable() {
         let origin = CovaEnvironment.apiBaseURL
         func allowed(_ raw: String) -> Bool {
             guard let url = URL(string: raw) else { return false }
-            return AVPlayerEngine.isAllowedEgress(url, origin: origin)
+            return PlayerEgress.isPlayable(url, origin: origin)
         }
         XCTAssertTrue(allowed("https://covalink.cn/api/media/one.m4a"))
         XCTAssertTrue(allowed("https://covalink.cn:443/api/media/one.m4a"), "min-2：规范端口同一台")
@@ -127,10 +141,30 @@ final class AVPlayerEngineTests: XCTestCase {
         XCTAssertFalse(allowed("https://user@covalink.cn/a.m4a"), "内嵌 userinfo 一律拒绝")
         XCTAssertFalse(allowed("file:///tmp/a.m4a"), "本地地址不走这条判定")
         // 注入非法出口 = 一律拒绝（绝不因此放宽）。
-        XCTAssertFalse(AVPlayerEngine.isAllowedEgress(
+        XCTAssertFalse(PlayerEgress.isPlayable(
             URL(string: "https://covalink.cn/a.m4a")!,
             origin: URL(string: "https://evil.invalid")!
         ))
+        // 判定只有一份：引擎的装载闸门与 `PlayerEgress` 在同一批地址上必须同判
+        // （过去 `isAllowedEgress` 就是这张表之外的第二份实现）。
+        for raw in [
+            "https://covalink.cn/api/media/one.m4a",
+            "https://covalink.cn:443/api/media/one.m4a",
+            "https://covalink.cn/a.m4a",
+            "https://cdn-other.invalid/a.m4a",
+            "https://covalink.cn:8443/a.m4a",
+        ] {
+            let item = TestItems.make("same", source: .publicDirect(try! AudioURL(https: URL(string: raw)!)))
+            let viaEngine: Bool
+            switch AVPlayerEngine.playableURL(for: item, egressOrigin: origin) {
+            case .success: viaEngine = true
+            case .failure: viaEngine = false
+            }
+            XCTAssertEqual(
+                viaEngine, PlayerEgress.isPlayable(URL(string: raw)!, origin: origin),
+                "同一个判据在两处答案不同：\(raw)"
+            )
+        }
         let engine = AVPlayerEngine()
         XCTAssertEqual(engine.currentEgressOrigin, CovaEnvironment.apiBaseURL, "默认出口就是生产出口")
     }

@@ -940,4 +940,66 @@ final class CovaEnvironmentTests: XCTestCase {
         XCTAssertEqual(refusal.rule, .credentialLeg)
         XCTAssertFalse(refusal.host.contains("sig"), "点名只出 host，签名住在查询里：\(refusal.host)")
     }
+
+    // MARK: - 第 30 批：交给「再也拦不住下一跳」的消费者之前的裁决
+
+    /// `.publicDirect` 这一条腿的结论：**名单不适用**（不是漏了，是 D23② 的准入条件在这里拿不到）。
+    ///
+    /// 判据的两重各钉一次，方向不许含糊：
+    /// · 生产出口 + 同一权威 ⇒ 放行（`:443` 与不带端口同一台，min-2）；
+    /// · 名单上的桶直链（无凭证、`isSanctionedMediaURL == true`）⇒ **仍然拒**：
+    ///   这一条一旦交出去，第二跳就不由我们判（`AVPlayer` 自己起网络栈、本层拿不到 delegate）。
+    /// 对照必须在这里，而不是只在 CovaPlayer 的入口测一遍：谁把这一格"顺手放宽成名单"，
+    /// 判据面本身就染红（第 30 批改掉的正是播放器里那份自己写了一遍规则的复制品）。
+    func testPublicDirectEgressStaysOnProductionOriginEvenThoughTheBucketIsSanctioned() throws {
+        let production = try XCTUnwrap(URL(string: Self.previewOrigin))
+        let origin = CovaEnvironment.apiBaseURL
+        XCTAssertTrue(CovaEnvironment.isPublicDirectEgressAllowed(production, origin: origin))
+        XCTAssertTrue(
+            CovaEnvironment.isPublicDirectEgressAllowed(
+                try XCTUnwrap(URL(string: "https://covalink.cn:443/api/tracks/one/preview-stream")),
+                origin: origin
+            ),
+            "min-2：规范端口折叠后仍是同一台出口"
+        )
+        // 前置：这些落地在**公开媒体腿**上是合格的（名单内），在这一条腿上依然不合格。
+        for sanctioned in [
+            try XCTUnwrap(URL(string: Self.audioBucketLanding)),
+            try XCTUnwrap(
+                URL(string: "https://covalink-covers-1301797874.cos.ap-shanghai.myqcloud.com/covers/a.jpeg")
+            ),
+        ] {
+            XCTAssertTrue(
+                CovaEnvironment.isSanctionedMediaURL(sanctioned),
+                "前置：\(sanctioned.host() ?? "?") 在公开媒体名单上"
+            )
+            XCTAssertFalse(
+                CovaEnvironment.isPublicDirectEgressAllowed(sanctioned, origin: origin),
+                "名单不构成把地址交给拦不住下一跳的消费者的理由"
+            )
+        }
+        // 注入别的出口只会「一律拒绝」，绝不因此放宽（fail-closed 的那一重）。
+        XCTAssertFalse(
+            CovaEnvironment.isPublicDirectEgressAllowed(production, origin: try XCTUnwrap(URL(string: "https://evil.invalid")))
+        )
+        XCTAssertFalse(
+            CovaEnvironment.isPublicDirectEgressAllowed(
+                try XCTUnwrap(URL(string: "https://covalink.cn:8443/api/tracks/one/preview-stream")),
+                origin: origin
+            ),
+            "非规范端口是另一台主机"
+        )
+        XCTAssertFalse(
+            CovaEnvironment.isPublicDirectEgressAllowed(
+                try XCTUnwrap(URL(string: "https://user@covalink.cn/a.m4a")), origin: origin
+            ),
+            "userinfo 形态不是出口"
+        )
+        XCTAssertFalse(
+            CovaEnvironment.isPublicDirectEgressAllowed(
+                try XCTUnwrap(URL(string: "http://covalink.cn/a.m4a")), origin: origin
+            ),
+            "降级 http 不是出口"
+        )
+    }
 }

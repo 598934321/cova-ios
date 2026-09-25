@@ -90,13 +90,13 @@ public struct PlayerFailure: Error, Equatable, Sendable, CustomStringConvertible
 /// 替我们决定第二次出站，那正是 R17-3 要根除的形状。整曲要出桶只能走 D7 的本地化那一条腿
 /// （`URLSessionPrivateAudioTransport`，那里逐跳有守卫），或等 NEEDS-29 的同源服务端代理。
 public enum PlayerEgress {
-    /// 公开直链能否交给播放器。两重都必须成立（口径与 `AVPlayerEngine.isAllowedEgress` 一致）：
-    /// ① `CovaEnvironment.isProductionOrigin` —— 与私有音频准备器**同一判据、同一实现**（D10）；
-    /// ② 权威仍是门面声明的那台出口（scheme + host + 规范端口折叠同源，见 `AudioAuthorityMatch`）。
-    /// 注入别的 origin **不会**放宽任何判定：①先拦，非法出口只会「一律拒绝」（fail-closed）。
+    /// 公开直链能否交给播放器。**判据不在本层**：只有 `CovaEnvironment
+    /// .isPublicDirectEgressAllowed` 那一份，这里只转授（第 30 批：同一个判定在两处、
+    /// 其中一处漏改是本仓的复发缺陷族 —— `AVPlayerEngine.isAllowedEgress` 就是这么长出来的）。
+    /// 两重都必须成立（① 生产出口先拦，② 门面声明的那台权威再拦）：
+    /// 注入别的 origin **不会**放宽任何判定，非法出口只会「一律拒绝」（fail-closed）。
     public static func isPlayable(_ url: URL, origin: URL) -> Bool {
-        guard CovaEnvironment.isProductionOrigin(url) else { return false }
-        return AudioAuthorityMatch.origin(of: url) == AudioAuthorityMatch.origin(of: origin)
+        CovaEnvironment.isPublicDirectEgressAllowed(url, origin: origin)
     }
 
     /// 裁决：可以就交出地址，不可以就给出一条**点名 host** 的失败（R17-3b 的可用性要求 ——

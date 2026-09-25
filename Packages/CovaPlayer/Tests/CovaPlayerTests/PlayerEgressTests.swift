@@ -33,6 +33,11 @@ final class PlayerEgressTests: XCTestCase {
     func testSanctionedBucketDirectURLIsRefusedAndNamed() throws {
         for landing in [Self.coverBucket, Self.audioBucket] {
             let source = url(landing)
+            // 前置：这台主机在**公开媒体腿**上是合格的（名单内），不合格的是这一条腿的形态。
+            XCTAssertTrue(
+                CovaEnvironment.isSanctionedMediaURL(source),
+                "前置：\(landing) 应当就在 D23② 的名单上，否则本用例只证明了「全都拒」"
+            )
             // 这一条腿不跟 D23② 的名单走（理由见 `PlayerEgress` 的注释）：桶 host 也照样拒。
             XCTAssertFalse(PlayerEgress.isPlayable(source, origin: production))
             XCTAssertThrowsError(try PlayerEgress.decide(direct: source, origin: production).get()) { error in
@@ -45,6 +50,40 @@ final class PlayerEgressTests: XCTestCase {
                     "拒绝必须看得见是哪台：\(failure.message)"
                 )
             }
+        }
+    }
+
+    /// 判定只有**一份**（第 30 批的根因：同一个裁决在播放器里被写了两遍）。
+    /// `AVPlayerEngine.playableURL` 与 `PlayerEgress.isPlayable` 现在都转授
+    /// `CovaEnvironment.isPublicDirectEgressAllowed` —— 这里钉住"转授"这个事实本身：
+    /// 谁再在播放器侧起一份自己的判据（哪怕今天答案相同），这一条就会红。
+    func testEngineAndPlayerEgressShareOneDecisionSurface() throws {
+        let production = CovaEnvironment.apiBaseURL
+        for raw in [
+            "https://covalink.cn/api/tracks/one/preview-stream",
+            "https://covalink.cn:443/api/tracks/one/preview-stream",
+            Self.coverBucket,
+            Self.audioBucket,
+            "https://covalink.cn:8443/a.mp3",
+            "https://evil.invalid/a.mp3",
+        ] {
+            let source = url(raw)
+            XCTAssertEqual(
+                PlayerEgress.isPlayable(source, origin: production),
+                CovaEnvironment.isPublicDirectEgressAllowed(source, origin: production),
+                "播放器侧的答案与共享裁决面不一致：\(raw)"
+            )
+            let item = TestItems.make("shared", source: .publicDirect(try AudioURL(https: source)))
+            let engineSaysPlayable: Bool
+            switch AVPlayerEngine.playableURL(for: item, egressOrigin: production) {
+            case .success: engineSaysPlayable = true
+            case .failure: engineSaysPlayable = false
+            }
+            XCTAssertEqual(
+                engineSaysPlayable,
+                CovaEnvironment.isPublicDirectEgressAllowed(source, origin: production),
+                "引擎闸门的答案与共享裁决面不一致：\(raw)"
+            )
         }
     }
 

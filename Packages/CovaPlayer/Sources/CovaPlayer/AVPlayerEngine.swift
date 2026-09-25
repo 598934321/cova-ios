@@ -12,6 +12,8 @@ import Foundation
 /// 2. `.publicDirect` 的 https 地址必须落在**唯一生产出口**（MAJ-8：AGENTS 硬边界 2 / D10）。
 ///    这道判定只能在这里做：`AVPlayer` 自己发起网络请求，而公开直链**从不经过**私有音频准备器
 ///    （准备器只管 Bearer 那一路），所以出口守卫在引擎以下没有任何执行点。
+///    判定只有 `CovaEnvironment.isPublicDirectEgressAllowed` 那一份（本层经 `PlayerEgress`
+///    转授）；D23② 的存储桶名单在这一条上**不适用**，理由写在那个函数的注释里。
 ///
 /// 不使用 Combine KVO（Swift 6 下 `Observable` 已弃用会报警告），改用传统字符串 KVO +
 /// 通知中心；所有观测者与 token 都在 `stopAndRelease()` 中移除（通知残留是本仓红线）。
@@ -59,7 +61,7 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     }
 
     /// 指定出口形态（MAJ-8）：`CovaPlayer` 用它的 `assetOrigin` 装配生产默认引擎。
-    /// 注入别的 origin **不会**放宽任何判定 —— `isAllowedEgress` 的第一重永远是
+    /// 注入别的 origin **不会**放宽任何判定 —— `PlayerEgress.isPlayable` 的第一重永远是
     /// `CovaEnvironment.isProductionOrigin`，因此非法出口只会「一律拒绝」（fail-closed）。
     public init(egressOrigin: URL) {
         // 有界缓冲会把 .ended/.failed 挤掉，故用 unbounded（消费者是常驻循环，不会积压）
@@ -185,7 +187,8 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
     // MARK: - 纯映射（可零硬件单测）
 
     /// 条目 → 可播地址。需 Bearer 的一律拒绝（D7 的第二道闸）；
-    /// 公开直链还必须落在唯一生产出口（MAJ-8，AGENTS 硬边界 2 / D10）。
+    /// 公开直链还必须落在唯一生产出口（MAJ-8，AGENTS 硬边界 2 / D10），
+    /// 被拒时失败必须**点名落地 host**（D23③：只有 host，path/query 一概不带）。
     ///
     /// - Parameter egressOrigin: 本引擎承认的那一台主机。默认就是生产 origin，
     ///   因此「忘了传」只会走向最严的一侧。
@@ -210,23 +213,10 @@ public final class AVPlayerEngine: NSObject, PlayerEngine, @unchecked Sendable {
             }
             // 判在**交给 AVPlayerItem 之前**：一旦交出去，网络请求就是 `AVPlayer` 自己发的，
             // 本层再也拦不住（`.publicDirect` 不经过私有音频准备器，那里那道出口守卫管不到它）。
-            guard Self.isAllowedEgress(url.value, origin: egressOrigin) else {
-                return .failure(PlayerFailure(
-                    kind: .invalidSourceURL,
-                    message: "公开直链不在唯一生产出口（D10）"
-                ))
-            }
-            return .success(url.value)
+            // 判定本身在 `CovaEnvironment.isPublicDirectEgressAllowed`（唯一一份，D23③）：
+            // 本层只转授，被拒时按 `egressHostLabel` 口径**点名落地 host**（只有 host）。
+            return PlayerEgress.decide(direct: url.value, origin: egressOrigin)
         }
-    }
-
-    /// 公开直链的出口判定（MAJ-8）：两重都必须成立。
-    /// ① `CovaEnvironment.isProductionOrigin` —— 与私有音频准备器**同一判据、同一实现**（D10）；
-    /// ② 权威仍是门面声明的那个出口（scheme + host + 规范端口折叠同源，见 `AudioAuthorityMatch`）。
-    /// ②让 `assetOrigin` 真的说了算，①保证注入任何别的 origin 都不可能把出口放宽到别处。
-    public static func isAllowedEgress(_ url: URL, origin: URL) -> Bool {
-        guard CovaEnvironment.isProductionOrigin(url) else { return false }
-        return AudioAuthorityMatch.origin(of: url) == AudioAuthorityMatch.origin(of: origin)
     }
 
     /// `CMTime` → 秒（未定/无效一律 nil，避免 NaN 污染状态）。

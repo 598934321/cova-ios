@@ -195,6 +195,31 @@ public enum CovaEnvironment {
         return .withoutCredentials
     }
 
+    /// **D23（第 30 批）：公开直链交给「本层再也管不着」的消费者之前的唯一裁决面。**
+    ///
+    /// 结论（不是漏了名单，是把 D23② 的准入条件读严实）：`.publicDirect` 在这一条腿上
+    /// **仍然只认生产出口**，`sanctionedStorageHosts` 不构成放行理由。理由是这一格的前提
+    /// 在这里拿不到：D23② 放行的那句是「链上**每一跳**都由本层裁决」—— 音频腿有
+    /// `AudioRedirectGuard` + `mediaHopEgress`（逐跳判、重建请求），美术腿有
+    /// `CovaArtworkEgressGuard`（同样逐跳判）。而 `AVPlayer` 拿到地址后**自己起网络栈**，
+    /// 本层既拿不到它的 delegate 也拿不到它的下一跳 ⇒ 把名单里的桶直链交给它，
+    /// 等于让别人的默认跟随行为替我们决定第二次出站，那正是 R17-3 本地环回探针实测到的形状
+    /// （无 delegate 的 URLSession 对跨主机 302 **确实发出了落地 GET**）。
+    /// 代价是清楚的：已授权整曲仍要等 NEEDS-29 的同源服务端代理，或走 D7 本地化那条腿
+    /// （`URLSessionPrivateAudioTransport`，那里逐跳有守卫）—— 这不是把闸放宽的理由。
+    ///
+    /// 两重都必须成立，且顺序不许颠倒：
+    /// ① `isProductionOrigin` 先拦 ⇒ 注入任何别的 `origin` 都不可能把出口放宽到别处
+    ///   （非法出口只会「一律拒绝」，fail-closed）；
+    /// ② 再核对权威确实就是门面声明的那一台（`normalizedAuthority` 口径：scheme + host +
+    ///   **规范端口折叠**，`:443` 与不带端口同一台，非规范端口是另一台）。
+    /// 判据**只有这一份**：播放器侧（`CovaPlayer.PlayerEgress`）只转授、不再各写一遍
+    /// —— 同一个判定在两处、其中一处漏改，是本仓反复复发的缺陷族（min-2 即其一次）。
+    public static func isPublicDirectEgressAllowed(_ url: URL, origin: URL) -> Bool {
+        guard isProductionOrigin(url) else { return false }
+        return normalizedAuthority(of: url) == normalizedAuthority(of: origin)
+    }
+
     /// 取不出主机时的**占位标签**（拒绝信息里宁可点名"没有主机"，也不许回退成整串地址 ——
     /// 签名就住在 query 里，整串一旦进错误对象就可能进日志；AGENTS 硬边界 3）。
     public static let unnameableHostLabel = "<无主机名>"
