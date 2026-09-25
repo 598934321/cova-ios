@@ -30,5 +30,19 @@ public enum LoopMode: String, CaseIterable, Codable, Equatable, Sendable, Custom
     /// 该模式是否重复当前项（只有 `.one` 在 itemEnd 时不换曲）。
     public var repeatsCurrentItem: Bool { self == .one }
 
-    public var description: String { rawValue }
+    /// 上屏中文标签（design/screens/02-player.md §5）。
+    ///
+    /// 定义在枚举自身而不是由 UI 拼：`PlayerViews` 直接把 `description` 上屏，而本类型原先的
+    /// `description` 就是 `rawValue` ⇒ 屏幕会印出 `off`/`all`/`one`（与 `PlayerFailure.Kind`
+    /// 同族的漏点，判据见其 `userLabel` 处注释）。`rawValue` 保持 `off|all|one` 不变 ——
+    /// 它是持久化与上报用的 wire 值，只有显示面走这里。
+    public var userLabel: String {
+        switch self {
+        case .off: return "不循环"
+        case .all: return "列表循环"
+        case .one: return "单曲循环"
+        }
+    }
+
+    public var description: String { userLabel }
 }
