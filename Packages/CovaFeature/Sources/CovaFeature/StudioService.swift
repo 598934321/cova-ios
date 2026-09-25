@@ -54,7 +54,7 @@ public struct StudioService: Sendable {
     ) async throws -> GenerationJobResponseDto {
         guard let revision = plan.revision, let snapshotHash = plan.snapshotHash else {
             // 缺 revision / snapshotHash 就发出去 = 后端无法校验计划版本 ⇒ 宁可报错也不猜。
-            throw CatalogFailure.backendGap("NEEDS-13（计划卡缺 revision/snapshotHash）")
+            throw CatalogFailure.backendGap("NEEDS-33（计划卡未文档化 revision/snapshotHash）")
         }
         let body = try OneStepPlanStartRequestDto(
             sessionId: sessionID,
@@ -132,7 +132,7 @@ public struct StudioService: Sendable {
         -> OneStepLyricsRegenerateOutcome {
         guard let revision = plan.revision else {
             // 没有 revision 就发 = 后端无法判断我看的是哪一份 ⇒ 宁可不发。
-            throw CatalogFailure.backendGap("NEEDS-13（计划卡缺 revision）")
+            throw CatalogFailure.backendGap("NEEDS-33（计划卡未文档化 revision）")
         }
         let response: OneStepLyricsRegenerateResponseDto = try await client.post(
             "/api/studio/one-step/plans/\(plan.planCardId)/lyrics/regenerate",

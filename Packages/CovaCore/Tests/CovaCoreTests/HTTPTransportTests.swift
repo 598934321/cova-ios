@@ -269,11 +269,11 @@ final class HTTPTransportTests: XCTestCase {
         ))
         let response = try await guardedTransport().send(credentialedRequest())
         XCTAssertEqual(response.statusCode, 302, "超界之后交付状态码，由上层如实报错")
-        XCTAssertEqual(
-            EgressStubURLProtocol.captured().count,
-            URLSessionTransport.maximumRedirectHops + 1,
-            "跳转链必须被界住"
-        )
+        // 断言写**字面量**而不是常量表达式：`maximumRedirectHops + 1` 是自指断言 ——
+        // 把界从 5 抬到 1000，这条用例跟着变绿，而一条自指 `Location` 就变成 1001 次出站
+        // （第 19 轮 R19-5 实测：`5 → 6` 变异后 701/0、EXIT=0 存活）。
+        XCTAssertEqual(EgressStubURLProtocol.captured().count, 6, "跳转链必须被界在 5 跳")
+        XCTAssertEqual(URLSessionTransport.maximumRedirectHops, 5, "界值本身要能被用例看见")
     }
 
     /// 3xx 却没有 `Location`：那是服务端故障，不是出口决定 —— 两类错误不许混成一条。

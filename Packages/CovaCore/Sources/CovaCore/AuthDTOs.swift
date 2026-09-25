@@ -10,10 +10,11 @@ public enum CovaPlan: String, Codable, Equatable, Sendable {
 
 /// 认证用户（api-contracts 1）。
 ///
-/// **解码容忍（NEEDS-1 未闭合期间）**：真实 `POST /api/auth/login` 的 `user` 只回
-/// `{id, email, name, role}`。身份标记 `isArtist` / `isPartner` 缺席时按 `false` 读 ——
-/// 这是**保守**方向（缺席 ⇒ 不授予艺术家/合作方身份，绝不放大权限），也不是把非契约响应
-/// 当成契约：`docs/NEEDS.md` #1 仍是开放项，补齐后这两个键会真实出现。
+/// **解码容忍（`POST /api/auth/login` 的 `user` 只回 `{id, email, name, role}`）**：
+/// 身份标记 `isArtist` / `isPartner` 缺席时按 `false` 读 —— 这是**保守**方向（缺席 ⇒ 不授予
+/// 艺术家/合作方身份，绝不放大权限）。⚠️ 这不是后端欠账：**NEEDS-1 已撤销（D21⑤）**，
+/// 登录响应的 `user` 按设计就不带这些标记，权威身份由 `GET /api/auth/me` 补
+/// （web 客户端同样是登录完立刻回读 `/me`）。
 /// `id / name / role` 保持严格必需（缺任一个 = 无法标识用户，必须报错而不是猜）。
 public struct AuthUser: Codable, Equatable, Sendable {
     public let id: String

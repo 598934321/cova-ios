@@ -411,10 +411,15 @@ public struct LibraryFilterSelection: Equatable, Sendable {
 
     /// 合并进一组预置值（03 §7 的预填；同名维度合并去重，保留已有顺序，超上限即停）。
     public mutating func merge(_ preset: [String: [String]]) {
-        outer: for (dimension, raw) in preset {
+        // 两件事都必须按维度局部成立（第 19 轮 R19-7）：
+        // ① 遍历按**键名排序** —— `preset` 是 Dictionary，旧写法的顺序不确定；
+        // ② 触顶只 `break` 内层 —— 旧写法 `break outer` 会把后面所有维度的预置一起丢掉，
+        //    于是"某一维超上限"这一件事能让另一维的预填静默消失。
+        for dimension in preset.keys.sorted() {
             var current = values(dimension)
-            for value in TrackListQuery.sanitizedValues(raw) where !current.contains(value) {
-                guard current.count < Self.maxValuesPerDimension else { break outer }
+            for value in TrackListQuery.sanitizedValues(preset[dimension] ?? [])
+            where !current.contains(value) {
+                guard current.count < Self.maxValuesPerDimension else { break }
                 current.append(value)
             }
             valuesByDimension[dimension] = current.isEmpty ? nil : current

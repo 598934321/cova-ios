@@ -4,7 +4,8 @@ import SwiftUI
 import UIKit
 
 /// 登录（design 10）：邮箱 + 密码 + 游客入口。
-/// 失败文案区分「凭证错 / 网络 / 后端缺口(NEEDS-1)」；密码框 `secureContent`，
+/// 失败文案区分「凭证错 / 需要网页端继续验证 / 离线 / 其它」，不指认后端欠账；
+/// 密码框 `secureContent`，
 /// **密码只经 `SecretString` 交给 AuthSession，不进任何 @State 之外的地方**。
 public struct LoginView: View {
     @Environment(AppSession.self) private var session

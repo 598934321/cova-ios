@@ -406,4 +406,32 @@ final class LibraryFilterCascadeTests: XCTestCase {
         XCTAssertEqual(LibraryFilterSchema.term(try term("high-energy", label: "高"))?.value, "高")
         XCTAssertNil(LibraryFilterSchema.term(try term("  ")), "id/label 都为空的词条不进词表")
     }
+
+    // MARK: - 预填合并的局部性（第 19 轮 R19-7）
+
+    /// 某一维触顶**不许**带走其它维度的预填，且结果不许依赖 Dictionary 的遍历顺序。
+    func testMergeCapIsPerDimensionNotGlobal() throws {
+        let over = (1...LibraryFilterSelection.maxValuesPerDimension + 3).map { "v\($0)" }
+        var selection = LibraryFilterSelection()
+        // 触顶那一维故意取 **genre**：按 `merge` 现在的排序遍历它排在 mood **之前**，
+        // 所以旧写法（`break outer`）会在这里跳出、把 mood 整维带走 ⇒ 这条用例在修之前是红的。
+        // 如果哪天有人把顺序换成别的，这条探针就得换个排在前面的维度名，不然它只是恒真。
+        selection.merge(["genre": over, "mood": ["温暖"]])
+        XCTAssertEqual(
+            selection.values("genre").count, LibraryFilterSelection.maxValuesPerDimension,
+            "触顶那一维被截到上限"
+        )
+        XCTAssertEqual(
+            selection.values("mood"), ["温暖"],
+            "另一维必须活下来：旧写法 `break outer` 会按遍历顺序把它整维丢掉"
+        )
+    }
+
+    /// 同一份预置重复合并要幂等（去重、不叠加）。
+    func testMergeIsIdempotentForRepeatedPreset() throws {
+        var selection = LibraryFilterSelection()
+        selection.merge(["scene": ["婚礼"]])
+        selection.merge(["scene": ["婚礼"]])
+        XCTAssertEqual(selection.values("scene"), ["婚礼"])
+    }
 }

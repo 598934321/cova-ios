@@ -5,8 +5,8 @@ import Foundation
 /// 为什么补在这一层：本仓已经为同一个形状登记过六处（`plan.rawValue`、参数胶囊的 `weirdness`、
 /// `status.rawValue`、登录错误直出、`LoopMode.description`、抽屉的第 6 张套餐表），
 /// 原判据一直只钉在状态机那一层 ⇒ **判据留在下一层，UI 层就会反复长新的**。
-/// 09 现在还剩一处 live 的漏点：`reconcileStartedJob` 里
-/// `append(.system("已核到任务：\(newest.status.rawValue)"))`（`AISessionDetailView.swift:474`）
+/// （历史：09 的 `reconcileStartedJob` 曾在 `AISessionDetailView.swift:474` 直接印
+/// `newest.status.rawValue` ⇒ 本词表当时是"有表没接"。那一行已改走 `userLabel`。）
 /// 会把 `succeeded` / `processing` 这类 wire 值直接印上屏。标签挂在它所属的那一层、
 /// 并由用例逐 case 钉死（`testEveryGenerationJobStatusSurfacesChineseLabel`），
 /// 那处才有一个不需要在本屏现编的词可指。

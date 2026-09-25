@@ -427,7 +427,10 @@ public struct LibraryView: View {
     /// 再配 `COVA_PREVIEW_SHEET=filter` 直接展开 §2 的「+」全维度面板。
     /// 为什么必须有它：`simctl` 不提供点击（引入 idb/appium 会破零依赖白名单），没有它这两格
     /// 就永远进不了验收截图集合 ⇒ 03 的核心体验只能停在"编译过"。生产不设这两个键时代码完全不存在；
-    /// 值走 `selection.merge` 的同一条腿（未知维度/值按生产口径被丢掉，不假装生效）。
+    /// ⚠️ 别把这条读成「钩子会校验词表」：`selection.merge` 的不变量恰恰相反 —— **允许存进词表里
+    /// 没有的值**（见 `LibraryFilterSelection` 的类型文档），所以给一个不存在的维度，屏上会出
+    /// 一枚标题回落成原始维度 id 的 chips，并把它当查询键发出去。走查专用，不是产品行为；
+    /// 传值请照 `/api/library/taxonomy` 的真实标签（第 19 轮 R19-6）。
     private func applyPreviewFilter() {
         let env = ProcessInfo.processInfo.environment
         if env["COVA_PREVIEW_SHEET"] == "filter" { panel = .moreDimensions }

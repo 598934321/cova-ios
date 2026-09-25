@@ -172,8 +172,8 @@ public final class AppSession {
         startSnapshotPolling()
     }
 
-    /// 登录：NEEDS-1 的 `user` 缺字段会让解码失败 —— 那种失败**点名 NEEDS-1**，
-    /// 不伪装成「密码错误」。
+    /// 登录：解码失败不伪装成「密码错误」，也**不点名 NEEDS-1**（那条已撤销，D21⑤）
+    /// —— 统一由 `LoginFailureCopy` 说话。
     public func signIn(email: String, password: String) async {
         do {
             let user = try await auth.signIn(email: email, password: SecretString(password))
@@ -188,12 +188,12 @@ public final class AppSession {
             await loadMe(force: true)
             showToast("欢迎回来，\(user.name)")
         } catch let error as CovaAPIError {
-            switch error {
-            case .decoding:
-                authPhase = .failed("后端返回的用户字段不完整（NEEDS-1 已登记），登录暂不可用")
-            default:
-                authPhase = .failed(LoginFailureCopy.message(for: error))
-            }
+            // 不再为 `.decoding` 单开一句「后端返回的用户字段不完整（NEEDS-1 已登记）」：
+            // NEEDS-1 已撤销（D21⑤），而这一支同时是 D21③ 身份一致性 fail-closed 的落点
+            // （`AuthSession.identityMismatchDescription` 就是以 `.decoding` 抛的）⇒
+            // 「两份响应说的是两个人」会被读成"后端少字段"。统一走 LoginFailureCopy：
+            // `.decoding` 落「登录没成功，检查一下网络再试」，既不指凭证也不指后端。
+            authPhase = .failed(LoginFailureCopy.message(for: error))
         } catch {
             authPhase = .failed(LoginFailureCopy.message(for: error))
         }

@@ -328,7 +328,7 @@ fi
 # （CORE_COVERAGE_MIN / PLAYER_COVERAGE_MIN 在本段之后才被消费，REQUIRED_DEPLOYMENT_TARGET、
 #  IOS_ONLY_MODULES 同理），于是「阈值抬高失守 + iOS-only 扫描整轮空转」可以在不改 check.sh 一行
 # 的情况下发生。改为按键名白名单逐行解析：只接受 APP_MIN / CORE_MIN / PLAYER_MIN / FEATURE_MIN
-# 四个整数键，
+# 四个整数键（第 27 批从三个变四个），
 # 其余任何行（其它键、赋值形态、内联注释、重复键）一律拒绝并非零退出。
 [ -f "$BASELINE_FILE" ] || fail "缺少测试数量基线文件 ${BASELINE_FILE}"
 BASELINE_KEYS="APP_MIN CORE_MIN PLAYER_MIN FEATURE_MIN"
@@ -350,7 +350,7 @@ while IFS= read -r bline || [ -n "$bline" ]; do
   case " $BASELINE_KEYS " in
     *" $bkey "*) ;;
     *) fail "基线文件第 ${BASELINE_LINENO} 行含非白名单键 '${bkey}'：本文件不被 source，" \
-"只允许 ${BASELINE_KEYS} 三个整数键（否则它可以覆写门禁钉死的常量，见 G-10）" ;;
+"只允许 ${BASELINE_KEYS} 四个整数键（否则它可以覆写门禁钉死的常量，见 G-10）" ;;
   esac
   case "$bval" in
     ''|*[!0-9]*) fail "基线 ${bkey} 的值必须是纯整数（禁内联注释/空白/负数），收到 '${bval}'" ;;

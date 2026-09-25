@@ -136,10 +136,17 @@ public struct CovaRootView: View {
             if let playID = ProcessInfo.processInfo.environment["COVA_PREVIEW_PLAY"], !playID.isEmpty,
                let detail = try? await session.catalog.trackDetail(playID) {
                 await session.play(tracks: [detail.track], at: 0)
-                // `player.start` 落的是**待播**（02 §9：选曲后从未起播的静默态是合法形态，不是暂停了一次
-                // 正在响的播放）⇒ 只建队列不会出声。这里补一次 `toggle()`，走的正是 ⏯ 那颗钮的同一条腿
-                // （`session.toggle()` → `player.toggle()`），不是往状态里塞一个假的"正在播"。
-                await session.toggle()
+                // ️ 第一版在这里直接 `toggle()`，结果**永远停在 00:00**：`player.start` 之后状态是
+                // `.loading`，而 `toggle()` 按 R7D 的裁决把 `.loading` 归到「正要响」那一侧 ⇒
+                // 在途按 ⏯ 的语义是「别播这首」，于是这条钩子自己把刚起的装载暂停了。
+                // 正确做法是等装载收敛（有界轮询，不无限等），只在真的停在静默态时补一次 ⏯。
+                for _ in 0..<40 {
+                    if let state = session.snapshot?.state, state != .loading, state != .buffering { break }
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                if let state = session.snapshot?.state, state != .playing {
+                    await session.toggle()
+                }
                 session.playerSheetOpen = true
             }
         }
