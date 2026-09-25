@@ -1052,17 +1052,26 @@ R7C 的 clamp 口径裁决、第 7 轮四条 Minor 的落地情况（MIN-R7-3 �
 
 ## 14½. 第 19 轮之后由**读图**新开出的两条（不是评审判的，是我自己看截图看到的）
 
-1. **02 在播但不走时**（`26-player-audible.png`，产物 0.2.70(86)）：中央钮已经是 **⏸**（⇒ 快照
-   `state == .playing`，走查钩子那条腿真的起播了），但**时间仍是 00:00 / −02:58**、波形一格都没
-   accent 化。⇒ 出声与"位置回显"是两条腿，第二条没到屏上。这条在 638/701 条用例里也不可见
-   （位置来自 `AVPlayer.addPeriodicTimeObserver`，测试面在协调器一侧）。**下一批要查**：时间观察器
-   是否随装载重建、`refreshSnapshot` 有没有被 tick 驱动、以及 `PlayerViews` 是否读的是
-   `snapshot.position` 而不是本地 @State。严重度我按 Major 记（播放进度是 02 的核心）。
-2. **09 候选封面槽画的是"出口拒绝"**（`15-session-real.png` 两枚警示三角）：`.refused` 的语义是
-   "服务端给了一个不可出站的地址"，可我实测 `plans?sessionId=`（全文 1248 字节）与
-   `sessions/:id` 两个响应里 **没有任何 cover/coverUrl/imageUrl/thumbnail 键**（正则扫 `coverUrl`
-   命中 0）。⇒ 要么那个槽取的是我没找到的第三个来源，要么 `.absent`/`.refused` 的分档还有第三条
-   路径。**没有闭，也没有替它圆**，原样交给第 20 轮。
+1. ~~02 在播但不走时（进度那条腿断了）~~ —— **【第 20 轮否证，本条按判词就地撤回】**
+   我这条读图结论是**错的**，而且错得典型：三条嫌疑腿（`PlayerViews` 读 `snap.position`、
+   `refreshSnapshot` 每 500ms 轮询、`AVPlayerEngine.load()` 重挂时间观察器）**全都是接好的**；
+   评审用真 `AVPlayerEngine` + 真 WAV 跑通到 `0.00 → 8.00` 全序列。屏上 00:00 的真实原因是
+   **拍得太早**：`.playing` 写在引擎可出声之前（`PlaybackCoordinator.swift:616`），
+   `PlayerTime.elapsed` 把不足 1 秒抹成 00:00，而第一根柱要到 `position ≥ 时长/48 = 3.71s` 才填色。
+   ⇒ 教训：**"截图里没有"不等于"代码里没有"**，我这次把一次采样时机当成了缺陷，还给它记了 Major。
+   已做：钩子开屏后多等 6 秒再拍（`CovaRootView.swift` 注释里写明为什么）。
+   **仍然开着的那半条**：02 §3 的进度回显**至今没有任何一张拍到过填充**，且
+   `grep -rn addPeriodicTimeObserver Packages/*/Tests` = 0 ⇒ 真观察器只被评审的临时探针跑过，
+   没进用例。
+2. **09 候选封面槽画的是"出口拒绝"** —— **第 20 轮 R20-1 给出真因并已修**：不是"第三个来源"，
+   也不是"响应里没有 cover 键"（候选清单读自 `sessions/:id` 里 `generationJobs.last?.candidates()`
+   那一段 **JSON 字符串**，我的正则扫不到转义键，所以我那句"命中 0"本身就不成立）。
+   真因是**四条腿接错了裁决面**：`AISessionDetailView:202/:428`、`PlazaAndSettings:116`、
+   `CollectionsViews:462` 都把服务端原文塞进 `CovaArtwork(url: URL(string:))` →
+   `init(resolvedURL:)` **跳过** `resolveMediaURL` 那步补全 ⇒ 站内相对地址变成"无 host 的 URL"
+   被算成 `.refused`，屏上是警示三角、VoiceOver 还说「美术地址不可出站：<无主机名>」——
+   一句话把客户端没做完的活说成服务端拒绝。已改走 `CovaArtworkResolution(serverValue:/serverValues:)`
+   与 `resolveMediaURL`（`CollectionsViews:130` 那条**已预解析**的腿保留 `url:` 形态，否则会二次补全）。
 
 ## 15. 逐屏可见性矩阵（2026-09-24 07:39，按磁盘与截图实测，不按记忆）
 

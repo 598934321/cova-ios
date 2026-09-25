@@ -460,8 +460,9 @@ public struct MyPlaylistsView: View {
                 title: playlist.titleCn ?? playlist.title,
                 subtitle: metaLine(playlist),
                 artwork: CovaArtwork(
-                    url: URL(string: playlist.cover ?? playlist.coverUrl
-                        ?? playlist.coverMedia?.imageUrl ?? ""),
+                    resolution: CovaArtworkResolution(serverValues: [
+                        playlist.cover, playlist.coverUrl, playlist.coverMedia?.imageUrl,
+                    ]),
                     title: playlist.title)
             ) {
                 if editing {

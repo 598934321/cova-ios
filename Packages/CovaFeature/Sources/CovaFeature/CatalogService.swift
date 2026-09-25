@@ -157,7 +157,12 @@ public struct CatalogService: Sendable {
                 // 401/403 是「你能自己解决」的一类：spec 要求说「登录状态已过期」，
                 // 不混进服务端故障。
                 if code == 401 || code == 403 { return .unauthenticated }
-                if code == 404 || code == 501 { return .backendGap("NEEDS-14…22") }
+                // 501 是服务端自己说"没实现"；**404 不是** —— 它最常见的原因是**我们**拿着一个
+                // 过期/错端的 id 去打（NEEDS-11 记的就是这个：用 note 的 id 打 `DELETE /api/favorites`
+                // 得到 404，被读成"后端少端点"）。所以 404 默认落 `.server`，只有**自己拥有**
+                // 一条已登记缺口的调用点才显式 opt-in（与 `decodingNeeds:` 同一个口径）。
+                if code == 501 { return .backendGap("NEEDS-14…22") }
+                if code == 404 { return .server("资源不存在（404）") }
                 return .server("HTTP \(code)")
             case .decoding(let field):
                 guard let decodingNeeds else { return .server(unverifiedDecodingCopy(field)) }

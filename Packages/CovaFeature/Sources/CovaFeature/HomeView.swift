@@ -113,7 +113,7 @@ public struct HomeView: View {
                         // （`GET /api/playlists` 无分页），`HStack` 会把 593 张卡一次性建出来，
                         // 首屏就卡在还没滚到的卡上。
                         LazyHStack(spacing: CovaSpace.md) {
-                            ForEach(playlists, id: \.id) { playlist in
+                            ForEach(Array(playlists.enumerated()), id: \.offset) { _, playlist in
                                 PlaylistCard(playlist: playlist) {
                                     session.path.append(.playlist(playlist.id))
                                 }
@@ -129,7 +129,7 @@ public struct HomeView: View {
                 if !tracks.isEmpty {
                     CovaSectionHeader("曲库精选")
                     VStack(spacing: 0) {
-                        ForEach(Array(tracks.prefix(8).enumerated()), id: \.element.id) { index, track in
+                        ForEach(Array(tracks.prefix(8).enumerated()), id: \.offset) { index, track in
                             CovaListRow(
                                 title: track.titleCn ?? track.title,
                                 subtitle: "\(track.artistNameCn ?? track.artist.name) · \(track.scenes.joined(separator: "/"))",
@@ -543,7 +543,12 @@ public struct PlaylistCard: View {
                     .frame(width: 148, height: 148)
                     .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
                 Text(playlist.titleCn ?? playlist.title).font(CovaType.headline).foregroundStyle(CovaColor.fg).lineLimit(1)
-                Text("\(playlist.trackCount ?? 0) 首").font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                // 「没给曲数」与「0 首」是两件事：同屏的 hero 大卡走 `HomeSectionFacts.metaLine`
+                // 的省略规则，这里以前用 `?? 0` 把缺席印成一个读数（第 20 轮 R20-4，变异 `?? 999`
+                // 存活 ⇒ 这行零覆盖）。
+                if let count = playlist.trackCount {
+                    Text("\(count) 首").font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                }
             }
             .frame(width: 148)
         }

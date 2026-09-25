@@ -52,7 +52,7 @@ public struct MiniPlayerView: View {
     private func statusText(_ snap: PlaybackSnapshot?) -> String {
         guard let snap else { return "准备中" }
         switch snap.state {
-        case .playing: return "正在播放 · \(snap.loopMode.description)"
+        case .playing: return "正在播放 · \(snap.loopMode.userLabel)"
         case .paused: return "已暂停"
         case .loading: return "加载私有音频中…"
         case .buffering: return "缓冲中…"

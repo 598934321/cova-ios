@@ -114,8 +114,9 @@ public struct PlaylistsPlazaView: View {
             VStack(alignment: .leading, spacing: CovaSpace.xs) {
                 ZStack(alignment: .topTrailing) {
                     CovaArtwork(
-                        url: URL(string: playlist.cover ?? playlist.coverUrl
-                            ?? playlist.coverMedia?.imageUrl ?? ""),
+                        resolution: CovaArtworkResolution(serverValues: [
+                            playlist.cover, playlist.coverUrl, playlist.coverMedia?.imageUrl,
+                        ]),
                         title: playlist.title
                     )
                     .frame(maxWidth: .infinity)

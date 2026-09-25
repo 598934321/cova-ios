@@ -148,6 +148,11 @@ public struct CovaRootView: View {
                     await session.toggle()
                 }
                 session.playerSheetOpen = true
+                // 截图要拍到**进度真的在走**：`.playing` 是在引擎可出声之前乐观写的
+                // （`PlaybackCoordinator.swift:616`），而 02 的第一根柱要到 `position ≥ 时长/48`
+                // 才填色、`PlayerTime.elapsed` 又把不足 1 秒抹成 00:00 ⇒ 立刻拍必然是一张
+                // "在播但 00:00"的图（第 20 轮 R20-3 纠正了我上一条读图结论：进度腿是通的）。
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
             }
         }
         .overlay(alignment: .top) { toastOverlay }
@@ -526,6 +531,10 @@ private struct DrawerItem: Identifiable {
     let symbol: String
     let group: Group
     let destination: Destination
+    /// 会员/企业的语义色**由这一格说了算**，不再比 `label == 「会员」`那种显示文案：
+    /// 那四处（图标/文字/底/描边）会把一次纯文案修改（「会员」→「会员中心」）静默变成企业蓝，
+    /// 而加第三个商业入口会默认吃蓝（第 20 轮 R20-7，`DrawerItem` 当时零覆盖）。
+    var isMembership = false
 
     var id: String { label }
     /// §3.B：AI 渐变**只**给「创作」这一项文字，其余任何导航项不得出现渐变。
@@ -562,7 +571,8 @@ private struct DrawerItem: Identifiable {
 
     static var commerce: [DrawerItem] {
         [
-            .init(label: "会员", symbol: "star.fill", group: .commerce, destination: .route(.membership)),
+            .init(label: "会员", symbol: "star.fill", group: .commerce, destination: .route(.membership),
+                  isMembership: true),
             .init(label: "企业服务", symbol: "building.2", group: .commerce, destination: .route(.enterprise)),
         ]
     }
@@ -647,14 +657,14 @@ private struct DrawerRow: View {
 
     private var iconTint: Color {
         switch item.group {
-        case .commerce: return item.label == "会员" ? CovaColor.memberGold : CovaColor.enterpriseBlue
+        case .commerce: return item.isMembership ? CovaColor.memberGold : CovaColor.enterpriseBlue
         case .main, .assets: return selected ? CovaColor.accentText : CovaColor.secondary
         }
     }
 
     private var textTint: Color {
         switch item.group {
-        case .commerce: return item.label == "会员" ? CovaColor.memberGold : CovaColor.enterpriseBlue
+        case .commerce: return item.isMembership ? CovaColor.memberGold : CovaColor.enterpriseBlue
         // §3.B：选中项文字 `color.accentText`，其余 `color.fg`。
         case .main, .assets: return selected ? CovaColor.accentText : CovaColor.fg
         }
@@ -664,7 +674,7 @@ private struct DrawerRow: View {
         switch item.group {
         case .commerce:
             // §3.F：会员行底 memberGoldSoft、企业行底 enterpriseBlueSoft（双主题由 token 给）。
-            return item.label == "会员" ? CovaColor.memberGoldSoft : CovaColor.enterpriseBlueSoft
+            return item.isMembership ? CovaColor.memberGoldSoft : CovaColor.enterpriseBlueSoft
         case .main, .assets:
             return selected ? CovaColor.accentSoft : .clear
         }
@@ -672,7 +682,7 @@ private struct DrawerRow: View {
 
     private var rowBorder: Color? {
         guard item.group == .commerce else { return nil }   // §3.F：两项各 1pt 同系描边
-        return item.label == "会员" ? CovaColor.memberGoldBorder : CovaColor.enterpriseBlueBorder
+        return item.isMembership ? CovaColor.memberGoldBorder : CovaColor.enterpriseBlueBorder
     }
 
     /// §6 的标签形状：`首页，标签页` / `创作，AI 创作，当前选中`。

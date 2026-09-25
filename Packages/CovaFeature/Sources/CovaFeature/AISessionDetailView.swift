@@ -199,7 +199,9 @@ public struct AISessionDetailView: View {
             CovaListRow(
                 title: candidate.title ?? "版本 \(index + 1)",
                 subtitle: failed ? Self.failedStatusText : (ready ? "可以试听" : "制作中"),
-                artwork: CovaArtwork(url: URL(string: candidate.coverUrl ?? ""), title: candidate.title ?? "")
+                artwork: CovaArtwork(
+                    resolution: CovaArtworkResolution(serverValue: candidate.coverUrl),
+                    title: candidate.title ?? "")
             ) {
                 // 失败卡不给 ▶ 也不给菊花：§5 的失败卡面只有 error 遮罩 + 重试，
                 // 摆一个播放图标就是"这里能播"的谎。符号沿用本屏 §3-F 给 `run_failed` 定的一枚。
@@ -425,7 +427,8 @@ public struct AISessionDetailView: View {
             artist: "Cova AI",
             album: nil,
             duration: candidate.duration,
-            coverURL: URL(string: candidate.coverUrl ?? "").flatMap { try? AudioURL(https: $0) },
+            coverURL: CovaEnvironment.resolveMediaURL(candidate.coverUrl)
+                .flatMap { try? AudioURL(https: $0) },
             audioSource: .bearerRequired(audio),
             kind: .privateCandidate
         )
@@ -656,7 +659,9 @@ public struct AISessionDetailView: View {
             async let detail = session.studio.session(sessionID)
             async let cards = session.studio.planCards(sessionID: sessionID)
             let result = try await detail
-            let planList = (try? await cards) ?? []
+            // 同屏的 `reconcileRound`(:332) 与 `start`(:861) 都是 `if let` —— 取不到就保留上一份好值；
+            // 这一条以前 `?? []` 把一次抖动变成"计划卡消失 + 没有任何错误"（第 20 轮 R20-6）。
+            let planList = ((try? await cards) ?? nil) ?? plans
             lines = result.messages.compactMap { message in
                 guard let text = message.displayText else { return nil }   // 取不到正文就跳过
                 lineCounter += 1
