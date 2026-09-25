@@ -30,6 +30,17 @@ public struct PlayerFailure: Error, Equatable, Sendable, CustomStringConvertible
         case missingFile
         /// 地址协议/形态不受支持（无法交给播放器）。
         case invalidSourceURL
+        /// 出口裁决拒绝了这一条腿（D23①/②/③）：字节落地的那台主机不是这一类请求可出站的主机，
+        /// **那一次出站没有发生**。
+        ///
+        /// 为什么不并进 `.invalidSourceURL`（第 30 批②，同一族的"拍平"缺陷）：过去
+        /// `PlaybackCoordinator.kind(for:)` 把 `.hostRejected` 折进 `.invalidSourceURL`，于是
+        /// ①**上屏那句**变成「这个音频地址用不了」—— 地址是服务端给的、用户无从检查，
+        /// 真相是「那一台不是许可出口」（NEEDS-29 的可见面）；②一次拒绝并进的是"地址形态"
+        /// 那一类的失败连击账，两类故障在诊断里再也分不开。
+        /// 本 case 只换**分类**、不换**账本语义**：`countsTowardFailureStreak` 仍为 true
+        /// （拒绝不是取消，连击与终态口径一个字都不动）。
+        case egressRefused
         /// 网络类失败（可重试）。
         case network
         /// 解码 / 不支持的媒体。
@@ -52,6 +63,7 @@ public struct PlayerFailure: Error, Equatable, Sendable, CustomStringConvertible
             case .localizationRequired: return "音频还没准备好"
             case .missingFile: return "本地音频文件缺失"
             case .invalidSourceURL: return "这个音频地址用不了"
+            case .egressRefused: return "这台主机不是许可出口"
             case .network: return "网络有问题"
             case .mediaInvalid: return "音频格式不支持"
             case .engine: return "播放器出错了"
@@ -111,9 +123,12 @@ public enum PlayerEgress {
     }
 
     /// 拒绝理由（只出 host，两个 host 都点名：被拒的落地与本机承认的出口）。
+    ///
+    /// 分类是 `.egressRefused` 而**不是** `.invalidSourceURL`（第 30 批②）：这条腿的真相是
+    /// 「那一台主机不是许可出口」，与"地址形态用不了"是两件事，上屏与诊断都不许混成一类。
     public static func rejection(for url: URL) -> PlayerFailure {
         PlayerFailure(
-            kind: .invalidSourceURL,
+            kind: .egressRefused,
             message: "公开直链的落地 \(CovaEnvironment.egressHostLabel(of: url)) 不是许可出口（只认 \(CovaEnvironment.egressHostLabel(of: CovaEnvironment.apiBaseURL))）"
         )
     }

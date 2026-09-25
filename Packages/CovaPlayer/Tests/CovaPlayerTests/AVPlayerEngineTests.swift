@@ -82,7 +82,7 @@ final class AVPlayerEngineTests: XCTestCase {
         guard case .failure(let rejected) = AVPlayerEngine.playableURL(for: foreignHost) else {
             return XCTFail("MAJ-8：非生产出口的公开直链必须被拒绝（旧实现返回 .success）")
         }
-        XCTAssertEqual(rejected.kind, .invalidSourceURL)
+        XCTAssertEqual(rejected.kind, .egressRefused, "被出口裁决拒的腿有自己的分类（第 30 批②）")
         // D23③（第 30 批）：拒绝必须**点名那一台主机** —— 旧口径反过来钉着「不得回显被拒主机」，
         // 于是桶名/存储区一变只剩一句"地址用不了"让人去猜是哪台（同一族缺陷的第三次）。
         // 钉的仍是**只有** host：path / query / fragment 一概不许跟着上屏（硬边界 3）。

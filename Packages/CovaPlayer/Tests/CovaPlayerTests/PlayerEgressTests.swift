@@ -44,7 +44,16 @@ final class PlayerEgressTests: XCTestCase {
                 guard let failure = error as? PlayerFailure else {
                     return XCTFail("应当是 PlayerFailure：\(error)")
                 }
-                XCTAssertEqual(failure.kind, .invalidSourceURL)
+                XCTAssertEqual(failure.kind, .egressRefused)
+                // 上屏那句（`PlayerViews` 直接印 `description`）：中文分类 + 点名 host。
+                XCTAssertTrue(
+                    failure.description.contains(PlayerFailure.Kind.egressRefused.userLabel),
+                    "上屏句没有中文分类标签：\(failure.description)"
+                )
+                XCTAssertFalse(
+                    failure.description.contains("egressRefused"),
+                    "上屏句露出英文枚举名：\(failure.description)"
+                )
                 XCTAssertTrue(
                     failure.message.contains(source.host()?.lowercased() ?? ""),
                     "拒绝必须看得见是哪台：\(failure.message)"

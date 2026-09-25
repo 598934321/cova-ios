@@ -499,10 +499,24 @@ final class PlaybackCoordinatorTests: XCTestCase {
     /// 302 到 COS host ⇒ 名单内的落地由音频腿剥掉凭证去取（R18-4），**名单外**的落地
     /// 与被冒充的权威都仍然是 `.hostRejected`。把它桶进 `.network` 就是在骗买家
     /// 「检查一下网络」，而真相是「那一台不是许可出口」。
+    ///
+    /// 第 30 批②补的是**另一半**：R16-1a 当时改判成 `.invalidSourceURL`，于是拒绝又被折进
+    /// 「地址形态用不了」那一类（地址是服务端给的，用户无从检查）。现在它有**自己的分类**，
+    /// 三件事一次钉死：①分类独立、②仍然计数（连击/终态语义不许顺手改掉）、③host 活着。
     func testHostRejectedIsClassifiedAsUnavailableSourceNotNetwork() {
-        XCTAssertEqual(
-            PlaybackCoordinator.kind(for: .hostRejected(host: "covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com")),
-            .invalidSourceURL
+        let refused = PlayerError.hostRejected(
+            host: "covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com"
+        )
+        XCTAssertEqual(PlaybackCoordinator.kind(for: refused), .egressRefused)
+        XCTAssertNotEqual(
+            PlaybackCoordinator.kind(for: refused), .invalidSourceURL,
+            "第 30 批②：拒绝不得再并进「地址形态用不了」那一类"
+        )
+        XCTAssertNotEqual(PlaybackCoordinator.kind(for: refused), .network)
+        // 计数语义一个字都不动：拒绝不是取消。
+        XCTAssertTrue(
+            PlayerFailure(kind: PlaybackCoordinator.kind(for: refused)).countsTowardFailureStreak,
+            "改分类不得顺手把拒绝改成不计数 ⇒ 连击/终态口径会变"
         )
         // 点名口径（D23③）：错误里带着那台 host，但仍然只有 host —— path/query 一概不出。
         let rejection = PlayerError.hostRejected(host: "evil.invalid")
@@ -510,10 +524,45 @@ final class PlaybackCoordinatorTests: XCTestCase {
         for forbidden in ["?", "=", "/", "Bearer", "://"] {
             XCTAssertFalse(rejection.description.contains(forbidden), "错误文本带出了地址片段：\(rejection)")
         }
+        // 上屏那句（`PlayerViews` 印的就是 `failure.description`）：中文分类 + host，
+        // 且**不许**露出枚举名（本仓"屏上无英文态名"的判据，见 `Kind.userLabel`）。
+        let onScreen = PlayerFailure(
+            kind: PlaybackCoordinator.kind(for: rejection), message: rejection.description
+        ).description
+        XCTAssertTrue(onScreen.contains("evil.invalid"), "上屏句丢了 host：\(onScreen)")
+        XCTAssertTrue(onScreen.contains(PlayerFailure.Kind.egressRefused.userLabel), onScreen)
+        XCTAssertFalse(onScreen.contains("egressRefused"), "上屏句露出英文枚举名：\(onScreen)")
+        XCTAssertFalse(onScreen.contains("hostRejected"), "上屏句露出英文枚举名：\(onScreen)")
         // 不许顺手把真·网络形态也一起改判（这三条仍必须是可重试的网络类）。
         XCTAssertEqual(PlaybackCoordinator.kind(for: .badStatus(502)), .network)
         XCTAssertEqual(PlaybackCoordinator.kind(for: .truncated(expected: 10, actual: 4)), .network)
         XCTAssertEqual(PlaybackCoordinator.kind(for: .credentialUnavailable), .network)
+    }
+
+    /// 第 30 批②的可观察契约：一次被拒的装载，**快照里**（UI 唯一读取面）既分得出类别、
+    /// 也看得见是哪一台；连击账与终态语义保持「计数」不变。
+    func testRefusedLoadReachesTheSnapshotAsANamedEgressRefusal() async {
+        let preparer = StubSourcePreparer()
+        await preparer.configure(.failWith(.hostRejected(host: "evil.invalid")))
+        let subject = PlaybackCoordinator(engine: engine, clock: clock, sourcePreparer: preparer)
+        _ = await subject.replaceQueue([TestItems.make("a", source: .bearerRequired(TestItems.audioURL()))])
+        _ = await subject.start()
+        let after = await subject.currentSnapshot()
+        guard let failure = after.lastFailure else { return XCTFail("被拒的装载必须留下失败回显") }
+        XCTAssertEqual(failure.kind, .egressRefused)
+        XCTAssertNotEqual(failure.kind, .invalidSourceURL, "拒绝与「地址用不了」必须分得开")
+        XCTAssertNotEqual(failure.kind, .network, "拒绝与「网络有问题」必须分得开")
+        // `PlayerViews.statusText` 走的就是 `description`（读，不改）：host 必须活着到那一句。
+        XCTAssertTrue(failure.description.contains("evil.invalid"), "host 在半路被拍平：\(failure.description)")
+        XCTAssertTrue(failure.description.contains(failure.kind.userLabel), failure.description)
+        for forbidden in ["/", "?", "=", "://", "Bearer", "sig"] {
+            XCTAssertFalse(
+                failure.description.contains(forbidden),
+                "上屏句带出地址片段 \(forbidden)：\(failure.description)"
+            )
+        }
+        XCTAssertEqual(after.failureStreak, 1, "分类换了，计数语义不许跟着换")
+        XCTAssertEqual(engine.count(of: "load"), 0, "本地化失败绝不能把 Bearer 地址交给引擎")
     }
 
     func testPreparerFailureIsClassifiedAndNeverReachesEngine() async {
@@ -523,7 +572,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
         _ = await subject.replaceQueue([TestItems.make("a", source: .bearerRequired(TestItems.audioURL()))])
         _ = await subject.start()
         let after = await subject.currentSnapshot()
-        XCTAssertEqual(after.lastFailure?.kind, .invalidSourceURL)
+        XCTAssertEqual(after.lastFailure?.kind, .egressRefused)
         XCTAssertEqual(engine.count(of: "load"), 0, "本地化失败绝不能把 Bearer 地址交给引擎")
     }
 
@@ -3303,7 +3352,7 @@ final class PlaybackCoordinatorTests: XCTestCase {
     func testCountedFailuresStillOpenFailureTerminalWithCancellationEchoInBetween() async {
         // ① 计数失败 + 无处可跳 → 终态（`hasCountedFailureLedger` 为真那一腿）。
         //    `.badStatus` 经 `PlaybackCoordinator.kind(for:)` 归一为 `.network` —— 计数形态。
-        //    （R16-1a 之后 `.hostRejected` 改判 `.invalidSourceURL`；本用例要的是「计数」这条
+        //    （第 30 批之后 `.hostRejected` 有自己的分类 `.egressRefused`；本用例要的是「计数」这条
         //    语义，不是「权威被拒」那一条，所以夹具换成真·网络形态的失败。）
         let engine = ScriptedEngine()
         let preparer = AttemptScriptedPreparer(gating: [0], outcomes: [0: .badStatus(503)])

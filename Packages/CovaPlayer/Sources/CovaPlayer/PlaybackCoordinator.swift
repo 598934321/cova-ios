@@ -1247,8 +1247,9 @@ public actor PlaybackCoordinator {
             inFlightLoad?.failure = nil
             await handleFailure(failure)
             // 同上：引擎上报的失败若是不计数的取消形态（`PlayerEngine` 契约允许任意 Kind，
-            // 生产 `AVPlayerEngine` 目前只发 `invalidSourceURL` / `mediaInvalid`），这一代
-            // 装载同样没有交付过引擎条目 ⇒ 走协议边界这一侧的收敛腿。计数形态不归本腿管。
+            // 生产 `AVPlayerEngine` 目前只发 `localizationRequired` / `invalidSourceURL` /
+            // `egressRefused` / `mediaInvalid`，全是计数形态），这一代装载同样没有交付过引擎
+            // 条目 ⇒ 走协议边界这一侧的收敛腿。计数形态不归本腿管。
             if !failure.countsTowardFailureStreak {
                 await convergeStalledLoad(generation: generation)
             }
@@ -1470,9 +1471,14 @@ public actor PlaybackCoordinator {
         switch error {
         // R16-1a：`.hostRejected` 不是「网络不通」。它是「字节落地的那台主机不是许可出口」
         // （线上真实形态：已授权那一条腿被服务端 302 到整曲桶），重试不会改变结果。
-        // 桶进 `.network` 就是让买家去检查自己的 WiFi，而真相是后端契约缺口 —— 改判成
-        // 「地址形态不可用」，仍然计数（`.cancelled` 以外都计数），失败连击与终态语义不变。
-        case .hostRejected: return .invalidSourceURL
+        // 桶进 `.network` 就是让买家去检查自己的 WiFi，而真相是后端契约缺口。
+        // 第 30 批②：R16-1a 当时的修法（改判 `.invalidSourceURL`）把拒绝**并进了另一类** ——
+        // 上屏那句变成「这个音频地址用不了」（地址是服务端给的，用户无从检查），
+        // 失败连击账也把它算成"地址形态"那一类。现在拒绝有自己的分类 `.egressRefused`，
+        // host 由 `PlayerError.description` 原样带进 `message` ⇒ 快照 `lastFailure` 上屏时
+        // 仍然看得见是哪一台（口径见 `CovaEnvironment.egressHostLabel`：只有 host）。
+        // 仍然计数（`.cancelled` 以外都计数），失败连击与终态语义一个字都不动。
+        case .hostRejected: return .egressRefused
         case .badStatus, .truncated, .credentialUnavailable: return .network
         case .emptyDownload, .writeFailed: return .missingFile
         case .notLocalized: return .localizationRequired
