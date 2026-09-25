@@ -128,6 +128,16 @@ public struct CovaRootView: View {
             // 于是关闭时不做焦点归还（04 §6 后半句只对真触发钮成立）。
             if Self.previewDrawer() { session.drawerOpen = true }
             if let trackID = Self.previewTrackID() { session.detailTrackID = trackID }
+            // 走查钩子 7：`COVA_PREVIEW_PLAY=<trackId>` 走**真实取数 + 真实播放腿**（详情 → 队列 →
+            // 出声），不是往状态里塞一个假快照。为什么必须有它：02 的波形进度条、♡、次级操作行
+            // 只在"有内容在播"时才存在，而 `simctl` 不提供点击 ⇒ 没有这条键，02 的截图永远停在
+            // 游客空态（昨天就是这样），D23①′ 那条「已购整曲 302 → 名单桶 ⇒ 剥凭证匿名 GET」的腿
+            // 也没有任何一屏能被看到。登录在上面已完成，所以这一条走的就是带凭证的那一支。
+            if let playID = ProcessInfo.processInfo.environment["COVA_PREVIEW_PLAY"], !playID.isEmpty,
+               let detail = try? await session.catalog.trackDetail(playID) {
+                await session.play(tracks: [detail.track], at: 0)
+                session.playerSheetOpen = true
+            }
         }
         .overlay(alignment: .top) { toastOverlay }
         .onReceive(NotificationCenter.default.publisher(for: StudioNotifier.didTap)) { tap in
