@@ -4,7 +4,7 @@ import Foundation
 ///
 /// 放这一层的理由：时间读法与波形柱高度都是「错了会骗人」的口径
 /// （`-02:18` 算错=谎报剩余；柱高归一错=把 NaN/负值画进 UI），必须可被 XCTest 钉住，
-/// 而不是埋在 SwiftUI 的 preview/geometry 里（那部分永远不声称被测）。
+/// 而不是埋在 UI 层的 preview/geometry 里（那部分永远不声称被测）。
 public enum PlayerTime {
     /// 已播时间：`mm:ss`（分钟补零，§1 的 `00:42`）；超过一小时转 `h:mm:ss`。
     /// 非有限值（NaN/inf）与负值一律按 0 读 —— 不显示 `nan`，也不显示负秒数。

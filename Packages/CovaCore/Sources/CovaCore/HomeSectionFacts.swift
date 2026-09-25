@@ -277,7 +277,7 @@ public enum ArtistSwash {
     public static let crossFadeDuration = 0.7
 
     /// 一个 `#RGB` / `#RRGGBB` 解出来的分量（0…1）。放这里而不是直接给 `Color`：
-    /// CovaCore 不引 SwiftUI，而"能不能解析"这件事必须能在没有 UI 的测试里红。
+    /// CovaCore 不引 iOS-only 框架，而"能不能解析"这件事必须能在没有 UI 的测试里红。
     public struct Swatch: Equatable, Sendable {
         public let red: Double
         public let green: Double

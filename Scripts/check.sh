@@ -91,7 +91,9 @@ APP_BUNDLE="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/Cova.app"
 RESULT_BUNDLE="$LOG_DIR/Cova.xcresult"
 CORE_RESULT_BUNDLE="$LOG_DIR/CovaCoreTests.xcresult"
 PLAYER_RESULT_BUNDLE="$LOG_DIR/CovaPlayerTests.xcresult"
+FEATURE_RESULT_BUNDLE="$LOG_DIR/CovaFeatureTests.xcresult"
 PLAYER_PACKAGE_DERIVED_DATA="$LOG_DIR/DerivedData-CovaPlayer"
+FEATURE_PACKAGE_DERIVED_DATA="$LOG_DIR/DerivedData-CovaFeature"
 PLAYER_PROF_MARKER="$LOG_DIR/.player-profile-start-marker"
 # 3/10 从 dump-package 落盘的目标清单：pkg \t type \t 物理源目录（9/10 复用，避免二次解析口径漂移）
 TARGET_MANIFEST="$LOG_DIR/target-manifest.tsv"
@@ -325,11 +327,12 @@ fi
 # G-10：本文件**不再被 `.` source**。被 source 时它可以覆写脚本里钉死的常量
 # （CORE_COVERAGE_MIN / PLAYER_COVERAGE_MIN 在本段之后才被消费，REQUIRED_DEPLOYMENT_TARGET、
 #  IOS_ONLY_MODULES 同理），于是「阈值抬高失守 + iOS-only 扫描整轮空转」可以在不改 check.sh 一行
-# 的情况下发生。改为按键名白名单逐行解析：只接受 APP_MIN / CORE_MIN / PLAYER_MIN 三个整数键，
+# 的情况下发生。改为按键名白名单逐行解析：只接受 APP_MIN / CORE_MIN / PLAYER_MIN / FEATURE_MIN
+# 四个整数键，
 # 其余任何行（其它键、赋值形态、内联注释、重复键）一律拒绝并非零退出。
 [ -f "$BASELINE_FILE" ] || fail "缺少测试数量基线文件 ${BASELINE_FILE}"
-BASELINE_KEYS="APP_MIN CORE_MIN PLAYER_MIN"
-APP_MIN="" CORE_MIN="" PLAYER_MIN=""
+BASELINE_KEYS="APP_MIN CORE_MIN PLAYER_MIN FEATURE_MIN"
+APP_MIN="" CORE_MIN="" PLAYER_MIN="" FEATURE_MIN=""
 BASELINE_LINENO=0
 while IFS= read -r bline || [ -n "$bline" ]; do
   BASELINE_LINENO=$((BASELINE_LINENO + 1))
@@ -364,6 +367,11 @@ done < "$BASELINE_FILE"
 # 播放器层是 G3 交付物之一，下限单独收紧（与 test-count-baseline.env 的注释口径一致）：
 # 30 = 「队列 / 循环 / ±15s / 中断映射 / 上报去重 / 私有音频」六类规则的最小可断言面。
 [ "$PLAYER_MIN" -ge 30 ] || fail "基线 PLAYER_MIN=${PLAYER_MIN} 必须 >= 30（播放器层最小可断言面）"
+# 接线层（CovaFeature：视图与 AppSession）此前**没有任何测试地板** —— 第 17 轮把「UI 层没有测试目标」
+# 记成整族缺陷的根因，第 27 批补上测试目标后，"23 条可以静默变 0 条而门禁不吭声"这个洞仍在。
+# 这里只钉**条数**，不钉覆盖率：17 个视图文件对 66 条用例，摊出来的百分比只会自欺。
+[ -n "$FEATURE_MIN" ] || fail "基线文件缺少 FEATURE_MIN"
+[ "$FEATURE_MIN" -ge 1 ] || fail "基线 FEATURE_MIN=${FEATURE_MIN} 必须 >= 1（接线层零测试不允许）"
 
 allowed_deps() {
   case "$1" in
@@ -1015,6 +1023,22 @@ fi
 { grep -E "^\*\* TEST (SUCCEEDED|FAILED) \*\*" "$LOG_DIR/test-core-ios.log" || true; } | tail -1
 CORE_IOS_COUNTS="$(xcresult_counts "$CORE_RESULT_BUNDLE" || true)"
 assert_tests "CovaCoreTests(iOS)" "$CORE_IOS_COUNTS" "$CORE_MIN"
+
+# 接线层（04 §11 的根因修法之一）：视图与 AppSession 的行为面此前在门禁里**完全不可见**。
+# 只判条数（地板 = 基线，只许抬），覆盖率留给下一轮：17 个视图文件对 66 条用例摊出来的数字没有意义。
+echo "==> 6/10 追加：接线层包测试（CovaFeatureTests，iOS Simulator）"
+rm -rf "$FEATURE_RESULT_BUNDLE"
+if ! (cd Packages/CovaFeature && xcodebuild -scheme CovaFeature -configuration Debug \
+  -destination "$DESTINATION" -derivedDataPath "$FEATURE_PACKAGE_DERIVED_DATA" \
+  -resultBundlePath "$FEATURE_RESULT_BUNDLE" \
+  test > "$LOG_DIR/test-feature-ios.log" 2>&1); then
+  echo "接线层测试失败，日志尾部（完整日志 ${LOG_DIR}/test-feature-ios.log）："
+  tail -60 "$LOG_DIR/test-feature-ios.log"
+  exit 1
+fi
+{ grep -E "^\*\* TEST (SUCCEEDED|FAILED) \*\*" "$LOG_DIR/test-feature-ios.log" || true; } | tail -1
+FEATURE_IOS_COUNTS="$(xcresult_counts "$FEATURE_RESULT_BUNDLE" || true)"
+assert_tests "CovaFeatureTests(iOS)" "$FEATURE_IOS_COUNTS" "$FEATURE_MIN"
 
 echo "==> 7/10 核心层行覆盖率（SwiftPM 插桩 + llvm-cov，阈值 ${CORE_COVERAGE_MIN}%）"
 echo "    说明：Xcode 不为本地 SwiftPM 包目标产出 xccov 覆盖率，故由 SwiftPM 插桩测量；"

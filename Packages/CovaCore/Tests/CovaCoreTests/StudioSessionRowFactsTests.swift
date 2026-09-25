@@ -3,7 +3,7 @@ import XCTest
 
 /// `StudioSessionRowFacts.swift` 的纯口径：08 §3.C 进度环、§6 行标签、§8 相对时间、§3.C 封面降级。
 /// 钉的全是「错了会骗人」的映射（把没有任务读成 0%、把昨天读成 N 小时前、
-/// 把读不到的百分比念出来）；渲染它们的 SwiftUI 代码不在本文件的断言之列。
+/// 把读不到的百分比念出来）；渲染它们的 UI 层代码不在本文件的断言之列。
 final class StudioSessionRowFactsTests: XCTestCase {
 
     // MARK: - 环的取值（§数据源行 140：来源只能是本设备内存里未终态的 job）
@@ -314,7 +314,7 @@ final class StudioSessionRowFactsTests: XCTestCase {
     }
 }
 
-/// 行标签的拼接入口（与视图里同一支函数，测试不碰 SwiftUI）。
+/// 行标签的拼接入口（与视图里同一支函数，测试不碰 UI 层）。
 private enum StudioSessionRowFactsTestSupport {
     static func rowLabel(title: String, summary: String?, time: String?, ring: StudioSessionRing) -> String {
         StudioSessionProgressRing.rowVoiceOverLabel(title: title, summary: summary, relativeTime: time, ring: ring)

@@ -3,7 +3,7 @@ import XCTest
 
 /// `PlayerFormatting.swift` 的纯口径：02 §1/§3 的上屏数字与波形柱高。
 /// 这些是「错了会骗人」的映射（剩余时间算错、把 NaN 画进柱条），所以在这里钉死；
-/// 渲染它们的 SwiftUI 代码不在被测断言之列。
+/// 渲染它们的 UI 层代码不在被测断言之列。
 final class PlayerFormattingTests: XCTestCase {
     // MARK: - 时间读法（§1：00:42 / -02:18）
 

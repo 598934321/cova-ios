@@ -60,7 +60,7 @@ final class ArtistSwashTests: XCTestCase {
         )
     }
 
-    /// 分量必须落在 0…1：SwiftUI 拿到越界分量不会报错，只会画出别的东西。
+    /// 分量必须落在 0…1：UI 层拿到越界分量不会报错，只会画出别的东西。
     func testComponentsStayInUnitRange() {
         let swatch = ArtistSwash.swatch(fromPalette: "#000000")
         XCTAssertEqual(swatch, ArtistSwash.Swatch(red: 0, green: 0, blue: 0))
