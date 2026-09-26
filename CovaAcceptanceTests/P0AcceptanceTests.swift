@@ -425,16 +425,80 @@ final class P0AcceptanceTests: XCTestCase {
         // 先无条件拍一张再断言：上一版断"关闭钮在不在"，红的时候屏上到底是什么完全不知道。
         Thread.sleep(forTimeInterval: 4)
         shot("21-extras-attempt")
-        let panel = list.otherElements.matching(
-            NSPredicate(format: "identifier == %@", "cova.extras.panel")
-        ).firstMatch
+        // 观测量取自设备 dump（不是读源码猜的标识符）：`cova.extras.panel` 在 XCUITest
+        // 的元素树上根本不出现，而这两句只可能在**作品路径的正常态**里有 ——
+        // 「这里不消耗 co」是 §3.H 那一行，「可以再做的，6 项，多选」是 D 组的分组标签。
+        // 上一版断"离线"消失其实不够：骨架态也没有离线句。
         XCTAssertTrue(
-            panel.waitForExistence(timeout: 20),
-            "21 面板没开起来；标签=" + labelDump() + "｜按钮=" + buttonDump()
+            list.staticTexts["这里不消耗 co"].waitForExistence(timeout: 25),
+            "21 面板没到作品路径的正常态；标签=" + labelDump()
+        )
+        XCTAssertTrue(
+            list.staticTexts["可以再做的，6 项，多选"].exists,
+            "D 可选 key 组没渲染出六项；标签=" + labelDump()
         )
         // 给一次 GET 复列留时间：面板先读一次已知态，读回来的行与骨架不是同一张图。
         Thread.sleep(forTimeInterval: 6)
         shot("21-extras")
+    }
+
+    /// A7 的 **dislike** 那一半（判据原句：「dislike → 收藏被撤」）。
+    ///
+    /// 为什么屏上就够、不必再 curl：`WorksListState.favoriteIsOn` 在
+    /// `signalOverrides == .dislike` 时恒返回 false —— 那是照抄服务端
+    /// `setWorkDislike` 的互斥语义（`work-actions.ts` 里点踩时顺手 `setNoteFavorite(false)`），
+    /// ⇒ ♡ 的选中态翻灭就是"收藏被撤"这一格的可观察事实本身。
+    /// 复原也做在同一条腿里：这一枚钮在真机上会留痕，点完就走等于给下一轮造起始态。
+    func testWorksListDislikeWithdrawsTheFavorite() throws {
+        let list = try launchedScreen("我的作品", route: "worksList")
+        let favorite = list.buttons["喜欢"].firstMatch
+        XCTAssertTrue(favorite.waitForExistence(timeout: 25), "行上没有 ♡「喜欢」；" + buttonDump())
+        let started = favorite.isSelected
+        // 先把这一行钉成「收藏 on / 点踩 off」：`setWorkFavorite(true)` 在服务端顺手删掉
+        // dislike 行 ⇒ 起始态与账号上一轮留了什么无关（不这样钉，第一次开 ⋯ 就可能只看到
+        // 「不喜欢（已选）」，那条查不到就是"这一发没走到会话层"的假红）。
+        if !started {
+            favorite.tap()
+            XCTAssertTrue(
+                favorite.waitForExistence(timeout: 15) && favorite.isSelected,
+                "A7：先把 ♡ 点亮这一步没生效，后面的判据无从谈起；" + buttonDump()
+            )
+        }
+        let rowMenu = list.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "cova.works.rowMenu.")
+        ).element(boundBy: 0)
+        XCTAssertTrue(rowMenu.waitForExistence(timeout: 25), "行 ⋯ 没出现；" + buttonDump())
+        rowMenu.tap()
+        let dislike = list.buttons["不喜欢"].firstMatch
+        XCTAssertTrue(
+            dislike.waitForExistence(timeout: 10),
+            "行 ⋯ 里没有裸「不喜欢」（起始态没钉成「点踩 off」）；" + buttonDump()
+        )
+        dislike.tap()
+        // 判据正身：点踩之后 ♡ 不许还亮着。POST 回来才翻 ⇒ 轮询而不是查一次。
+        var withdrew = false
+        for _ in 0..<12 {
+            if favorite.exists && !favorite.isSelected { withdrew = true; break }
+            Thread.sleep(forTimeInterval: 2)
+        }
+        XCTAssertTrue(withdrew, "A7：点了「不喜欢」而 ♡ 一直还亮着 ⇒ 收藏没被撤；" + buttonDump())
+        shot("20-disliked")
+        // 复原 + 第二个证人：再开一次 ⋯，标签应是「不喜欢（已选）」（选中态真的记上了）。
+        rowMenu.tap()
+        let marked = list.buttons["不喜欢（已选）"].firstMatch
+        XCTAssertTrue(
+            marked.waitForExistence(timeout: 10),
+            "A7：点踩后菜单项没翻成「不喜欢（已选）」；" + buttonDump()
+        )
+        marked.tap()
+        if started {
+            // 撤点踩**不**还原收藏（服务端只做单向互斥）⇒ 这里再点一次 ♡ 才回到进入前的态。
+            favorite.tap()
+            XCTAssertTrue(
+                favorite.waitForExistence(timeout: 15) && favorite.isSelected,
+                "A7：这一行的收藏没复原成进入前的态（跑完不留痕）；" + buttonDump()
+            )
+        }
     }
 
     /// A9（流水页）的设备腿：行渲染 + 服务端 `reasonLabel` 原样上屏 + **「任务」跳得到作品**。

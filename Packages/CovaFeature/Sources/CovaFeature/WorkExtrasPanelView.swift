@@ -79,8 +79,11 @@ public struct WorkExtrasPanelView: View {
         // A 拖拽条：交回系统指示条（07 §3.A 的同一判断 —— 自绘一根胶囊 + 两档吸附会画成**两根**条，
         // 而系统那条正是"还能往上拖"的官方语汇；TG-16 指示条几何档同样未入库）。
         .presentationDragIndicator(.visible)
-        // 取数键 = 身份 + 宿主（两宿主共用一个容器：换一行作品必须重取，见 Flow 侧的理由）。
-        .task(id: session.workExtrasOwnerKey) { await session.openWorkExtras(host: host) }
+        // 取数键 = 身份 + **这个面板自己的**宿主（不是 session 里那份可变的 host ——
+        // 那会让任务把自己取消掉，见 Flow 侧 `workExtrasReadKey(for:)` 的整段理由）。
+        .task(id: session.workExtrasReadKey(for: host)) {
+            await session.openWorkExtras(host: host)
+        }
         // §4 的 401/403：关面板（登录框由会话层统一 present，本屏不自建）。
         .onChange(of: state.dismissRequested) { _, wanted in
             if wanted { close() }

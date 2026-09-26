@@ -777,14 +777,21 @@ public struct WorkExtrasState: Equatable, Sendable {
 
 extension AppSession {
 
-    /// 面板 `.task(id:)` 的键：**当前登录身份 + 宿主**（§1 登录门槛：extras 三端点都要 Bearer）。
+    /// 面板 `.task(id:)` 的读键：**当前登录身份 + 这一面板自己的宿主**
+    /// （§1 登录门槛：extras 三端点都要 Bearer）。
     ///
     /// 为什么键里要带宿主而不是裸 `.task`：两宿主共用一个面板容器，换一行作品或走查路由
     /// 落在"会话还在恢复"的那一帧时，裸 `.task` 不会重跑 ⇒ 上一首的快照会留在这一首的屏上，
     /// 或者登录后永远停在「登录状态已过期」（`CreditsLedgerView` 那条腿的同一课）。
-    public var workExtrasOwnerKey: String {
+    ///
+    /// 为什么键必须**来自入参**而不是 `workExtras.host`（§7 #50 的落点）：那份是任务自己会写的
+    /// 可变状态 —— `.task(id:)` 一跑起来，`openWorkExtras` 第一行就把 host 写进去 ⇒ 键在执行
+    /// 中途自己变了 ⇒ SwiftUI 取消这一次 `.task`，那一发 GET 跟着被取消，
+    /// `CovaAPIError.cancelled` 又被 `CatalogService.classify` 折进 `.network`，屏上就成了
+    /// 「离线：补充制作需要联网」，而设备其实联网、同一条 URL 从 curl 打是 200。
+    /// **自己把自己取消掉**是那一格唯一的成因 ⇒ 键只能由"任务不会改的东西"构成。
+    public func workExtrasReadKey(for host: WorkExtrasHost) -> String {
         guard case .signedIn(let user) = authPhase else { return "unsigned-in" }
-        guard let host = workExtras.host else { return user.id }
         return "\(user.id)|\(host.cacheKey)"
     }
 

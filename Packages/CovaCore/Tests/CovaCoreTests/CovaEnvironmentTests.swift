@@ -1003,6 +1003,22 @@ final class CovaEnvironmentTests: XCTestCase {
         )
     }
 
+    /// 伪 id 直接进**路径**时地址建得出来吗（§7 #50 的第一格）。
+    ///
+    /// 2026-09-26 设备侧：21 面板那一发 `GET works/{jobId}:{candidateId}/extras` 被判成
+    /// 「离线」，而同一条 URL 从 curl 打是 200 ⇒ 嫌疑落在客户端的 URL 构造上。
+    /// 这一条用例就是那枚嫌疑的显形：建不出来就红，红在测试里而不是红在屏上。
+    func testPseudoIdentifierSurvivesPathConstruction() throws {
+        let pseudo = "3b4f59bc-74c7-4718-b5e4-a30edd6b1747:ae4b0454-7f26-4929-bae2-90528bb3bf7d"
+        let path = "/api/studio/create/works/\(pseudo)/extras"
+        let built = try XCTUnwrap(
+            CovaEnvironment.makeAPIURL(path: path),
+            "伪 id 进路径后地址建不出来 ⇒ 这一发会在出口前就死掉，屏上只会看到「离线」"
+        )
+        XCTAssertEqual(built.path, path, "路径必须逐字节保留那枚冒号，不许被拆成 scheme 或被吞")
+        XCTAssertTrue(CovaEnvironment.isProductionOrigin(built))
+    }
+
     // MARK: - 作品音频的同源直取改写（A5/A6 解阻那一条）
 
     /// 2026-09-26 生产实测的**真实形状**（`GET /api/studio/create/works?limit=6` 第一行）：

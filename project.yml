@@ -111,6 +111,18 @@ targets:
         #     并按评审指认补 `.advanced` / `.repeated` **总闸**（引擎确实装着当前项或真有一代
         #     装载在途才允许声称推进）；MIN-R7-1 三个配置旋钮构造期 clamp；MIN-R7-2 toggle 把
         #     `.loading` 归入「正要响」一侧；§20 删不可达收敛腿；PLAYER_MIN 394 → 397
+        # → 0.2.77/95 §7 #50：21「补充制作」面板在设备上把那一发 GET 判成「离线」，
+        #     而同一条 URL 从 curl 打是 200。根因不在网络/编码/地址构造（三处都单独否证过，
+        #     含新增的 `testPseudoIdentifierSurvivesPathConstruction`），在 **SwiftUI 自己
+        #     取消了这发请求**：`WorkExtrasPanelView` 用 `.task(id: session.workExtrasOwnerKey)`，
+        #     而那枚 key 读的是 `workExtras.host` —— 正是 `openWorkExtras` 第一行要写的状态
+        #     ⇒ id 一变就取消自己刚发出的 GET，`CatalogService.classify` 再把 `.cancelled`
+        #     归成 `.network`，屏上成了「离线：补充制作需要联网」。
+        #     修法：新增 `workExtrasReadKey(for host:)`（key 取自**面板的常量宿主**，
+        #     不读被自己写的那份状态），视图改 `.task(id: session.workExtrasReadKey(for: host))`。
+        #     设备腿断言一并换成真机 dump 里的观测量（`cova.extras.panel` 在 XCUITest 元素树上
+        #     不出现）：只可能在作品路径正常态才有的两句 —— 「这里不消耗 co」+
+        #     D 组「可以再做的，6 项，多选」。CORE_MIN 901 → 902
         # → 0.2.76/94 P1/P2 五屏整批落地（20 works 列表 / 21 补充制作 / 22 co 明细 /
         #     23 制作人入口 / P1-2 三档操作 UI / P1-5 会话详情 jobs 轮询）。
         #     生产入口三处一并接上：19 导航条「全部作品」→20、11 资产组「co 变动明细」→22、
@@ -148,8 +160,8 @@ targets:
         # → 0.2.69/80 R18-2（第 18 轮 Major）：十条美术腿改经 `CovaArtworkResolution`（D23 唯一
         #     裁决面）—— 站内相对封面/头像补成生产 origin 且查询串逐字节保留，出口拒绝点名 host；
         #     并新建 CovaFeature 最小测试目标（`CovaFeatureTests`，23 条，只钉媒体腿，无 UI 快照）
-        CFBundleShortVersionString: "0.2.76"
-        CFBundleVersion: "94"
+        CFBundleShortVersionString: "0.2.77"
+        CFBundleVersion: "95"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

@@ -461,8 +461,12 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 ### P1 创作台（7→10）
 
 1. **works 列表**：筛选/搜索/游标分页/状态徽标；行内 favorite·dislike·note·timing·share·
-   rename·delete。（2026-09-26 部分交付：伪 trackId 的**读**已通 —— 01「继续聆听」与
-   19 结果区都能按 `{jobId}:{candidateId}` 回读单行；筛选/分页/行内动作仍未接。）
+   rename·delete。（2026-09-27 交付：**屏 20 `WorksListView`** 整屏落地 —— 六档筛选 chip、
+   搜索、游标分页（触底取下一页；失败不连环重发，改由行内「重试」接手，§4 要的是
+   Toast + 行内重试）、状态徽标；♡ / ↓ / ▶ 在行上，「不喜欢·做成笔记·歌词·补充制作」在行 ⋯，
+   「重命名/分享/删除本次生成的作品」在**组头** ⋯ ⇒ 作用域靠位置表达（20 §3.E）。
+   伪 trackId 的**读**（`{jobId}:{candidateId}` 回读单行）先由 01「继续聆听」与 19 结果区证，
+   20 沿用同一形状；生产入口三处：19 导航条「全部作品」、19 结果区行、22 的「任务」。）
 2. **cover/extend/remaster**：作品详情提供「翻唱/续写/重制」入口，sourceClipId=
    `providerClipId`；extend 给 continueAt 选择（缺省=结尾）；melody 模式可后置。
    （2026-09-26 交付：契约半条 `sourceClipId`/`continueAt` 与服务端同精度取整 + 本地拦"没选源"；
@@ -473,20 +477,24 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
    因为服务端对 `sourceClipId` 完全不校验（§4.7）——拼一个/留一个过期值出去，
    换来的是 200 + 真扣费 + 异步 failed。`advanced`（歌词/风格分栏）与 `melody` 仍不渲染。）
 3. **作品播放上报（work_listens）**：✅ **代码与单测已交付（2026-09-26）**；
-   ⚠️ **设备侧待验收** —— 原先记的"被 302 卡死"是错的（§7 #39 同日推翻）：客户端把同源
-   媒体 URL 的 `intent=play` 换成 `intent=download` 即可 200 取字节，D23 名单未放宽。
+   ✅ **设备侧已验收（2026-09-26，屏 20）** —— 原先记的"被 302 卡死"是错的（§7 #39 同日推翻）：
+   客户端把同源媒体 URL 的 `intent=play` 换成 `intent=download` 即可 200 取字节，D23 名单未放宽。
    验收改骑 works 列表屏（对已存在的作品点播 ⇒ 零扣费）。
    两处与上面写法的偏差，按实测事实保留：`source` 用 `player`（不是 `project`——全 App 只有一个播放面，
    语境没有从视图层传到播放层，见 §4.3 的语境口径）、播放地址用 `audioUrl`
    （不是 `playbackUrl`——后者是名单桶直链，D23 之后不许直接交给播放器）。
 4. **BUG-15 作品直存下载**：✅ 代码与单测已交付（Documents + 本机清单，不 checkout、不扣费）；
-   ⚠️ **设备侧待验收**：与上一条同一次解阻（同源 `intent=download`），沙盒落文件已无阻塞。
+   ✅ **设备侧已验收（2026-09-26，屏 20）**：与上一条同一次解阻（同源 `intent=download`），
+   沙盒落文件已无阻塞（↓ 翻成绿勾 + toast「已在本机」，ledger 无新增扣费行）。
    但**没有**进 12d 那套「已下载」屏（那是付费下载清单，门 1 未放行且本屏不可达）：
    作品直存的入口在作品行内（↓ / 「已在本机」/ 删除）。要给它一个独立清单页需先出规格。
    库曲 checkout 路径仍受 D12 门禁不接 UI。
 5. **轮询断链补腿**：`GET …/generation-jobs?id=` 接进会话详情
    （`AISessionDetailView.swift:514` 自认未接）+ `agent-runs/:id` 恢复。
-   （2026-09-26：该端点已在 19 屏的任务轮询里接通；**会话详情那一处仍未接**。
+   （2026-09-27：**前半条已闭合** —— 该端点既在 19 屏的任务轮询里接通，也接进了会话详情
+   （`AISessionDetailView` 的 `generation-jobs?id=` 那一行 + `SessionJobPollReconcile` 的
+   两账对账）。**后半条未闭合，已登记 §7 #52**：`agent-runs/{id}` 的契约面与 15 条用例在，
+   但全仓没有调用点 ⇒ 断流恢复这一格今天不存在（不是"做了没验"，是"没做"）。
    ⚠️ 原写法里的「SSE 恢复」按 §4.7 更正：`agent-runs/:id` 是**纯 JSON**，而 agent 那条 SSE
    既不发 `id:` 也无 `Last-Event-ID`/缓冲 ⇒ 断流后**无法续播**，能做的只有按
    `run.status/currentStep/timeline[].sequence` 轮询对账。）
@@ -621,7 +629,9 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 
 | 48 | **产物落沙盒后文件名的扩展名恒为 `.mp3`，与真实容器不符**：21 的「保存到本机」复用了 `WorkDownloadStore`（作品直存那套 Documents + `manifest.json`），而 `WorkDownloadPath.fileName(forWorkId:)` 写死 `.mp3` 后缀。母带是 wav、分轨是 zip ⇒ **字节是对的、文件名是错的**：`afinfo`/Quick Look 仍按内容识别，但用户拖到"文件"里或第三方 app 按后缀猜容器时会拿到一个假的 `.mp3` | 待办（端侧，不阻塞 A8）：给 store 一个"内容类型 → 后缀"的一格（wav/zip/mp3），或由服务端在 `files[].name` 里给权威文件名（21 待答 1 的一部分）。**不改 store 的命名面属于本屏可改范围之外**，所以先如实记下 | 非阻塞：A8 的产物字节今天本来就取不到（#46），这一格要在服务端修好之后、真正做设备验收之前补 |
 
-| 50 | **extras 面板在设备上取不到数，而同一条 URL 从 curl 是 200**。2026-09-26 设备侧：21 面板能从 20 的行 ⋯ 正常开出来（✕ + 标题 + 离线条 + 「补充制作没取到」+ 重试/关闭，版式与 21 §3 一致），但那一发 `GET works/{伪id}/extras` 被分类成 `.transport(.network)`。**已排除三条**：① 服务端 —— 同一个 Bearer 从 curl 打同一条 URL 回 **200**，裸 `:` 与 `%3A` 两种编码都 200；② 路径编码（同上）；③ 登录态（同一份凭证下列表/流水/收藏全都读得到）。剩下两个可疑点：`ExtrasService` 的 GET 走 `performCoded(.get, jsonBody: nil)` 这条通道 与 `client.get` 的差异；面板 `.task(id: workExtrasOwnerKey)` 在 sheet 出现时换 key 把这一发取消 ⇒ 修法要先把 `URLError` 的具体 code 落到一个只读诊断上（不进日志），不要猜 | 端侧待办（已开任务）：先定因再改，**不改判据、不放宽出口** | **A8 因此有两道锁**：#46 是服务端不产出产物，#50 是客户端这一发没走完 —— 后者今天就能修，修好之后 21 的 A14 两张才有正常态可拍（现在只有失败态那一张）
+| 50 | **（2026-09-27 已修，0.2.77/95）extras 面板在设备上取不到数，而同一条 URL 从 curl 是 200** —— 成因是**面板把自己那一发 GET 取消了**。原记录（2026-09-26）里"三条已排除"仍然成立（服务端 curl 同 URL 200、裸 `:` 与 `%3A` 都 200、同凭证下其它读全通），当时留下的两个可疑点里中的是第二个：`WorkExtrasPanelView` 用 `.task(id: session.workExtrasOwnerKey)`，而那枚键读的是 `workExtras.host` —— **正是 `openWorkExtras` 第一行要写的那份状态** ⇒ 键在任务执行中途自己变了 ⇒ SwiftUI 取消这一次 `.task`，GET 被取消，`CovaAPIError.cancelled` 又被 `CatalogService.classify` 折进 `.network` ⇒ 屏上就成了「离线：补充制作需要联网」。修法：新增 `workExtrasReadKey(for host:)`（键取自面板构造时那个**常量宿主** + 登录身份），视图改用它；旧键 `workExtrasOwnerKey` **整枚删除** ⇒ 旧形状不可再表示。第一格嫌疑另补一枚否证用例 `testPseudoIdentifierSurvivesPathConstruction`（伪 id 进路径后地址建得出来、冒号逐字节保留） | 端侧待办 → **已修**：不改判据、不放宽出口（D23 名单未动）；同一批字节上 `bash Scripts/check.sh` ✅（Core 902 = 基线、Feature 242、Player 483、failed/skipped 全 0） | 设备腿 `testExtrasPanelOpensFromTheRowMenu` 现在断的是**只可能在作品路径正常态出现**的两句（「这里不消耗 co」+ D 组「可以再做的，6 项，多选」）；`21-extras-load-failed-state.png` 那张失败态里两句都不在 ⇒ 探针先红后绿，不是恒真。21 的 A14 两张已入档（`21-extras-light.png` / `21-extras-dark.png`，app 二进制 0.2.77/95、链接于 2026-09-27 04:52，两条腿 passed 1/1 + 1/2、skipped 0）。**A8 的两道锁现在只剩 #46 那一道**（服务端不产出产物）
+| 51 | **`.cancelled` 被 `CatalogService.classify` 折进 `.network` ⇒ 任何一次"取消"都会在屏上说「离线」**。#50 那一格就是这样被误诊了一整轮：GET 是自己被 SwiftUI 取消的，屏上却写「离线：补充制作需要联网」，而设备满格在线。修了 #50 只是**移除了这一格的触发源**，分类本身还在 ⇒ 其它写在途的腿（换页、切宿主、离屏）一旦被取消，同样会说出"离线"这句不是事实的话 | 待办（端侧）：把 `.cancelled` 单列一档 —— 既不打「离线」条、也不打「没取到」，只当作"这次读作废"（它不是网络事实，是本地决定）。改动会碰到多条腿共用的 `classify`，要连各屏的失败态用例一起过，不属 #50 那一格的最小修法 ⇒ 单独记 | 非阻塞：#50 之后 21 的取数腿在设备上已通；这一条只影响"下一次真取消时屏上说什么" |
+| 52 | **`GET /api/studio/agent-runs/{id}` 的恢复腿没有调用点**（§5 P1-5 的后半）。契约面已交付：`AgentRunDTOs.swift`（`{run}` 封套、`path(runID:)`、401/404 失败分档）+ `AgentRunDTOTests` **15 条**用例；但全仓 `grep agent-runs` 只命中这两份文件，**没有任何服务或视图调它** ⇒ 09 屏的 agent 流断掉之后只能靠 5s 计划卡轮询，`run.status/currentStep/timeline[].sequence` 这一层今天不显示。2026-09-27 对账 web：`src/app/api/studio/agent-runs/[id]/route.ts` 在（`getOwnedAgentRun(id, user.id)`，404 `运行记录不存在`），而 **runId 拿得到** —— `src/lib/studio/agent-route.ts:778` 的 SSE 第一帧就是 `run_started`（`data.runId`），`plans/start` 的响应带 `runId`+`timeline`，`src/lib/find-my-song/session.ts:712` 的消息 metadata 也带 | 待办（端侧）：① 让 SSE 侧认下 `run_started` 并把 `runId` 存进本轮状态；② 降级为轮询时按 `runId` 拉 `agent-runs/{id}`，用 `timeline[].sequence` 与本机已收到的帧对账。**不猜续播**：§4.7 已更正那条 SSE 既无 `id:` 也无 `Last-Event-ID`/缓冲 ⇒ 断流后无法续播，能做的只有这一条恢复腿 | 非阻塞 A1–A15（09 屏的判据不含 agent 恢复）；是 §5 P1-5 未闭合的那半条，已按实写进 §5 |
 | 49 | **作品行的封面是第三方直链，且拒绝原因漏进了整行的 VoiceOver 标签**。2026-09-26 设备侧按钮清单实测：每一行的标签都是「`Harbour at Dawn：美术地址不可出站：cdn2.suno.ai 不是生产出口也不在许可名单的存储主机内（该次请求未发出）`、Harbour at Dawn、04:03」这样。两件事：① 作品的 `coverUrl` 是 **Suno 的 CDN 原链**（不像 `audioUrl` 那样被签成同源代理路径），D23 拒得对 ⇒ **作品封面在这一端一张都不出**；② 出口守卫那句**诊断文本被当成美术的替代文本拼进了行标签** ⇒ 读屏用户每听一行都要先听一遍 40 字的内部原因，这是把工程诊断当无障碍文案用 | 待答（后端）：作品的封面请一并走同源代理（与 `audioUrl` 同一做法，`playbackUrl` 那条另记在 #37）。待办（端侧）：拒绝原因只该出现在调试面，美术的替代文本最多是一句「封面不可用」——**这条改动会碰到 `ArtworkResolutionContractTests` 钉住的那条 message 串**，改的是"用在哪"而不是"这句话本身"，动它要连用例一起过一遍 | 非阻塞：封面不出不影响播放/直存/上报（那三条腿走的是 `audioUrl`）；但 20/19 的截图里作品行一律是占位图，读屏序列里每一行都带一句诊断 |
 
 > 共 **23 条后端待答/待端点**（#4,5,6,8,9,10/12,11,13,14,15,16,17/23/28,18,19,20,21,22,24,25/33,26,27,29,30,31,32）
@@ -639,6 +649,13 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 >   约 6 分钟后翻 `已取消`，两批独立提交同结局 ⇒ A8 的产物字节今天拿不到，判据降级；
 >   #47 POST 不按键集去重（第二次提交换全新 artifact id）⇒ 与会话级扣费叠加就是连点两次
 >   扣两次，A8 那句"幂等"只在读这一侧成立）。
+>   **+ 2 条走查抓出的端侧口径**（#48 产物落沙盒后文件名恒 `.mp3`（字节对、后缀错，
+>   母带 wav / 分轨 zip 都是）、#49 作品封面是 Suno CDN 原链 ⇒ D23 拒得对，但**拒绝原因
+>   被拼进了整行的 VoiceOver 标签**）。
+>   **+ 3 条本轮（2026-09-26/27）设备侧抓出的**：#50 21 面板那一发 GET **已被闭合**
+>   （0.2.77/95：`.task(id:)` 读了任务自己会写的状态 ⇒ 自我取消；旧键已整枚删除，
+>   A14 的 21 两张已入档）、#51 `.cancelled` 仍被 `classify` 折进 `.network`（触发源没了、
+>   分类还在）、#52 `agent-runs/{id}` 的恢复腿**没有调用点**（§5 P1-5 后半条因此未闭合）。
 > 已关闭不录：NEEDS-1（登录契约误判）、2（source 用错值已改）、
 > 3（/me 三键已核）、7（推送 token，本地通知兜底）。
 
