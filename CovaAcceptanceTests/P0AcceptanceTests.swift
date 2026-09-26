@@ -408,6 +408,35 @@ final class P0AcceptanceTests: XCTestCase {
 
     }
 
+    /// 21「补充制作」面板的 A14 腿：从 20 的行 ⋯ 真点开它。
+    ///
+    /// 为什么要单独一条：这一屏没有"到得了但不需要点击"的路由键（它是 sheet，
+    /// 宿主是行菜单），而 A14 要的是"这一屏深浅各一图" —— 用走查键假装到得了就是骗自己。
+    func testExtrasPanelOpensFromTheRowMenu() throws {
+        let list = try launchedScreen("我的作品", route: "worksList")
+        let rowMenu = list.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "cova.works.rowMenu.")
+        ).element(boundBy: 0)
+        XCTAssertTrue(rowMenu.waitForExistence(timeout: 25), "行 ⋯ 没出现；" + buttonDump())
+        rowMenu.tap()
+        let extras = list.buttons["补充制作"].firstMatch   // 每一行的 ⋯ 里都有这一枚 ⇒ 按标签查必然多命中
+        XCTAssertTrue(extras.waitForExistence(timeout: 10), "行 ⋯ 里没有「补充制作」；" + buttonDump())
+        extras.tap()
+        // 先无条件拍一张再断言：上一版断"关闭钮在不在"，红的时候屏上到底是什么完全不知道。
+        Thread.sleep(forTimeInterval: 4)
+        shot("21-extras-attempt")
+        let panel = list.otherElements.matching(
+            NSPredicate(format: "identifier == %@", "cova.extras.panel")
+        ).firstMatch
+        XCTAssertTrue(
+            panel.waitForExistence(timeout: 20),
+            "21 面板没开起来；标签=" + labelDump() + "｜按钮=" + buttonDump()
+        )
+        // 给一次 GET 复列留时间：面板先读一次已知态，读回来的行与骨架不是同一张图。
+        Thread.sleep(forTimeInterval: 6)
+        shot("21-extras")
+    }
+
     /// A9（流水页）的设备腿：行渲染 + 服务端 `reasonLabel` 原样上屏 + **「任务」跳得到作品**。
     ///
     /// 这一条同时是 §7 #38 的反面证人：`studio_create_generation` 那两行今天**不该**有链接
