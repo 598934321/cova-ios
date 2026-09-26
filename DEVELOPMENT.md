@@ -378,12 +378,14 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 2. **cover/extend/remaster**：作品详情提供「翻唱/续写/重制」入口，sourceClipId=
    `providerClipId`；extend 给 continueAt 选择（缺省=结尾）；melody 模式可后置。
 3. **作品播放上报（work_listens）**：✅ **代码与单测已交付（2026-09-26）**；
-   ⚠️ **设备侧未验收** —— 作品音频 302 落在名单外的桶，播不出声 ⇒ 上报不发生（§7 #39，A5）。
+   ⚠️ **设备侧待验收** —— 原先记的"被 302 卡死"是错的（§7 #39 同日推翻）：客户端把同源
+   媒体 URL 的 `intent=play` 换成 `intent=download` 即可 200 取字节，D23 名单未放宽。
+   验收改骑 works 列表屏（对已存在的作品点播 ⇒ 零扣费）。
    两处与上面写法的偏差，按实测事实保留：`source` 用 `player`（不是 `project`——全 App 只有一个播放面，
    语境没有从视图层传到播放层，见 §4.3 的语境口径）、播放地址用 `audioUrl`
    （不是 `playbackUrl`——后者是名单桶直链，D23 之后不许直接交给播放器）。
 4. **BUG-15 作品直存下载**：✅ 代码与单测已交付（Documents + 本机清单，不 checkout、不扣费）；
-   ⚠️ **设备侧未验收**：同一条 D23 出口规则 ⇒ 沙盒里今天落不下文件（§7 #39，A6）。
+   ⚠️ **设备侧待验收**：与上一条同一次解阻（同源 `intent=download`），沙盒落文件已无阻塞。
    但**没有**进 12d 那套「已下载」屏（那是付费下载清单，门 1 未放行且本屏不可达）：
    作品直存的入口在作品行内（↓ / 「已在本机」/ 删除）。要给它一个独立清单页需先出规格。
    库曲 checkout 路径仍受 D12 门禁不接 UI。
@@ -504,8 +506,8 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 | 35 | studio/create 全组、play-history GET、ledger、producers、extras、user-playlists/shared/daily/public、inspiration-shop、checkin、device/apple/sms auth | **待办（iOS 侧）** | 即本手册 §5 全部阶段 |
 | 36 | 作品直存的**清单落点**与 12d 不同屏：本仓落 `Documents/Cova/cova-work-downloads/`（owner 分桶 + `manifest.json`，只存本地文件名与展示字段），入口在 19 作品行内（↓ /「已在本机」/ 删除），**没有**「已下载」整屏 | 已按此交付（2026-09-26）；12d §7 的「本机沙盒 + 本地元数据」方法成立、屏不通用 | 要独立清单页须先出规格（设计闸门硬边界 8）|
 | 37 | 作品 `playbackUrl` 实测签在 **`covalink-uploads-…`** 桶（2026-09-26 生产只读探针，`GET /api/studio/create/works?limit=6` ⇒ 6/6 行同形），不在 D23 存储名单（只有 covers/audio）内 ⇒ iOS 出口守卫按主机名拒掉，**§4.4 那句「App 后台播控必须用它」在本端今天不可用** | 待答：能否改签名单内的桶（或论证把 uploads 桶纳入名单——它是用户私产桶，web 侧正因为这点被否过一次） | 非阻塞（播放走 `audioUrl` + D7 本地化已通） |
-| 38 | `GET /api/me/credits/ledger` 的 `jobId` 实测 **6/6 条 null**（含 1 条 `studio_create_generation`），与 §4.6「由 `metadata.jobId` 解出」不符；本账号这批账可能早于该字段上线 | 待答：请用一条**新生成**后的账目复核；若恒 null 则转为后端缺陷 | **A9 判据未达**（P2 流水页的「任务」关联无从渲染）|
-| 39 | **作品的音频出口落在名单外的桶**：`GET /api/media/objects/<id>?…`（带 Bearer）实测 **302 → `covalink-uploads-1301797874.cos.ap-shanghai.myqcloud.com`**（2026-09-26 只读取证，只打状态码与落地 host），而 D23 名单只有 covers / audio 两桶 ⇒ iOS 侧 `mediaHopEgress` 判 `.refused` ⇒ **作品既播不出也存不下**（A5/A6 的设备侧判据因此未达）。与 #29 同族，这次落在作品上 | 待答：把作品音频改签 `covalink-audio-…`（已在名单），或给出 uploads 桶的公开/私读语义结论后再议名单——**客户端不自己放宽**（硬边界 4/D23） | **A5/A6 阻塞**（P0 里被这一条卡住的两条。口径更正：P0 未达的**不止**这两条 —— A4 的 402 档还缺一个零余额账号、A11 的服务端两层去重没在生产复跑过，那两条是"证据不够"而不是"被出口守卫卡住"）|
+| 38 | `GET /api/me/credits/ledger` 的 `jobId`：2026-09-26 **按新账复测过了，结论是后端缺陷而非"早于字段上线"**。同一份响应 7 条里——**今天 16:10 那次 `studio_create_generation`（-100，bal 19415）`jobId=null` / `unlinked=true`**，而**更早**的 09-24 `cova_one_step_generation` 与 09-16 `library_download_checkout` 都带 jobId。⇒ "旧行没这字段"的解释被这条新行否证：写路径确实存在（`web/src/lib/studio/create/generate.ts:206-211` 明写把 `{jobId,…}` 传给 `consumeCredits`，且 BUG-18 那条"先落 job 后扣费"的顺序注释就在旁边），但 **`studio_create_generation` 这一支在生产上没落进 metadata**（要么部署落后于 `cd5fc48c`，要么这一支的 metadata 没接上） | 待修（不再是待答）：请按 `studio_create_generation` 这一支查 metadata 写入；`cova_one_step_generation` 那支是好的，可作对照 | **A9 的「`studio_create_generation` 行 jobId 非空」今天不可能达**。客户端按 §4.6 既定口径：null ⇒ **不渲染**「任务」链接，不猜号 |
+| 39 | ~~作品的音频既播不出也存不下~~ —— **本条结论已于同日推翻，是我取证取窄了**。当时只试了服务端签发的那一条 `intent=play`：它确实 **302 → `covalink-uploads-…`**（名单外）⇒ 出口守卫拒。但**同一个 `ref`、同一台 host** 换 `intent=download` 是 **200 `audio/mpeg`、`Accept-Ranges: bytes`、零跳转**（实测 5,315,422 B、ID3 头），即 `web/src/app/api/media/objects/[id]/route.ts:127` 那个 `intent !== 'download'` 的分支判断——服务端**本来就有一条同源直出字节的腿**，而且它正是 web 侧自己的下载链路（`extra-artifact-cos.ts:17`）。⇒ 根因不在后端，在**客户端挑了错的 intent** | 客户端已修：`CovaEnvironment.workAudioDirectFetchURL`（播放与直存两条腿共用，只改「生产同源 + `/api/media/objects/` + 独立成项且全文唯一的 `intent=play`」这一种形状，其余原样交回；不走 `queryItems` 往返，R17-6）。**D23 名单一个字都没放宽**，且这条比"追一跳再剥凭证"更保守（凭证一步都不出源）。仍请后端（并入 #29 那一族）：给 App 的作品音频**直接签发可用 intent**，别让客户端靠字符串改写猜语义 | A5/A6 **解阻**，设备侧验收改骑 works 列表屏（对**已存在**的 8 行点播/直存 ⇒ 零扣费），见 §5 P1-1 |
 
 > 共 **23 条后端待答/待端点**（#4,5,6,8,9,10/12,11,13,14,15,16,17/23/28,18,19,20,21,22,24,25/33,26,27,29,30,31,32）
 > + **2 条端侧待办**（#34,#35）**+ 1 条端侧落点登记**（#36：作品直存清单落点与 12d 不同屏）

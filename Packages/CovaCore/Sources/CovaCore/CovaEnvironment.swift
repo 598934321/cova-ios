@@ -361,6 +361,57 @@ public enum CovaEnvironment {
         return url
     }
 
+    /// 作品音频的**同源直取**形态：把服务端签发的 `/api/media/objects/<id>?…&intent=play`
+    /// 换成 `intent=download`。
+    ///
+    /// 为什么要有它（2026-09-26 生产实测；此前 §7 #39 把它记成"后端只给 302、A5/A6 被出口
+    /// 守卫卡死"，**那条结论是错的**，已在原处更正）：同一个 `ref`、同一台 host，
+    /// · `intent=play` ⇒ **302 → `covalink-uploads-…`**（用户私产桶，不在 D23 名单，
+    ///   也不该进名单）⇒ 音频腿在出口守卫那一跳就断，播不出也存不下；
+    /// · `intent=download` ⇒ **200 `audio/mpeg`、`Accept-Ranges: bytes`、零跳转**，
+    ///   字节由服务端自己读（实测 5,315,422 B、ID3 头、尾 `AA AA`）。
+    /// ⇒ 凭证**一次都不出生产出口**，比"追一跳再剥凭证"更保守，D23 名单一个字都不必放宽。
+    ///
+    /// 改写只发生在**同时**满足三条的时候：生产同源 + 路径前缀 `/api/media/objects/` +
+    /// 查询里有一个独立成项、且全文唯一 的 `intent=play`。任一条不成立就**原样交回**，
+    /// 让下游守卫按今天的口径处理 —— 这条腿不充当放宽任何东西的入口。
+    ///
+    /// 刻意不走 `URLComponents.queryItems` 往返：那会重编码其余查询项
+    /// （R17-6 的教训：`%2B`→`+`、`%3D%3D`→`==`，签名类查询一改就废）。
+    public static func workAudioDirectFetchURL(_ url: URL) -> URL {
+        guard isProductionOrigin(url), url.path.hasPrefix("/api/media/objects/"),
+              let rewritten = replacingStandaloneQueryItemValue(
+                  in: url.absoluteString, key: "intent", from: "play", to: "download"
+              ),
+              let target = URL(string: rewritten), target.absoluteString == rewritten,
+              isProductionOrigin(target)
+        else { return url }
+        return target
+    }
+
+    /// 查询原文里把 `key=from` 换成 `key=to`：**只认独立成项**的那一处
+    /// （左邻必须是 `?`/`&` 或串首，右邻必须是 `&` 或串尾），且全文出现次数必须恰好为 1
+    /// （0 次或 ≥2 次都返回 nil —— 形状不认识就不改）。
+    static func replacingStandaloneQueryItemValue(
+        in text: String, key: String, from: String, to: String
+    ) -> String? {
+        let needle = "\(key)=\(from)"
+        let replacement = "\(key)=\(to)"
+        var found: String.Index?
+        var cursor = text.startIndex
+        while let hit = text.range(of: needle, range: cursor..<text.endIndex) {
+            guard found == nil else { return nil }  // 出现两次 ⇒ 形状不认识，不改
+            found = hit.lowerBound
+            cursor = hit.upperBound
+        }
+        guard let start = found else { return nil }
+        let end = text.index(start, offsetBy: needle.count)
+        let leftOK = start == text.startIndex
+            || text[text.index(before: start)] == "?" || text[text.index(before: start)] == "&"
+        guard leftOK, end == text.endIndex || text[end] == "&" else { return nil }
+        return text[..<start] + replacement + text[end...]
+    }
+
     /// 路径穿越守卫（m-3）：拒绝 `.` / `..` 路径段，以及百分号编码的 `%2e`（大小写不敏感）。
     ///
     /// host 已由 `makeAPIURL` 钉死为生产 host，因此穿越无法改变 origin；本检查是纵深防御，

@@ -1002,4 +1002,65 @@ final class CovaEnvironmentTests: XCTestCase {
             "降级 http 不是出口"
         )
     }
+
+    // MARK: - 作品音频的同源直取改写（A5/A6 解阻那一条）
+
+    /// 2026-09-26 生产实测的**真实形状**（`GET /api/studio/create/works?limit=6` 第一行）：
+    /// `intent=play` 回 302 → `covalink-uploads-…`（名单外 ⇒ 出口守卫拒 ⇒ 播不出也存不下），
+    /// 同一个 ref 换成 `intent=download` 回 **200 audio/mpeg、零跳转**。
+    /// 这一组用例钉的是"改写只发生在该发生的地方"。
+    func testWorkAudioDirectFetchRewritesOnlyTheStandalonePlayIntent() throws {
+        let play = try XCTUnwrap(
+            URL(string: "https://covalink.cn/api/media/objects/mo_f12d83ad?ref=mr_67ff4cbf&intent=play")
+        )
+        XCTAssertEqual(
+            CovaEnvironment.workAudioDirectFetchURL(play).absoluteString,
+            "https://covalink.cn/api/media/objects/mo_f12d83ad?ref=mr_67ff4cbf&intent=download",
+            "同源媒体对象 + intent 独立成项 ⇒ 只改这一个值"
+        )
+        // intent 不在末尾也要抓到。
+        let first = try XCTUnwrap(
+            URL(string: "https://covalink.cn/api/media/objects/mo_1?intent=play&ref=mr_1")
+        )
+        XCTAssertEqual(
+            CovaEnvironment.workAudioDirectFetchURL(first).absoluteString,
+            "https://covalink.cn/api/media/objects/mo_1?intent=download&ref=mr_1"
+        )
+    }
+
+    func testWorkAudioDirectFetchLeavesEverythingElseAlone() throws {
+        let cases: [(String, String)] = [
+            // 已经是直取形态 ⇒ 原样。
+            ("https://covalink.cn/api/media/objects/mo_1?ref=mr_1&intent=download", "不改"),
+            // `intent=playing` 不是 `intent=play`：边界必须按字符判，不能是前缀匹配。
+            ("https://covalink.cn/api/media/objects/mo_1?ref=mr_1&intent=playing", "值不同形"),
+            // 出现两次 ⇒ 形状不认识，一次都不改（改哪一条？）。
+            ("https://covalink.cn/api/media/objects/mo_1?intent=play&x=1&intent=play", "重复项"),
+            // 不是媒体对象路径：库曲那条腿的 302→名单桶 + 剥凭证匿名重放是**已通**的路径，
+            // 把它改成 download 会退化成"整读"，所以这里刻意不动。
+            ("https://covalink.cn/api/tracks/one/preview-stream?intent=play", "别的端点"),
+            // 名单外的 COS 绝对直链：不在同源上，改写条件第一条就不成立。
+            ("https://covalink-uploads-1301797874.cos.ap-shanghai.myqcloud.com/jobs/a/0.mp3?intent=play",
+             "非生产出口"),
+        ]
+        for (raw, why) in cases {
+            let url = try XCTUnwrap(URL(string: raw))
+            XCTAssertEqual(
+                CovaEnvironment.workAudioDirectFetchURL(url), url,
+                "\(why)：这一条不该被改写"
+            )
+        }
+    }
+
+    /// 改写**不许碰其余查询项的原文**（R17-6：`queryItems` 往返会把 `%2B` 降成 `+`、
+    /// `%3D%3D` 降成 `==`，而服务端是从查询原文里读值/比签名的）。
+    func testWorkAudioDirectFetchPreservesPercentEncodingOfSiblings() throws {
+        let url = try XCTUnwrap(
+            URL(string: "https://covalink.cn/api/media/objects/mo_1?ref=mr_a%2Bb%3D%3D&sig=Q%2F7&intent=play")
+        )
+        let rewritten = CovaEnvironment.workAudioDirectFetchURL(url).absoluteString
+        XCTAssertTrue(rewritten.contains("ref=mr_a%2Bb%3D%3D"), "百分号编码必须逐字节留着：\(rewritten)")
+        XCTAssertTrue(rewritten.contains("sig=Q%2F7"), "百分号编码必须逐字节留着：\(rewritten)")
+        XCTAssertTrue(rewritten.hasSuffix("&intent=download"), "只有 intent 变了：\(rewritten)")
+    }
 }

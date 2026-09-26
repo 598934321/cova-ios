@@ -206,14 +206,19 @@ extension AppSession {
 
     /// `CreateWorkItem` → `PlaybackItem`。
     ///
-    /// 只吃 `audioUrl`，**不吃 `playbackUrl`**：后者是 COS 绝对直链，而 D23 之后
-    /// `.publicDirect` 只认生产出口（`CovaEnvironment.isPublicDirectEgressAllowed`），
-    /// 交给 `AVPlayer` 自己起的那次出站本层管不到 ⇒ 作品的试听仍走 D7
-    /// 「Bearer 下载 → 校验非空 → `file://`」（A13）。`playbackUrl` 只用于直存。
+    /// 只吃 `audioUrl`，**不吃 `playbackUrl`**：后者是 COS 绝对直链（实测签在
+    /// `covalink-uploads-…`，不在 D23 名单），而 `.publicDirect` 这一腿只认生产出口
+    /// （`CovaEnvironment.isPublicDirectEgressAllowed`），交给 `AVPlayer` 自己起的那次出站
+    /// 本层管不到 ⇒ 作品的试听走 D7「Bearer 下载 → 校验非空 → `file://`」（A13）。
+    ///
+    /// `audioUrl` 原文带的是 `intent=play`，服务端对它会 **302 到名单外的那个桶** ⇒
+    /// 先换成同源直取形态（`workAudioDirectFetchURL`）：同一台 host、同一个 `ref`，
+    /// 只把意图改成 `download`，服务端就直接 200 出字节，凭证一步都不出源。
     public static func workPlaybackItem(from work: CreateWorkItemDto) -> PlaybackItem? {
         guard work.isPlayable, let raw = work.audioUrl?.rawValue,
-              let audio = CovaEnvironment.resolveMediaURL(raw),
-              let audioURL = try? AudioURL(https: audio) else { return nil }
+              let resolved = CovaEnvironment.resolveMediaURL(raw),
+              let audio = try? AudioURL(https: CovaEnvironment.workAudioDirectFetchURL(resolved))
+        else { return nil }
         let cover = CovaEnvironment.resolveMediaURL(work.coverUrl)
             .flatMap { try? AudioURL(https: $0) }
         return try? PlaybackItem(
@@ -222,7 +227,7 @@ extension AppSession {
             artist: "Cova AI",
             duration: work.duration,
             coverURL: cover,
-            audioSource: .bearerRequired(audioURL),
+            audioSource: .bearerRequired(audio),
             kind: .work
         )
     }
@@ -280,10 +285,13 @@ extension AppSession {
     ) -> WorkDownloadRequest? {
         // owner 先成立才谈得上「存到谁的名下」：没有归属就不存，
         // 而不是先落进一个无主目录、再指望 `WorkDownloadStore` 拒掉它。
+        // 同源直取改写与播放腿同一处（`workAudioDirectFetchURL`）：`audioUrl` 的原文
+        // 是 `intent=play`，服务端对它是 302 到名单外的桶，改成 `intent=download` 才 200 出字节。
         guard let session, session.owner != nil, work.isPlayable,
               let raw = (work.audioUrl ?? work.playbackUrl)?.rawValue,
               let url = CovaEnvironment.resolveMediaURL(raw),
-              let source = try? AudioURL(https: url) else { return nil }
+              let source = try? AudioURL(
+                  https: CovaEnvironment.workAudioDirectFetchURL(url)) else { return nil }
         return WorkDownloadRequest(
             workId: work.id,
             title: work.displayTitle ?? "未命名作品",
