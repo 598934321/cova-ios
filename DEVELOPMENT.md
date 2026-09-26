@@ -595,6 +595,25 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 **每拍一张都要读图**（§6.1 那两个坑）。已开任务跟在这一条后面，**不许**因为"最近几屏拍过了"
 就把 A14 整条写成已达。
 
+### 6.3 两条"看起来能一眼判"的判据：本轮真扫过一遍，结果按命中点写
+
+- **A15（术语口径）**：`grep -rn "积分\|歌曲任务\|点数\|金币\|钻石\|音符币" --include=*.swift
+  Packages/*/Sources Cova` ⇒ **7 处命中，全部在注释里，UI 字面量 0 命中** ⇒ 按判据的字面范围
+  （"UI 文案"）已达。但那 7 处里有 5 处把屏 22 叫成「积分流水」（`AppSession.swift:275,766`、
+  `CovaRootView.swift:65,420`、`LedgerService.swift:4`），而规格名是「co 币明细」⇒
+  **漂移词躺在注释里就是等下一次复制粘贴把它带上屏**。待办（端侧，小）：把这五处简称统一成
+  规格名；本轮没顺手改是因为 `AppSession.swift` / `CovaRootView.swift` 正被另一条腿改，
+  同文件并发改动会互相盖掉。
+- **A13（私有音频）**：判据原文是 `grep -rn "audioUrl" Packages/CovaPlayer` "无直链 https 播放
+  私有候选的路径"。本轮实测 **3 处命中**，逐条点名过：`PrivateAudioFetching.swift:9`、
+  `PrivateAudioFetcher.swift:297`、`WorkDownloadStore.swift:335` —— 三处都是**写明这条规则**的
+  注释（"库曲 audioUrl 一律是站内端点 preview-stream"/"作品的 audioUrl 同理是这一条成品本身"/
+  "已解析成绝对 https 的地址"），不是把 https 直链交给播放器的代码路径。
+  另有一处 `PlaybackItem.swift:94` 的 `"https://\(host)/<redacted>"` 是**脱敏用的 debugDescription**
+  （剥掉路径只留 host + `<redacted>`），也不是播放地址。
+  ⇒ 这一条判据的"grep 无命中"写法本身不成立（注释里必然提到这个词），**按命中点逐个否证**才是
+  它能被机械执行的样子；上面就是这一轮的执行记录。
+
 ---
 
 ## 7. 已知历史问题（旧 NEEDS 仍未解决项；已修复/已否证的不录）
