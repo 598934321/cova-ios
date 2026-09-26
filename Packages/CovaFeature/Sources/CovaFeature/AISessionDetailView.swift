@@ -44,6 +44,10 @@ public struct AISessionDetailView: View {
     @Environment(\.covaAXLayout) private var axLayout
     @State private var creditsBalance: Int?
     @State private var runLabel: String?
+    /// 断流恢复腿的三件（§5 P1-5 后半 / §7 #52）：号、归属令牌、在途那条腿。
+    @State private var agentRunID: String?
+    @State private var runPollToken = 0
+    @State private var runPollTask: Task<Void, Never>?
     @State private var degradeLabel: String?
     @State private var draft = ""
     @State private var deepThinking = false
@@ -652,6 +656,64 @@ public struct AISessionDetailView: View {
         jobPollTask = nil
     }
 
+    // MARK: 断流之后的运行恢复轮询（§5 P1-5 后半 / §7 #52）
+
+    /// 起这条腿：号拿得到、流已经不活着这一轮、还没有读到过终态 —— 三件齐才起。
+    /// 令牌沿用上面那套：每一次取代都换一个新的归属号 ⇒ 慢回来的那一趟只会丢，不会写。
+    private func restartRunPoll() {
+        stopRunPoll()
+        guard AgentRunRecovery.shouldPoll(
+            runID: agentRunID, streamOwnsRound: busy, lastTerminality: .unknown
+        ), let runID = agentRunID else { return }
+        let token = runPollToken
+        runPollTask = Task { await runRunPoll(runID: runID, token: token) }
+    }
+
+    /// 一轮流起来 ⇒ 主人交回给流：这条腿作废（屏上已画的留着）。
+    private func stopRunPoll() {
+        runPollToken += 1
+        runPollTask?.cancel()
+        runPollTask = nil
+    }
+
+    /// 循环本体。判据在 `AgentRunRecovery`（纯函数，用例在 CovaFeatureTests 钉着），
+    /// 节拍与预算复用 `StudioCreatePollSchedule`（19/09 那本账：前 6 次 5s、之后 10s、
+    /// `shouldPoll(attempt:)` 说停就停）⇒ 不发明第二套表。
+    ///
+    /// ⚠️ 只消费 `run.status` 这一格：09 §3.F 给 `run_*` 的只有**一行短语**，
+    /// `currentStep` / `timeline[].sequence` 今天没有屏上的格子 ⇒ 不为了"用满契约"去发明
+    /// 一处显示。§5 P1-5 那句"按三件对账"里能上屏的只有第一件，这件事写在这里而不是悄悄少做。
+    private func runRunPoll(runID: String, token: Int) async {
+        let schedule = StudioCreatePollSchedule()
+        var attempt = 1
+        while schedule.shouldPoll(attempt: attempt), !Task.isCancelled {
+            try? await Task.sleep(
+                nanoseconds: UInt64(schedule.interval(forAttempt: attempt) * 1_000_000_000)
+            )
+            guard token == runPollToken, !Task.isCancelled, !busy else { return }
+            let snapshot = try? await session.agentRunService.snapshot(runID: runID)
+            guard token == runPollToken, !Task.isCancelled else { return }
+            guard let run = snapshot?.run else {
+                // 读不到 / 读不懂 / 404：这一趟一个字都不写，屏上保持最后一次已知状态。
+                // 把"我没再读到"讲成"这一轮失败了"，是把观察者的预算冒充成被观察者的结论。
+                attempt += 1
+                continue
+            }
+            // 号对不上 ⇒ 拿错了快照（`AgentRunReconciliation.identityMismatch` 那一格）：
+            // 不画、也不再问 —— 继续问下去只会把别的运行的状态安在这一条上。
+            if let observed = run.id, observed != runID { return }
+            if let label = AgentRunRecovery.label(forStatus: run.status) {
+                runLabel = label
+                appendOrReplaceRun(label)
+            }
+            switch AgentRunRecovery.terminalVocabulary.terminality(of: run.status) {
+            case .success, .failure: return
+            case .running, .unknown: break
+            }
+            attempt += 1
+        }
+    }
+
     /// 循环本体。**这里没有任何判据**：什么时候写、写哪几个面、什么时候停，
     /// 一律问 `SessionJobPollReconcile.decide`（用例在 CovaCore 钉着），本方法只执行赋值。
     ///
@@ -881,6 +943,7 @@ public struct AISessionDetailView: View {
         defer { busy = false }
         // 一轮流起来 ⇒ 这一轮的主人换成流：正在途的那趟轮询回来也只能丢（号在这里作废）。
         stopJobPoll()
+        stopRunPoll()
         append(.user(text))
         agentBuffer = ""
         thinkingSteps = 0
@@ -912,6 +975,7 @@ public struct AISessionDetailView: View {
         // 而 defer 要到本函数返回之后才跑。
         busy = false
         restartJobPoll()
+        restartRunPoll()
     }
 
     /// 降级条的文案**由状态机的事实决定**（09 §B）：阶段 + 触发原因，不靠猜。
@@ -951,6 +1015,8 @@ public struct AISessionDetailView: View {
         case .done:
             degradeLabel = nil
         case .runLifecycle(let name):
+            // runId 唯一的来源就是这一帧（§7 #52）：拿到它，断流之后才有东西可问。
+            if let id = AgentRunRecovery.runID(from: frame) { agentRunID = id }
             // 只保留**唯一一条** run 行；未知 run_* 不显示、也不算坏事件。
             if let label = Self.runLabel(name) { runLabel = label; appendOrReplaceRun(label) }
         case .unknown:

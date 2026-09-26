@@ -774,6 +774,8 @@ public final class AppSession {
     public var ledgerService: LedgerService { LedgerService(client: client) }
     public var producersService: ProducersService { ProducersService(client: client) }
     public var extrasService: ExtrasService { ExtrasService(client: client) }
+    /// 09 断流之后的恢复腿（§5 P1-5 后半 / §7 #52）：`GET /api/studio/agent-runs/{id}`。
+    public var agentRunService: AgentRunService { AgentRunService(client: client) }
 
     // MARK: - 19 屏 P1-2 的三格（翻唱 / 续写 / 重制）
 

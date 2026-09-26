@@ -111,6 +111,16 @@ targets:
         #     并按评审指认补 `.advanced` / `.repeated` **总闸**（引擎确实装着当前项或真有一代
         #     装载在途才允许声称推进）；MIN-R7-1 三个配置旋钮构造期 clamp；MIN-R7-2 toggle 把
         #     `.loading` 归入「正要响」一侧；§20 删不可达收敛腿；PLAYER_MIN 394 → 397
+        # → 0.2.78/96 §5 P1-5 的后半条（§7 #52）：09 的 agent 流断了不能续播（§4.7：那条 SSE
+        #     既不发 `id:` 也无 `Last-Event-ID`/缓冲），能做的只有记下 runId、在流不活着的
+        #     那段时间按 run.status 回读对账。契约面（AgentRunDTOs + 15 条用例）早就在，
+        #     缺的从来是**调用点**。新增 AgentRunRecovery（纯判据：runId 只从 run_started 帧取、
+        #     status→09 §3.F 已有的那四条短语、in-flight 四态一律不给新文案、终态词表由接线层
+        #     注入 completed/failed，出处 web/src/lib/agent/run.ts:7）+ AgentRunService
+        #     （path(runID:) 说不安全就不发，不自己拼串绕过）+ 视图里一条带归属令牌的轮询腿
+        #     （节拍与预算复用 StudioCreatePollSchedule，不发明第二套表）。
+        #     只消费 run.status 那一格：currentStep / timeline[].sequence 今天屏上没有格子。
+        #     FEATURE_MIN 242 → 250
         # → 0.2.77/95 §7 #50：21「补充制作」面板在设备上把那一发 GET 判成「离线」，
         #     而同一条 URL 从 curl 打是 200。根因不在网络/编码/地址构造（三处都单独否证过，
         #     含新增的 `testPseudoIdentifierSurvivesPathConstruction`），在 **SwiftUI 自己
@@ -160,8 +170,8 @@ targets:
         # → 0.2.69/80 R18-2（第 18 轮 Major）：十条美术腿改经 `CovaArtworkResolution`（D23 唯一
         #     裁决面）—— 站内相对封面/头像补成生产 origin 且查询串逐字节保留，出口拒绝点名 host；
         #     并新建 CovaFeature 最小测试目标（`CovaFeatureTests`，23 条，只钉媒体腿，无 UI 快照）
-        CFBundleShortVersionString: "0.2.77"
-        CFBundleVersion: "95"
+        CFBundleShortVersionString: "0.2.78"
+        CFBundleVersion: "96"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
