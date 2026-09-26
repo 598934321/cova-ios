@@ -1,0 +1,81 @@
+{
+  "entries": [
+    {
+      "id": "cl_0001",
+      "type": "debit",
+      "amount": -100,
+      "balanceAfter": 19315,
+      "reason": "studio_create_generation",
+      "reasonLabel": "AI 音乐生成",
+      "jobId": null,
+      "unlinked": true,
+      "createdAt": "2026-09-26T08:10:00.000Z"
+    },
+    {
+      "id": "cl_0002",
+      "type": "debit",
+      "amount": -20,
+      "balanceAfter": 19415,
+      "reason": "cova_one_step_generation",
+      "reasonLabel": "AI 音乐生成",
+      "jobId": "job-7f3a",
+      "unlinked": false,
+      "createdAt": "2026-09-24T02:01:00.000Z"
+    },
+    {
+      "id": "cl_0003",
+      "type": "credit",
+      "amount": 20,
+      "balanceAfter": 19435,
+      "reason": "cova_one_step_generation_refund",
+      "reasonLabel": "生成失败退款",
+      "jobId": "job-7f3a",
+      "unlinked": false,
+      "createdAt": "2026-09-24T02:11:00.000Z"
+    },
+    {
+      "id": "cl_0004",
+      "type": "debit",
+      "amount": -30,
+      "balanceAfter": 19405,
+      "reason": "media_extra",
+      "reasonLabel": "其他变动",
+      "jobId": null,
+      "unlinked": true,
+      "createdAt": "2026-09-23T11:00:00.000Z"
+    },
+    {
+      "id": "cl_0005",
+      "type": "credit",
+      "amount": 5,
+      "balanceAfter": 19435,
+      "reason": "daily_checkin",
+      "reasonLabel": "每日签到",
+      "jobId": "",
+      "unlinked": true,
+      "createdAt": "2026-09-22T00:00:00.000Z"
+    },
+    {
+      "id": "cl_0006",
+      "type": "debit",
+      "amount": -500,
+      "balanceAfter": 18935,
+      "reason": "inspiration_shop_purchase",
+      "reasonLabel": "其他变动",
+      "jobId": null,
+      "unlinked": true,
+      "createdAt": "2026-09-20T09:00:00.000Z"
+    },
+    {
+      "id": "cl_0007",
+      "type": "debit",
+      "amount": "-100",
+      "balanceAfter": null,
+      "reason": null,
+      "reasonLabel": null,
+      "jobId": null,
+      "unlinked": null,
+      "createdAt": "2026-09-19T09:00:00.000Z"
+    }
+  ]
+}

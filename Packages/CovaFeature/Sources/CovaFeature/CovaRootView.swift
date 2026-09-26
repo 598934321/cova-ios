@@ -59,6 +59,11 @@ public struct CovaRootView: View {
         // 19 创作台：`simctl` 不提供点击（见钩子 4 的理由）⇒ 没有这一格，19 进不了
         // 逐屏走查的截图集合，A3/A14 的「屏上真条目」就没法取证。
         case "studioCreate": return .studioCreate
+        // 20 我的作品：同一条理由（`simctl` 不给点击），A5/A6 的零扣费验收腿要靠它
+        // 到达已存在的作品行。
+        case "worksList": return .worksList(jobID: nil)
+        // 22 积分流水：同一条理由（`simctl` 不给点击），A9 的屏上证据要靠它。
+        case "creditsLedger": return .creditsLedger
         case "membership": return .membership
         case "enterprise": return .enterprise
         default:
@@ -216,6 +221,8 @@ public struct CovaRootView: View {
                 case .aiSessions: AISessionsView()
                 case .aiSession(let id): AISessionDetailView(sessionID: id)
                 case .studioCreate: StudioCreateView()
+                case .worksList(let jobID): WorksListView(jobID: jobID)
+                case .creditsLedger: CreditsLedgerView()
                 case .membership: MembershipView()
                 case .enterprise: EnterpriseView()
                 case .artist(let id): ArtistHomeView(artistID: id)
@@ -409,6 +416,11 @@ public struct CovaRootView: View {
             case .aiSessions, .aiSession, .studioCreate: return "我的创作"
             case .membership: return "会员"
             case .enterprise: return "企业服务"
+            // 20 与 22 现在**没有父项**：抽屉里"我的创作"那一条指向 08（会话清单），
+            // 而 20 列的是作品行、22 是积分流水 —— 把它们算成 08 的子屏会画出一个假的归属
+            // （06 → 歌单 那条规则成立的前提是"父项确实是同一目的地"，这里不成立）。
+            // 等 20 待裁决 1（20 / 12c / 08 三屏是否收成一行）落定再回来改这一格。
+            case .worksList(_), .creditsLedger: return nil
             case .settings, .artist: return nil
             }
         }

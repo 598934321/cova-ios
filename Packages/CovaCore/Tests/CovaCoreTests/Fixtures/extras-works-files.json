@@ -1,0 +1,67 @@
+{
+  "ok": true,
+  "files": [
+    {
+      "id": "extra-worker-8f31c2-master-wav",
+      "name": "母带.wav",
+      "type": "audio-wav",
+      "version": "3",
+      "createdAt": "2026-09-26T06:40:00.000Z",
+      "url": "/api/studio/extras/artifacts/worker-8f31c2/master-wav?ref=mr_9d0e&intent=download",
+      "sourceGenerationJobId": "job-7f3a",
+      "sourceCandidateId": "cand-1"
+    },
+    {
+      "id": "extra-worker-8f31c2-accompaniment",
+      "name": "伴奏.wav",
+      "type": "instrumental-wav",
+      "version": "3",
+      "createdAt": "2026-09-26T06:40:00.000Z",
+      "url": "/api/studio/extras/artifacts/worker-8f31c2/accompaniment?intent=download",
+      "sourceGenerationJobId": "job-7f3a",
+      "sourceCandidateId": "cand-1"
+    },
+    {
+      "id": "extra-worker-8f31c2-lyrics-video",
+      "name": "歌词视频.mp4",
+      "type": "video",
+      "version": "补充制作准备中",
+      "createdAt": "2026-09-26T06:40:00.000Z",
+      "sourceGenerationJobId": "job-7f3a",
+      "sourceCandidateId": "cand-1"
+    },
+    {
+      "id": "extra-worker-9a77b1-vocal-stems",
+      "name": "人声分轨.zip",
+      "type": "stems",
+      "version": "失败：上游制作超时",
+      "createdAt": "2026-09-26T06:40:00.000Z",
+      "sourceGenerationJobId": "job-7f3a",
+      "sourceCandidateId": "cand-2"
+    },
+    {
+      "id": "extra-worker-9a77b1-lyrics-timing",
+      "name": "对齐歌词.lrc",
+      "type": "doc",
+      "version": "已取消",
+      "createdAt": "2026-09-26T06:40:00.000Z",
+      "sourceGenerationJobId": "job-7f3a",
+      "sourceCandidateId": "cand-2"
+    },
+    {
+      "id": "extra-worker-9a77b1-cover",
+      "name": "封面",
+      "type": "cover",
+      "version": "还没轮到",
+      "createdAt": "2026-09-26T06:40:00.000Z"
+    },
+    {
+      "id": "extra-worker-9a77b1-flac",
+      "name": "母带 flac",
+      "type": "flac-master",
+      "version": "3",
+      "createdAt": "2026-09-26T06:40:00.000Z",
+      "url": "/api/studio/extras/artifacts/worker-9a77b1/flac?intent=download"
+    }
+  ]
+}

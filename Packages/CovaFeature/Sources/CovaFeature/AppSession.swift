@@ -267,6 +267,13 @@ public final class AppSession {
         case aiSessions
         case aiSession(String)
         case studioCreate
+        /// 20「我的作品」（§5 P1-1 / A7）。`jobID` 非空 ⇒ **任务定位形态**（22 的「任务」跳这里，
+        /// 20 §1 的 anchoredTitle）。锚点走路由载荷而不是 `worksList.anchoredJobID` 那份状态：
+        /// 状态会被下一次 `.task` 的常规加载抹掉，也会让上一次访问的锚点漏到这一次 ——
+        /// "这一屏显示的是哪一组"是**目的地的一部分**，不是一份可过期的缓存。
+        case worksList(jobID: String? = nil)
+        /// 22「积分流水」（§5 P2-3 / A9）。
+        case creditsLedger
         case membership
         case enterprise
         case artist(String)
@@ -749,6 +756,48 @@ public final class AppSession {
     /// 本会话**已经报过一次**的任务号。只用来判"这一条响应是不是重放回显"
     /// （§7 #40：重放时服务端照样回 `charge`），不参与任何权限/归属判断。
     var studioCreateSeenJobIDs: Set<String> = []
+    /// 20「我的作品」屏的状态（选择态 + 已读到的行 + 分页游标）。行为腿在 `WorksListFlow.swift`。
+    public internal(set) var worksList = WorksListState()
+    /// 在途的那一次读（连点筛选/搜索时吞后发，同 19 的提交口径）。
+    var worksListTask: Task<Void, Never>?
+    /// 列表与行内动作的出腿（每次现取，不缓存服务）：作品会在别处被改名/删除/收藏，
+    /// 屏上留下的必须是回读之后的事实。
+    public var worksService: WorksService { WorksService(client: client) }
+    /// 22 积分流水（§5 P2-3 / A9）与 21 补充制作（§5 P2-1 / A8）与制作人入口（A10）。
+    /// 三条腿的状态都放本类，视图只读；行为腿各在 `CreditsLedgerFlow.swift` /
+    /// `WorkExtrasFlow.swift` / `ProducersFlow.swift`。
+    public internal(set) var creditsLedger = CreditsLedgerState()
+    public internal(set) var workExtras = WorkExtrasState()
+    /// 灰度关闭时服务端回 200 + 空数组 ⇒ 空态与"没读到"在屏上是两回事（A10）。
+    public internal(set) var producerCards: [ProducerCardDto] = []
+    public internal(set) var producersReadFailed = false
+    public var ledgerService: LedgerService { LedgerService(client: client) }
+    public var producersService: ProducersService { ProducersService(client: client) }
+    public var extrasService: ExtrasService { ExtrasService(client: client) }
+
+    // MARK: - 19 屏 P1-2 的三格（翻唱 / 续写 / 重制）
+
+    /// 这一屏要做的操作。默认仍是 P0 的 `create` —— 不选就是老行为，
+    /// 已归档的那张 19 证据描述的还是这一版代码在 `.create` 下的形状。
+    public var studioCreateOperation: StudioCreateOperation = .create
+    /// 源作品：**只装从服务端读回来的那一行的四件事**。
+    ///
+    /// 为什么不留整行：`sourceClipId` 服务端**完全不校验**（§4.7），一个拼出来/过期了的
+    /// clip id 会照常 200 + 真扣费 + 异步 failed ⇒ 这一格唯一的来源是
+    /// 「刚才 GET works 回来的那一行的 `providerClipId`」，别的路径一律不许写它。
+    public struct StudioCreateSource: Equatable, Sendable {
+        public let workID: String
+        public let title: String
+        public let providerClipID: String
+        public let duration: Double?
+    }
+    public var studioCreateSource: StudioCreateSource?
+    /// 续写起点（秒）。`nil` = **不送这一格**，服务端自己取原曲结尾（缺省=结尾，§5 P1-2）。
+    public var studioCreateContinueAt: Double?
+    /// 源选择器那一列：进面板时读一次，不当长期事实（作品会在别处被改名/删除）。
+    public internal(set) var studioCreateSources: [WorksListRowDto] = []
+    /// 「没读到」与「没有可选的源」在屏上是两回事 ⇒ 空数组不是一句"你还没有作品"。
+    public internal(set) var studioCreateSourcesFailed = false
     var studioCreateTask: Task<Void, Never>?
     var studioCreateTicker: Task<Void, Never>?
     var studioCreateSubmitID = 0

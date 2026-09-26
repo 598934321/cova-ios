@@ -141,12 +141,22 @@ final class StudioCreateLegTests: XCTestCase {
         XCTAssertEqual(audio.value.absoluteString, "https://covalink.cn/audio/summer_9f3a.mp3")
     }
 
-    /// A13 的那一条分野：**播放只吃 `audioUrl`**。`playbackUrl` 是 COS 绝对直链，
-    /// 而 `.publicDirect` 在 D23 之后只认生产出口 ⇒ 交给它等于让 AVPlayer 自己决定第二次出站。
+    /// A13 的那一条分野：**播放只吃 `audioUrl`**，直存才允许名单桶的免凭证直链。
+    ///
+    /// 2026-09-26 把 `isPlayable` 也收成"只看 audioUrl"（§7 #37 实测作品的 `playbackUrl`
+    /// 6/6 签在名单外的 uploads 桶、#39 之后 `audioUrl` 走同源 `intent=download` 已能出字节）
+    /// ⇒ "有没有一条腿"与"那条腿能不能用"不再是同一件事，两格分成两个属性。
     func testPlaybackRefusesTheCredentialFreeDirectLinkWhileDownloadAcceptsIt() throws {
         let work = try self.work(onlyPlaybackJSON)
-        XCTAssertTrue(work.isPlayable, "有 playbackUrl 就算这行能出声")
+        XCTAssertFalse(
+            work.isPlayable,
+            "只有 playbackUrl 的一行不许画出一个点下去必然失败的 ▶"
+        )
         XCTAssertNil(AppSession.workPlaybackItem(from: work), "不许把名单桶直链交给播放器")
+        XCTAssertTrue(
+            work.hasStorableSource,
+            "名单内桶（covalink-audio-…）的直链在**直存**这一腿上是可用的"
+        )
         let request = try XCTUnwrap(
             AppSession.workDownloadRequest(
                 from: work,
@@ -157,6 +167,26 @@ final class StudioCreateLegTests: XCTestCase {
             request.source.value.host,
             "covalink-audio-1301797874.cos.ap-shanghai.myqcloud.com",
             "直存这一腿才允许走免凭证预签名直链"
+        )
+    }
+
+    /// 生产实测的那一形：`playbackUrl` 落在 **uploads 桶**（名单外）⇒ 连直存这一腿也不给，
+    /// 而 `WorkDownloadStore` 的出口守卫是最后一道，本层不许替它放宽。
+    func testUnsanctionedBucketLinkIsNotEvenOfferedToTheStore() throws {
+        let work = try self.work(
+            """
+            {"id":"job-9:cand-9","jobId":"job-9","status":"succeeded","title":"夜",\
+            "audioUrl":null,"playbackUrl":\
+            "https://covalink-uploads-1301797874.cos.ap-shanghai.myqcloud.com/jobs/job-9/9.mp3?q-signature=x"}
+            """
+        )
+        XCTAssertFalse(work.isPlayable)
+        XCTAssertFalse(work.hasStorableSource, "名单外的桶不许被报告成「有一条腿」")
+        XCTAssertNil(
+            AppSession.workDownloadRequest(
+                from: work,
+                session: PlaybackSessionContext(owner: PrincipalID(rawValue: "principal-1"))
+            )
         )
     }
 

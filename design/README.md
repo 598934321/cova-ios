@@ -11,9 +11,11 @@
 | `screens/01-home.md` | G1 详稿：首页（会话框 + feed） |
 | `screens/02-player.md` | G1 详稿：全屏播放器 + MiniPlayer |
 | `screens/03-library.md` | G1 详稿：曲库（级联筛选） |
-| `screens/inventory.md` | G2 全屏清单（约 18 屏）与各屏要点 |
-| `components.md` | 组件库规格（含状态与交互） |
+| `screens/inventory.md` | G2 全屏清单（23 屏 + 编号法与偏差登记表）与各屏要点 |
 | `assets/CovaAssets.xcassets/` | 官方 AppIcon（源：`cova ip/03_logo/platforms/canonical-v1/`，勿改） |
+
+> ⚠️ 本目录**没有** `components.md`：它在 `e84e295` 随旧契约文档一起删除，组件规格现在住在
+> 各屏规格的 §3 区块规格与 `Packages/CovaUI` 的组件源码里。下面 G2 步骤第 2 条按此读。
 
 ## G1 操作步骤（方向稿）
 
@@ -28,7 +30,7 @@
 ## G2 操作步骤（完整设计）
 
 1. 按 `inventory.md` 完成全部屏幕（含空态/加载/错误态）
-2. 按 `components.md` 建组件库（Figma Components + Variants 对应状态）
+2. 组件规格取各屏 §3 区块规格 + `Packages/CovaUI` 组件源码（原 `components.md` 已删，见上）
 3. 深浅双主题全量校验；标注 Reduce Motion 替代态
 4. 动效说明写在各屏标注层（曲线/时长用 tokens.json 的 motion 值）
 5. **G2 验收**：用户确认完整设计 → 开发按图施工，色值/字号/间距只允许取 token

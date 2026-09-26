@@ -1,0 +1,23 @@
+{
+  "entries": [
+    "不是对象",
+    null,
+    {
+      "type": "debit"
+    },
+    {
+      "id": ""
+    },
+    {
+      "id": "cl_survivor",
+      "type": "debit",
+      "amount": -1,
+      "balanceAfter": 99,
+      "reason": "studio_create_generation",
+      "reasonLabel": "AI 音乐生成",
+      "jobId": "job-x",
+      "unlinked": false,
+      "createdAt": "2026-09-26T09:00:00.000Z"
+    }
+  ]
+}

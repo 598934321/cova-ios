@@ -27,6 +27,13 @@ public enum StudioCreateSubmissionFailure: Error, Equatable, Sendable {
             case .emptyPrompt: return "请填写音乐描述"
             case .promptTooLong(let limit, _): return "音乐描述过长（最多 \(limit) 字）"
             case .operationMismatch: return "这次提交没被接受（客户端幂等键配错）"
+            // 这一句与服务端 400 的原文逐字相同（`generate.ts:126-128`）。
+            case .missingSourceClip: return "翻唱 / 续写 / 重制需要先选择源音乐或上传音频"
+            // 下面两句服务端没有对应原文可比（`optionalTrimmed` 只报字段名，
+            // `continueAt` 越界服务端是"不消费"而不是报错）⇒ 这是**客户端自己的话**，
+            // 不许冒充成后端文案。
+            case .sourceClipIDTooLong(let limit, _): return "源作品的标识过长，换一首再试"
+            case .continueAtOutOfRange(let limit): return "续写起点要在 0 到 \(Int(limit)) 秒之间"
             }
         case .rejected(let rejection):
             return rejection.userMessage
@@ -75,13 +82,23 @@ public struct StudioCreateService: Sendable {
 
     /// 一次逻辑提交。**调用方持有 token**：同一次提交的重试必须传同一把键，
     /// 「重新生成」才新建一把（`Idempotency.swift` 的 D8 口径）。
+    ///
+    /// P1-2 起可以带源：`operation != .create` 时 `sourceClipId` 必填（本地先拦，
+    /// 理由见 `StudioCreateGenerateRequestDto`），`continueAt` 只有 `extend` 才消费。
     public func generate(
-        prompt: String, token: IdempotentRequestToken
+        prompt: String,
+        operation: StudioCreateOperation = .create,
+        sourceClipId: String? = nil,
+        continueAt: Double? = nil,
+        token: IdempotentRequestToken
     ) async throws -> StudioCreateGenerateResponseDto {
         let payload: Data
         do {
             payload = try JSONEncoder().encode(
-                StudioCreateGenerateRequestDto(prompt: prompt, token: token)
+                StudioCreateGenerateRequestDto(
+                    prompt: prompt, operation: operation,
+                    sourceClipId: sourceClipId, continueAt: continueAt, token: token
+                )
             )
         } catch let error as StudioCreateRequestError {
             throw StudioCreateSubmissionFailure.invalidInput(error)

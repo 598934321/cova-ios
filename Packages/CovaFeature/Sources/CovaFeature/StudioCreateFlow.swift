@@ -47,8 +47,17 @@ extension AppSession {
         studioCreate = StudioCreateState(phase: .submitting)
         studioCreateSubmitID += 1
         let submitID = studioCreateSubmitID
+        // 提交那一刻的三格**按值取走**：用户在途改了操作或换了源，不能改到这一次提交的形状上
+        // —— 同一把幂等键对应的请求体必须自始至终是同一份，否则服务端那层同指纹去重判的是
+        // 改过之后的东西，而屏上显示的是改之前的。
+        let operation = studioCreateOperation
+        let sourceClipId = studioCreateSource?.providerClipID
+        let continueAt = operation == .extend ? studioCreateContinueAt : nil
         studioCreateTask = Task { @MainActor [weak self] in
-            await self?.runStudioCreateSubmission(prompt: prompt, token: token, submitID: submitID)
+            await self?.runStudioCreateSubmission(
+                prompt: prompt, token: token, submitID: submitID,
+                operation: operation, sourceClipId: sourceClipId, continueAt: continueAt
+            )
         }
     }
 
@@ -66,10 +75,15 @@ extension AppSession {
     }
 
     private func runStudioCreateSubmission(
-        prompt: String, token: IdempotentRequestToken, submitID: Int
+        prompt: String, token: IdempotentRequestToken, submitID: Int,
+        operation: StudioCreateOperation = .create,
+        sourceClipId: String? = nil, continueAt: Double? = nil
     ) async {
         do {
-            let response = try await studioCreateService.generate(prompt: prompt, token: token)
+            let response = try await studioCreateService.generate(
+                prompt: prompt, operation: operation,
+                sourceClipId: sourceClipId, continueAt: continueAt, token: token
+            )
             guard studioCreateSubmitID == submitID else { return }
             guard let jobId = response.jobId else {
                 studioCreate.phase = .unconfirmed
@@ -204,6 +218,61 @@ extension AppSession {
         // 「再做一首」与换号都算重新开始：不再拿旧 jobId 去判重放，
         // 宁可少说一句"未重复扣费"，也不多报一次。
         studioCreateSeenJobIDs = []
+        // P1-2 的三格跟着一起回默认：翻唱做完一首，下一首默认还是"从头创作"，
+        // 而不是停在上一首的源上（那会让用户以为源是共用的设置）。
+        studioCreateOperation = .create
+        studioCreateSource = nil
+        studioCreateContinueAt = nil
+    }
+
+    /// 能不能提交。**非 create 的三种操作没有源就不许点** —— 服务端对这一格完全不校验，
+    /// 但"没选源"这件事它是要 400 的；在本地拦下来既省一次往返，
+    /// 也省掉一次"按钮是实的、点了才知道不行"。
+    public var canSubmitStudioCreate: Bool {
+        guard !studioCreatePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        if studioCreateOperation != .create, studioCreateSource == nil { return false }
+        return !studioCreate.isBusy
+    }
+
+    /// 读一次可作源的作品（`succeeded` + 带 `providerClipId` 的正身候选行）。
+    ///
+    /// 只读**这一列**，不缓存成长期事实：作品会在别处被改名/删除，
+    /// 而一个已经不存在的 clip id 送出去就是"200 + 扣费 + 异步 failed"。
+    public func loadStudioCreateSources() async {
+        do {
+            let page = try await worksService.page(
+                WorksListQuery(filter: .all, sort: .newest, limit: WorksListQuery.defaultLimit)
+            )
+            studioCreateSourcesFailed = false
+            studioCreateSources = page.works.filter {
+                $0.isRealCandidateRow && $0.status == .succeeded && $0.providerClipId != nil
+            }
+        } catch {
+            // 「没读到」与「你还没有作品」必须是两句话：前者要能重试，后者是空态。
+            studioCreateSourcesFailed = true
+            studioCreateSources = []
+        }
+    }
+
+    /// 选源。只接受**本机刚从服务端读回来的那一行**（`studioCreateSources` 里存在才认），
+    /// 别的来源（拼出来的 id、上一次会话留下的 id）一律不写进这一格。
+    public func chooseStudioCreateSource(workID: String) {
+        guard let row = studioCreateSources.first(where: { $0.id == workID }),
+              let clip = row.providerClipId else { return }
+        studioCreateSource = StudioCreateSource(
+            workID: row.id, title: row.displayTitle ?? "未命名作品",
+            providerClipID: clip, duration: row.displayDuration
+        )
+        // 换源 ⇒ 上一次的起点不再对应这首的长度（服务端按 0…3600 收，
+        // 但"从 2:40 续写一首 1:30 的曲子"这种事不该由一个残留数字决定）。
+        studioCreateContinueAt = nil
+    }
+
+    public func clearStudioCreateSource() {
+        studioCreateSource = nil
+        studioCreateContinueAt = nil
     }
 
     /// 当前凭证快照的会话上下文（owner 分桶与 generation 作废都靠它）。
@@ -308,7 +377,7 @@ extension AppSession {
         // 而不是先落进一个无主目录、再指望 `WorkDownloadStore` 拒掉它。
         // 同源直取改写与播放腿同一处（`workAudioDirectFetchURL`）：`audioUrl` 的原文
         // 是 `intent=play`，服务端对它是 302 到名单外的桶，改成 `intent=download` 才 200 出字节。
-        guard let session, session.owner != nil, work.isPlayable,
+        guard let session, session.owner != nil, work.hasStorableSource,
               let raw = (work.audioUrl ?? work.playbackUrl)?.rawValue,
               let url = CovaEnvironment.resolveMediaURL(raw),
               let source = try? AudioURL(

@@ -211,4 +211,177 @@ final class P0AcceptanceTests: XCTestCase {
         )
         shot("01-recent-mixed")
     }
+
+    /// A6 + A5 的**零扣费**腿：在 works 列表屏（20）对**已经存在**的作品行点 ↓ 与 ▶。
+    ///
+    /// 为什么要单独一条：上面那条链要等一次真生成（分钟级 + 100 co）才能拿到两行结果，
+    /// 而账号里今天已经有 10 行 `succeeded` 作品（§7 #39 解阻之后这些行可播可存）。
+    /// 判据不变 —— 直存看标记翻面 + 仓库外按沙盒文件复核，播放看上报（服务端复核），
+    /// 变的只是"结果行从哪来"。
+    func testWorksListSavesAndPlaysAnExistingWork() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let email = env["COVA_ACCEPT_EMAIL"], let password = env["COVA_ACCEPT_PASSWORD"],
+              !email.isEmpty, !password.isEmpty else {
+            throw XCTSkip("缺 COVA_ACCEPT_EMAIL / COVA_ACCEPT_PASSWORD ⇒ 跳过")
+        }
+        let list = XCUIApplication()
+        list.launchEnvironment["COVA_PREVIEW_LOGIN_EMAIL"] = email
+        list.launchEnvironment["COVA_PREVIEW_LOGIN_PASSWORD"] = password
+        list.launchEnvironment["COVA_PREVIEW_ROUTE"] = "worksList"
+        list.launch()
+        app = list
+
+        XCTAssertTrue(
+            list.navigationBars["我的作品"].waitForExistence(timeout: 40),
+            "20 屏没到达（登录或路由钩子失败，后面全部不成立）"
+        )
+        let firstRow = list.buttons["cova.works.row.0"]
+        XCTAssertTrue(
+            firstRow.waitForExistence(timeout: 25),
+            "A6 前置：列表一行都没渲染；标签=" + labelDump()
+        )
+        shot("20-works-list")
+
+        // ① A6 直存：↓ ⇒ 标记翻成「删除本机文件」。这一步同时是 §7 #39 那条修复的
+        //    **唯一屏上证人** —— 改错 intent 的话这里 180s 不翻面。
+        let save = list.buttons["保存到本机"].firstMatch
+        XCTAssertTrue(save.waitForExistence(timeout: 10), "作品行没有 ↓ 直存钮")
+        scrollIntoView(save)
+        save.tap()
+        XCTAssertTrue(
+            list.buttons["删除本机文件"].firstMatch.waitForExistence(timeout: 180),
+            "A6：点了 ↓ 标记没翻面（同源 intent=download 那条腿没通，或文件没落成）"
+        )
+        shot("20-saved")
+
+        // ② A5 播放：点行 ⇒ D7 取字节 → file:// → 按伪 trackId 上报 `POST /api/tracks/play`。
+        //    `recorded:true` 与「play-history 出现 work 行」由服务端复核（屏上看不出来）。
+        scrollIntoView(firstRow)
+        firstRow.tap()
+        Thread.sleep(forTimeInterval: 12)
+        shot("20-after-play")
+    }
+
+    /// A7（works 行内动作）的设备腿：**clip 级那几项**在行 ⋯ 里，job 级那三项在组头 ⋯ 里。
+    ///
+    /// 这条腿只证"屏上到得了、发得出去、回执看得见"；`GET /api/favorites` 出现 note 条目、
+    /// `sharePath` 免登录可听、`lrc` 非 null 这三半由仓库外的只读 curl 复核（不打印签名串）。
+    /// 刻意**不做**删除：那是不可逆的，而"确认框存在 + 措辞说清两行一起消失"已经是可以拍的证据。
+    func testWorksListClipActionsReachTheServer() throws {
+        let list = try launchedScreen("我的作品", route: "worksList")
+
+        // ① 行 ⋯ 必须是 clip 级那几项，且**不含**改名/删除/分享（那三项是 job 级的，
+        //    这一屏靠"物理上放不到一行上"表达作用域 ⇒ 这里断言它不在，比断言它在别处更硬）。
+        let rowMenu = list.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "cova.works.rowMenu.")
+        ).element(boundBy: 0)
+        XCTAssertTrue(
+            rowMenu.waitForExistence(timeout: 20),
+            "A7：第一行没有 ⋯ 钮；标签=" + labelDump()
+        )
+        rowMenu.tap()
+        let lyrics = list.buttons["歌词"]
+        XCTAssertTrue(
+            lyrics.waitForExistence(timeout: 10),
+            "行 ⋯ 里没有「歌词」；标签=" + labelDump()
+        )
+        XCTAssertFalse(
+            list.buttons["重命名本次生成的作品"].exists || list.buttons["分享本次生成的作品"].exists
+                || list.buttons["删除本次生成的作品"].exists,
+            "A7：job 级的三项不许出现在行 ⋯ 里（作用域靠位置表达）"
+        )
+        shot("20-row-menu")
+
+        // ② 歌词：有词 ⇒ 屏上出正文；没词 ⇒ 出那两句诚实的空态之一。不许出「未知错误」。
+        lyrics.tap()
+        Thread.sleep(forTimeInterval: 4)
+        let showedLyrics = list.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "\n")
+        ).element.exists || list.scrollViews.element.exists
+        let saidSo = list.staticTexts["这首还没有歌词"].exists
+            || list.staticTexts["还没取到歌词"].exists
+        XCTAssertTrue(
+            showedLyrics || saidSo,
+            "A7：点「歌词」之后既没有正文也没有空态说明；标签=" + labelDump()
+        )
+        shot("20-lyrics")
+        list.navigationBars.buttons.element(boundBy: 0).tap()
+
+        // ③ 组头 ⋯：三项都在，且每一句都带「本次生成的作品」（VoiceOver 不许简写成「重命名」）。
+        let groupMenu = list.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "cova.works.groupMenu.")
+        ).element(boundBy: 0)
+        XCTAssertTrue(groupMenu.waitForExistence(timeout: 10), "组头没有 ⋯")
+        groupMenu.tap()
+        Thread.sleep(forTimeInterval: 2)
+        // 正面断言：三项都在组头，且每一句都带「本次生成的作品」。
+        // 这一格是上面那条"行 ⋯ 里不许有"的对照面 —— 没有它，那条否定断言可以因为
+        // 标签写错而恒真（本轮第一次写这条时就是这个错法）。
+        for label in [
+            "重命名本次生成的作品", "分享本次生成的作品", "删除本次生成的作品"
+        ] {
+            XCTAssertTrue(
+                list.buttons[label].exists,
+                "组头 ⋯ 少了「\(label)」；标签=" + labelDump()
+            )
+        }
+        shot("20-group-menu")
+    }
+
+    /// A9（流水页）的设备腿：行渲染 + 服务端 `reasonLabel` 原样上屏 + **「任务」跳得到作品**。
+    ///
+    /// 这一条同时是 §7 #38 的反面证人：`studio_create_generation` 那两行今天**不该**有链接
+    /// （实测 `jobId=null`），而更早的 `cova_one_step_generation` 那行有 ⇒ 同一屏上
+    /// "有链接"与"没链接"两种形态同时存在，正是"不猜一个号"这条规则能被人看见的样子。
+    func testCreditsLedgerRendersRowsAndLinksAJob() throws {
+        let ledger = try launchedScreen("co 币明细", route: "creditsLedger")
+
+        XCTAssertTrue(
+            ledger.staticTexts["AI 音乐生成"].waitForExistence(timeout: 20),
+            "A9：服务端给的 reasonLabel 没原样上屏；标签=" + labelDump()
+        )
+        XCTAssertTrue(
+            ledger.staticTexts["其他变动"].exists || ledger.staticTexts["曲目下载"].exists,
+            "A9：兜底档/其它档至少要有一种在屏上（只有生成一类 = 数据被过滤掉了）；标签="
+                + labelDump()
+        )
+        shot("22-ledger")
+
+        let link = ledger.buttons["任务"].firstMatch
+        XCTAssertTrue(
+            link.waitForExistence(timeout: 10),
+            "A9：整屏没有一个「任务」链接 —— 有 jobId 的行（09-24 那条一步创作）必须给链接；标签="
+                + labelDump()
+        )
+        scrollIntoView(link)
+        link.tap()
+        XCTAssertTrue(
+            ledger.navigationBars["本次生成的作品"].waitForExistence(timeout: 20),
+            "A9：点「任务」没落到那一组作品（20 的 job 锚定态）"
+        )
+        shot("22-job-landing")
+    }
+
+    /// 起一个只到某一屏的会话（登录钩子 + 路由钩子），并把首屏导航标题等出来。
+    /// 三个方法共用这一小段，避免"每条腿自己忘了一次登录"这种各写一遍的偏差。
+    private func launchedScreen(
+        _ title: String, route: String
+    ) throws -> XCUIApplication {
+        let env = ProcessInfo.processInfo.environment
+        guard let email = env["COVA_ACCEPT_EMAIL"], let password = env["COVA_ACCEPT_PASSWORD"],
+              !email.isEmpty, !password.isEmpty else {
+            throw XCTSkip("缺 COVA_ACCEPT_EMAIL / COVA_ACCEPT_PASSWORD ⇒ 跳过")
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment["COVA_PREVIEW_LOGIN_EMAIL"] = email
+        app.launchEnvironment["COVA_PREVIEW_LOGIN_PASSWORD"] = password
+        app.launchEnvironment["COVA_PREVIEW_ROUTE"] = route
+        app.launch()
+        XCTAssertTrue(
+            app.navigationBars[title].waitForExistence(timeout: 40),
+            "路由 \(route) 没到达「\(title)」这一屏（登录或路由钩子失败，后面全部不成立）"
+        )
+        self.app = app
+        return app
+    }
 }

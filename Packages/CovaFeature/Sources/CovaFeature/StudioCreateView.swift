@@ -2,11 +2,13 @@ import CovaCore
 import CovaUI
 import SwiftUI
 
-/// 19 · 创作台（一句话做歌 · P0 最小闭环）。
+/// 19 · 创作台（一句话做歌）。
 ///
-/// 规格：`design/screens/19-studio-create.md`。这一屏只施工 `mode:'simple'` +
-/// `operation:'create'`，advanced / melody / cover / extend / remaster 的入口与控件
-/// **一律不渲染**（不是置灰）—— 画着但发不出去的东西就是谎。
+/// 规格：`design/screens/19-studio-create.md`。P0 施工 `mode:'simple'` + `operation:'create'`；
+/// **P1-2 起**这一屏多了「翻唱 / 续写 / 重制」三档与源选择器（19 待裁决 1 原本就把 B 区
+/// 预留给"歌词+风格双输入与 `continueAt` 选择器"，这次落的是后者那一半）。
+/// 仍未渲染的是 `advanced`（歌词/风格分栏）与 `melody` —— 画着但发不出去的东西就是谎，
+/// 所以那两档的入口继续不出现，不是置灰。
 ///
 /// 三条硬规矩都落在这棵视图之外，所以这里没有绕过的入口：
 /// · 幂等键（一次点击一把、重试复用）住在 `AppSession.submitStudioCreate()` /
@@ -18,6 +20,9 @@ struct StudioCreateView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var promptFocused: Bool
     @State private var pendingDelete: CreateWorkItemDto?
+    @State private var sourcePickerShown = false
+    /// 23 制作人面板开没开（宿主 = 下面那一枚「+」；灰度关闭时那枚「+」根本不渲染）。
+    @State private var producersShown = false
 
     private var state: AppSession.StudioCreateState { session.studioCreate }
 
@@ -34,6 +39,7 @@ struct StudioCreateView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: CovaSpace.xl) {
+                operationCard
                 promptCard
                 if state.phase != .idle { taskSection }
                 if !state.works.isEmpty { worksSection }
@@ -44,6 +50,18 @@ struct StudioCreateView: View {
         .covaPage()
         .navigationTitle("做一首歌")
         .navigationBarTitleDisplayMode(.inline)
+        // 20「我的作品」的**生产入口**。没有它，20 就只能靠走查键 `COVA_PREVIEW_ROUTE` 到达 ——
+        // 那等于"有一张截图但没有这一屏"（04 抽屉就是这么被记为生产不可达的）。
+        // 放在导航条而不是结果区：结果区只有刚生成完才存在，而"看我所有的作品"
+        // 与"这一次刚做出两首"是两件事。
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("全部作品") { session.path.append(.worksList(jobID: nil)) }
+                    .font(CovaType.subhead)
+                    .foregroundStyle(CovaColor.accentText)
+                    .accessibilityIdentifier("cova.works.open")
+            }
+        }
         .confirmationDialog(
             "删除本机文件？", isPresented: Binding(
                 get: { pendingDelete != nil },
@@ -58,6 +76,163 @@ struct StudioCreateView: View {
             }
             Button("取消", role: .cancel) { pendingDelete = nil }
         }
+        .sheet(isPresented: $sourcePickerShown) { sourcePickerSheet }
+    }
+
+    // MARK: - P1-2：操作档位 + 源选择 + 续写起点
+
+    /// 四档操作。**只有 `create` 之外的三档需要源**，所以源那一格跟着档位出现/消失，
+    /// 而不是常驻一个"选了也没用"的选择器。
+    private var operationCard: some View {
+        VStack(alignment: .leading, spacing: CovaSpace.md) {
+            HStack(spacing: CovaSpace.sm) {
+                ForEach(StudioCreateOperation.allCases, id: \.self) { operation in
+                    CovaChip(
+                        Self.operationLabel(operation),
+                        isSelected: session.studioCreateOperation == operation
+                    ) {
+                        session.studioCreateOperation = operation
+                        // 从"要源"的档位切回创作 ⇒ 清掉源与起点，
+                        // 否则下一次提交会带着一个屏上已经看不见的 sourceClipId。
+                        if operation == .create { session.clearStudioCreateSource() }
+                        if operation != .extend { session.studioCreateContinueAt = nil }
+                    }
+                    .accessibilityIdentifier("cova.operation.\(operation.rawValue)")
+                }
+                Spacer()
+            }
+            if session.studioCreateOperation != .create { sourceRow }
+            if session.studioCreateOperation == .extend,
+               let duration = session.studioCreateSource?.duration, duration > 0 {
+                continueAtRow(duration: duration)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sourceRow: some View {
+        if let source = session.studioCreateSource {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source.title).font(CovaType.subhead).foregroundStyle(CovaColor.fg)
+                    Text("续作要以它为源").font(CovaType.caption).foregroundStyle(CovaColor.muted)
+                }
+                Spacer()
+                Button("换一首") { sourcePickerShown = true }
+                    .font(CovaType.subhead)
+                    .foregroundStyle(CovaColor.accentText)
+                Button("清除") { session.clearStudioCreateSource() }
+                    .font(CovaType.subhead)
+                    .foregroundStyle(CovaColor.secondary)
+            }
+            .accessibilityIdentifier("cova.source.row")
+        } else {
+            CovaButton("选择源作品", style: .secondary) {
+                Task {
+                    await session.loadStudioCreateSources()
+                    sourcePickerShown = true
+                }
+            }
+            .accessibilityIdentifier("cova.source.pick")
+        }
+    }
+
+    /// 起点：**默认是"结尾"**（不送 `continueAt`，服务端自己接），所以滑杆的初值就停在最右，
+    /// 而不是 0 —— 从 0 开始续写在语义上是"整首重来"，那是另一件事。
+    private func continueAtRow(duration: Double) -> some View {
+        let upper = min(duration, StudioCreateGenerateRequestDto.continueAtMaximumSeconds)
+        return VStack(alignment: .leading, spacing: CovaSpace.xs) {
+            HStack {
+                Text("续写起点").font(CovaType.subhead).foregroundStyle(CovaColor.fg)
+                Spacer()
+                Text(
+                    session.studioCreateContinueAt.map(Self.time) ?? "结尾"
+                )
+                .font(CovaType.caption.monospacedDigit())
+                .foregroundStyle(CovaColor.muted)
+            }
+            Slider(
+                value: Binding(
+                    get: { session.studioCreateContinueAt ?? upper },
+                    set: { session.studioCreateContinueAt = $0 }
+                ),
+                in: 0...max(upper, 1), step: 1
+            ) {
+                Text("续写起点")
+            }
+            .accessibilityIdentifier("cova.source.continueAt")
+            Button(session.studioCreateContinueAt == nil ? "改为从指定位置" : "回到「结尾」") {
+                session.studioCreateContinueAt = nil
+            }
+            .font(CovaType.caption)
+            .foregroundStyle(CovaColor.accentText)
+        }
+    }
+
+    private var sourcePickerSheet: some View {
+        NavigationStack {
+            Group {
+                if session.studioCreateSources.isEmpty {
+                    VStack(spacing: CovaSpace.md) {
+                        Text(
+                            session.studioCreateSourcesFailed
+                                ? "源作品没读到，可以重试" : "还没有可以当源的作品"
+                        )
+                        .font(CovaType.body)
+                        .foregroundStyle(CovaColor.secondary)
+                        if session.studioCreateSourcesFailed {
+                            Button("重试") {
+                                Task {
+                                    await session.loadStudioCreateSources()
+                                }
+                            }
+                            .foregroundStyle(CovaColor.accentText)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(session.studioCreateSources, id: \.id) { row in
+                        Button {
+                            session.chooseStudioCreateSource(workID: row.id)
+                            sourcePickerShown = false
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.displayTitle ?? "未命名作品")
+                                    .font(CovaType.subhead)
+                                    .foregroundStyle(CovaColor.fg)
+                                Text(
+                                    row.displayDuration.map(Self.time) ?? "时长未知"
+                                )
+                                .font(CovaType.caption)
+                                .foregroundStyle(CovaColor.muted)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("选一首作源")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("取消") { sourcePickerShown = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    static func operationLabel(_ operation: StudioCreateOperation) -> String {
+        switch operation {
+        case .create: return "创作"
+        case .cover: return "翻唱"
+        case .extend: return "续写"
+        case .remaster: return "重制"
+        }
+    }
+
+    private static func time(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        return String(format: "%02d:%02d", total / 60, total % 60)
     }
 
     // MARK: - B 描述卡 + C 主 CTA
@@ -92,6 +267,23 @@ struct StudioCreateView: View {
                     .accessibilityLabel("音乐描述")
             }
             HStack {
+                // 23 的宿主：创作输入「+」（§5 P2-2 的原文落点）。
+                // **灰度关闭 ⇒ 这一枚整个不出现**，不是置灰、不是"点了说没有"——
+                // A10 那句「普通账号 {producers:[]} ⇒ 入口不可见（不是置灰）」就是这个意思。
+                // 读失败也不出现：把"没读到"画成"没有"是替后端下了结论。
+                if session.producersEntranceVisible {
+                    Button {
+                        producersShown = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(CovaType.subhead)
+                            .foregroundStyle(CovaColor.accentText)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("制作人")
+                    .accessibilityIdentifier("cova.producers.plus")
+                }
                 Spacer()
                 Text("\(session.studioCreatePrompt.count)/\(StudioCreateGenerateRequestDto.promptMaximumLength)")
                     .font(CovaType.caption.monospacedDigit())
@@ -110,11 +302,7 @@ struct StudioCreateView: View {
                     promptFocused = true
                 }
             }
-            .disabled(
-                session.studioCreatePrompt.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                ).isEmpty || state.isBusy
-            )
+            .disabled(!session.canSubmitStudioCreate)
             .accessibilityHint(state.isBusy ? "这次提交还在跑" : "一次点击提交一次任务")
         }
         .padding(CovaSpace.lg)
@@ -208,7 +396,15 @@ struct StudioCreateView: View {
                 workRow(work, index: index)
             }
         }
-        .task { await session.refreshSavedWorks() }
+        .task {
+            await session.refreshSavedWorks()
+            // 制作人卡只在 19 被打开时读一次：它是灰度开关的读数，服务端一改灰度
+            // 下一次进这一屏就该看到，不留长期缓存。
+            await session.loadProducerCards()
+        }
+        .sheet(isPresented: $producersShown) {
+            ProducersPanelView()
+        }
     }
 
     /// 行点击 = 播放（19 §3.E）；↓/✓ 是**独立一格**的按钮，不与播放共用热区

@@ -1,0 +1,37 @@
+{
+  "works": [
+    "a-string-that-is-not-a-row",
+    42,
+    null,
+    {
+      "title": "没有 id 的行"
+    },
+    {
+      "id": ""
+    },
+    {
+      "id": "job-drift:cand-1",
+      "jobId": "job-drift",
+      "title": "形状漂了的一行",
+      "audioUrl": "/api/media/objects/mo_f12d83ad?ref=mr_67ff4cbf&intent=play",
+      "duration": "118.4 秒",
+      "status": "uploading",
+      "tags": "流行,夏日",
+      "lyrics": null,
+      "modelVersion": 7,
+      "instrumental": "true",
+      "voiceName": null,
+      "errorMessage": null,
+      "createdAt": 1759000000000,
+      "source": "studio-create",
+      "providerClipId": null,
+      "melody": {
+        "url": "/api/media/objects/mo_f12d83ad?ref=mr_67ff4cbf&intent=play"
+      },
+      "favorited": "true",
+      "disliked": 1
+    }
+  ],
+  "nextCursor": null,
+  "total": 6
+}

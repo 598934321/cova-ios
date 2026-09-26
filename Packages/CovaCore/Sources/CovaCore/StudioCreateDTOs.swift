@@ -369,14 +369,29 @@ public struct CreateWorkItemDto: Decodable, Equatable, Sendable {
         )
     }
 
-    /// 能不能播 / 能不能直存：终态成功、不是占位行、且拿得到地址。
+    /// 能不能**播**：终态成功、不是占位行、且有 `audioUrl`。
     ///
-    /// `audioUrl` 优先（站内相对，出口守卫认它）；`playbackUrl` 是 COS 绝对直链，
-    /// 只有落在 `CovaEnvironment.sanctionedStorageHosts` 上才可用（D23②），
-    /// 所以这里**只报告有没有**，放行与否由出口守卫裁决 —— 客户端不自己放宽名单。
+    /// ⚠️ 判据里**没有** `playbackUrl`（2026-09-26 更正；早先这里写的是
+    /// `audioUrl != nil || playbackUrl != nil`，与 `WorksListRowDto` 各持一套 —— 同一个判定
+    /// 写两处、其中一处漏改是本仓反复复发的缺陷族）。两条实测把 `playbackUrl` 从"播放"这一格
+    /// 摘掉：§7 #37 实测作品行的 `playbackUrl` 6/6 签在 `covalink-uploads-…`（名单外），
+    /// 而 §7 #39 之后 `audioUrl` 走同源 `intent=download` 已能 200 出字节 ⇒ 播放这一腿
+    /// 没有任何一条需要 `playbackUrl`，留着它只会画出一个点下去必然失败的 ▶。
+    ///
+    /// 直存是**另一格**（名单内桶的绝对直链在那条腿上是可用的）⇒ 看 `hasStorableSource`。
     public var isPlayable: Bool {
         guard status == .succeeded, !isPendingPlaceholder else { return false }
-        return audioUrl != nil || playbackUrl != nil
+        return audioUrl != nil
+    }
+
+    /// 能不能**直存到本机**：`audioUrl` 之外，落在 D23 名单桶上的 `playbackUrl` 也算
+    /// （`WorkDownloadStore` 用 `isSanctionedMediaURL` 裁决，名单外一律拒 ——
+    /// 这里只报告"有没有一条本端认的腿"，放行与否仍归出口守卫）。
+    public var hasStorableSource: Bool {
+        guard status == .succeeded, !isPendingPlaceholder else { return false }
+        if audioUrl != nil { return true }
+        guard let raw = playbackUrl?.rawValue, let url = URL(string: raw) else { return false }
+        return CovaEnvironment.isSanctionedMediaURL(url)
     }
 
     /// 上屏标题（缺失回落见 19 §3.E 的「未命名作品」，那一句在 UI 层，不在 DTO 里编）。

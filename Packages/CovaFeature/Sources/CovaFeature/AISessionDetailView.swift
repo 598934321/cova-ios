@@ -24,6 +24,11 @@ public struct AISessionDetailView: View {
     @State private var plans: [OneStepPlanCardDto] = []
     @State private var candidates: [GenerationCandidateDto] = []
     /// 最近一轮生成任务：09 §I 的进度条用它读 6 态（§8「只驱动 I 进度条与 H 终态条」）。
+    ///
+    /// 写它的一律是"屏上刚拿到一份关于这一路的权威读数"：载荷两处（进屏 / 下拉对账）、
+    /// `start` 核到任务那一处，以及 §5 P1-5 那条 jobs 轮询（`applyJobPoll` 里由
+    /// `SessionJobPollReconcile.Decision.writesJob` 放行）。轮询**只**写这一行与（它自己带着
+    /// 非空候选时）`candidates`，别的面向来不归它。
     @State private var latestJob: GenerationJobDto?
     /// `GET …/sessions/:id` 的 `session.workflowState`（E5：09 §3-I 那条进度的**真来源**）。
     /// 每次详情载荷到达就整包重播（与 ♡ 账同一口径）：留着上一轮的阶梯 = 把已经走过的环节
@@ -48,6 +53,14 @@ public struct AISessionDetailView: View {
     @State private var choosingVersion = false
     /// 失败卡「重试」的那一次**读**在不在途（连点吞后发，同 §10 对 ♡ 的口径）。
     @State private var reconciling = false
+    /// 21 面板（会话路径）开没开。宿主只有这一个布尔：面板自己不管 sheet 之外的生命周期。
+    @State private var extrasShown = false
+    /// jobs 轮询那条腿的**归属号**（§5 P1-5）。每一次"有别的主人接管这一轮"（一轮流起来、
+    /// 又读到一份载荷、屏不见了）都把它加一 ⇒ 在途那一趟回来时号对不上就直接丢。
+    /// 靠号而不是只靠 `Task.cancel()`：`await` 已经返回的那一趟不受 cancel 影响，
+    /// 而"取消任务 + 立刻发起新任务"这种竞态要的正是这一层。
+    @State private var jobPollToken = 0
+    @State private var jobPollTask: Task<Void, Never>?
     @State private var lineCounter = 0
     @State private var agentBuffer = ""
 
@@ -65,7 +78,17 @@ public struct AISessionDetailView: View {
         .navigationTitle("创作会话")
         .navigationBarTitleDisplayMode(.inline)
         .task { await openSession() }
-        .onDisappear { Task { await session.cancelStudioStream() } }
+        .sheet(isPresented: $extrasShown) {
+            WorkExtrasPanelView(host: .session(id: sessionID, instrumental: nil)) {
+                extrasShown = false
+            }
+        }
+        .onDisappear {
+            // 屏不在了就没有观察者 ⇒ 两条在途的腿一起收掉：流照旧取消，jobs 轮询也必须停
+            // （屏上看不见的东西不许继续花请求，更不许回来写一份没人看的状态）。
+            stopJobPoll()
+            Task { await session.cancelStudioStream() }
+        }
     }
 
     // MARK: 流式过程
@@ -177,6 +200,16 @@ public struct AISessionDetailView: View {
                     Button("选一版继续制作") { choosingVersion = true }
                         .font(CovaType.callout).foregroundStyle(CovaColor.accentText)
                         .accessibilityHint("选择后要挑一个版本")
+                }
+                // 21 面板的**第二个宿主**（会话路径，按 key 扣 co）。放在终态行而不是候选卡上：
+                // 补充制作是"这一轮做完了再加工"，两版都还没收口时给它一个入口就是引导用户
+                // 去花一笔还不该花的钱。
+                // `instrumental` 传 nil：这一格是**会话**，没有"某一行的器乐事实"可给，
+                // 而面板的规则是"宿主给不出就不滤键集"——滤与不滤由服务端的权威答复决定。
+                if DoubleDemoRule.isTerminal(pair) {
+                    Button("补充制作") { extrasShown = true }
+                        .font(CovaType.callout).foregroundStyle(CovaColor.accentText)
+                        .accessibilityIdentifier("cova.session.extras")
                 }
             }
             ForEach(pair.indices, id: \.self) { index in
@@ -299,10 +332,11 @@ public struct AISessionDetailView: View {
     ///   `retryable_failure`，§9 行 7/10 明令「开始制作」禁用，而"重新制作"这颗本来就在
     ///   **计划卡**上（`PlanStatusCopy.primaryAction`），不该在候选卡上再长一颗。
     /// ⇒ 于是这一枚做本屏唯一**既有真实效果、又不碰钱**的动作：重新核对这一轮
-    ///   （`GET sessions/:id` + `plans`，与 §8「下拉刷新」同一口径）。这也不是空转 ——
-    ///   本屏**从不轮询 jobs**（见 `deliveryProgress` 那段），所以屏上的"失败"完全可能是
-    ///   上一次进屏时的旧快照，重读恰好是能纠正它的那一下。仍然失败时按 §5 行 6 引导
-    ///   「换一句话再来一次」，全程不出现扣费/退款话术（D12）。
+    ///   （`GET sessions/:id` + `plans`，与 §8「下拉刷新」同一口径）。
+    ///   2026-09-27 起本屏**已有** jobs 轮询那条腿（§5 P1-5，见「任务轮询」一节），这一枚
+    ///   仍然不是空转：轮询只读 `generation-jobs?id=` 那**一行**，而这一枚读的是会话整包
+    ///   —— 计划卡、消息流、workflow 阶梯都只有这一枚（与下拉刷新）会取回来。仍然失败时按
+    ///   §5 行 6 引导「换一句话再来一次」，全程不出现扣费/退款话术（D12）。
     /// 这一枚不接 candidate 参数：今天它做的是**整轮**重读，与是哪一版无关。等后端真的补出
     /// 「只补做失败那一版」的端点（§待裁决 4 点名的那个缺口），这里才需要把候选身份带进动作。
     @ViewBuilder
@@ -345,6 +379,8 @@ public struct AISessionDetailView: View {
             favorites.reseed(from: candidates)
             choosingVersion = false
             syncStudioJobLedger()   // 同 `openSession`：这份重读就是 08 那一格的对齐时机
+            // 这份载荷就是这一路最新的一份权威状态 ⇒ 轮询以它为基准重来（旧号作废）。
+            restartJobPoll()
             if candidates.contains(where: { DoubleDemoRule.isFailed($0) }) {
                 // §5 行 6 的引导，且只说这一句：不出现"扣费/退款"任何字样（D12）。
                 session.showToast("这一版仍未完成，可以换一句话再来一次")
@@ -480,9 +516,15 @@ public struct AISessionDetailView: View {
             // 核到任务了 ⇒ 这一次逻辑操作已经结束，键可以作废：
             // 用户之后若真的「重新制作」，那是一次新操作，该拿一个新键。
             startTokens.invalidate(sessionID: sessionID, planCardID: planCardID, revision: revision)
+            // 屏上那一路 job 的读数与候选清单**必须同源**：以前这里只换清单不换 `latestJob`，
+            // 于是进度条与 08 那一格读的还是上一轮那一行，而清单已经是新一轮的空清单
+            // —— 两个主人各说一段事实。核到的是哪一行，屏上就跟着认哪一行。
+            latestJob = newest
             candidates = newest.candidates()
             degradeLabel = nil
             append(.system("已核到任务：\(newest.status.userLabel)"))
+            // 这一行大概率正是 `submitted`（§5 P1-5 那条腿要跟的就是它）。
+            restartJobPoll()
         } else {
             degradeLabel = "会话里还没有任务，若额度已变动请到官网核对"
         }
@@ -511,10 +553,14 @@ public struct AISessionDetailView: View {
     /// 三个输入各自是什么：
     /// · `plan.status` —— §3-I 的**出现/收起**条件（只有 `delivery_preparing` / `rehydrating`）。
     /// · `latestJob.status` —— 只换一句文案（取消 ⇒ 「本轮已停止」）。
-    ///   §8 另给的 `GET …/generation-jobs?id=` 轮询节奏（前 6 次 5s、之后 10s）**本屏尚未接** ——
-    ///   该端点目前全仓零调用点（DTO 有、服务方法没有），所以取消/失败这类只出现在 job 上的
-    ///   事实要等下一次进屏 / 下拉刷新才会被看到。这是**客户端待办**，不是后端缺口，
-    ///   也不拿轮询冒充：见 `docs/log` 当日「没做的（据实）」。
+    ///   §8 另给的 `GET …/generation-jobs?id=` 轮询**本屏已经接上**（2026-09-27，
+    ///   DEVELOPMENT.md §5 P1-5）：屏在、屏上那一行未终态、且本机没在读这一轮流的时候，
+    ///   按 `StudioCreatePollSchedule` 的节拍读那一行 ⇒ 取消/失败这类**只出现在 job 上**的
+    ///   事实不必离开再进来才看得见。整条腿在下一节「任务轮询」，判据在 CovaCore 的
+    ///   `SessionJobPollReconcile`（那里有用例钉着"读到取消只收口一次""投到上限不说失败"
+    ///   "行里没带着候选就不许动清单"这三条）。
+    ///   （本节此前写着"该端点全仓零调用点"—— 那句话自 0.2.72 起就是假的：19 屏的
+    ///   `StudioCreateFlow.pollStudioCreate` 一直在投它；剩下缺的只是**本屏**这一处，本轮补上。）
     /// · `workflow` —— 09 §3-I 那条进度的**真来源**（`session.workflowState`，E5 的更正）。
     ///   解不出/没有 ⇒ 映射自己退回契约状态那套数字，本屏不需要为它写分支。
     ///   与 job 同一节奏：只在进屏/下拉刷新时重取，**不**随 SSE 增量前进（那是客户端待办，
@@ -528,8 +574,11 @@ public struct AISessionDetailView: View {
 
     /// 08 §3.C 那一格环的**唯一来源**：本设备内存里这一路的未终态 job（§数据源行 140）。
     ///
-    /// 写点**只**落在"屏上刚拿到一份权威状态"的那几处（进屏、下拉对账、计划卡帧、启动计划），
-    /// 不为这本账新增任何轮询 —— 08 §数据源明令不得 N+1，09 §8 那条 jobs 轮询本来就是客户端待办。
+    /// 写点**只**落在"屏上刚拿到一份权威状态"的那几处（进屏、下拉对账、计划卡帧、启动计划，
+    /// 以及 jobs 轮询读到终态那一次），并且**只走 `syncStudioJobLedger` 这一条**：
+    /// 08 §数据源明令不得 N+1 ⇒ 那一格的环**绝不**为它自己新增任何轮询。09 §8 那条
+    /// `generation-jobs?id=` 轮询（本轮已接，见下一节）只在 09 自己屏上读**一行**，
+    /// 它给 08 的贡献只是"顺带把账收口"，不是给每一格会话都投一次请求。
     /// 收口同处理由：`update…` 只更新已有那条的读数，本机没发起过的会话（冷启动、别人发起的）
     /// 在这里既不上环也不报错，与 §9 判据第 3 条同一形状。
     private func syncStudioJobLedger() {
@@ -561,7 +610,8 @@ public struct AISessionDetailView: View {
 
     /// 终态只用本屏**已有**的两把尺子判，不给计划卡的 12 态发明第二套"哪些算结束"：
     /// · `DoubleDemoRule` —— 硬边界 6 的「前两个候选都 settled 才算终态」（不足两个永不终态）；
-    /// · `GenerationJobStatus` 自己的词表 —— succeeded / failed / cancelled 是后端说"这一路完了"。
+    /// · `GenerationJobStatus` 自己的词表（`isTerminal`）—— succeeded / failed / cancelled
+    ///   是后端说"这一路完了"。同一本词表也管 jobs 轮询该不该起腿，所以这里不写 case 列表。
     ///
     /// `busy`（本机正在读这一轮的流）时**一律算未收口**：那段时间里 `candidates / latestJob`
     /// 还是这一轮开始**之前**的那份载荷，拿它判终态会把刚上环的格子当场抹掉
@@ -569,10 +619,119 @@ public struct AISessionDetailView: View {
     private var roundIsSettled: Bool {
         if busy { return false }
         if DoubleDemoRule.isTerminal(DoubleDemoRule.pair(candidates)) { return true }
-        switch latestJob?.status {
-        case .some(.succeeded), .some(.failed), .some(.cancelled): return true
-        default: return false
+        return latestJob.map { $0.status.isTerminal } ?? false
+    }
+
+    // MARK: 任务轮询（09 §8 / DEVELOPMENT.md §5 P1-5）
+
+    /// 起（或重新起）这条腿：判据全在 CovaCore 的 `SessionJobPollReconcile.canArm` ——
+    /// 没有任务号、流正读这一轮、屏上那一行已经终态，三种情况都不起腿。
+    ///
+    /// "每一次取代都换一个新的归属号"是这条腿唯一的失效手段：载荷到达、一轮流起来、屏消失
+    /// 都会走到这里（或 `stopJobPoll`），于是**同一件事实不会有两个主人**，
+    /// 而慢回来的那一趟只会丢，不会写。
+    private func restartJobPoll() {
+        restartJobPoll(jobID: latestJob?.id, tracked: latestJob?.status)
+    }
+
+    /// `tracked` 是这条腿自己跟着看的那一份状态：载荷给的 `latestJob` 带着它；
+    /// 而 `plans/start` 刚拿到任务号时屏上**还没有**那一行 ⇒ 传 `nil`（未知 ≠ 终态）。
+    private func restartJobPoll(jobID: String?, tracked: GenerationJobStatus?) {
+        stopJobPoll()
+        guard SessionJobPollReconcile.canArm(
+            jobID: jobID, status: tracked, streamMidRound: busy
+        ), let jobID else { return }
+        let token = jobPollToken
+        jobPollTask = Task { await runJobPoll(jobID: jobID, tracked: tracked, token: token) }
+    }
+
+    /// 停腿但**留着屏上已经画着的东西**：屏已经不看这一路了，屏上那份已知状态仍然是已知状态。
+    private func stopJobPoll() {
+        jobPollToken += 1
+        jobPollTask?.cancel()
+        jobPollTask = nil
+    }
+
+    /// 循环本体。**这里没有任何判据**：什么时候写、写哪几个面、什么时候停，
+    /// 一律问 `SessionJobPollReconcile.decide`（用例在 CovaCore 钉着），本方法只执行赋值。
+    ///
+    /// 节拍复用 `StudioCreatePollSchedule`（19 屏那本账：前 6 次 5s、之后 10s、上限约 30min），
+    /// 不发明第二套表。第一趟**先等一个节拍**再投：载荷刚到就再投一次，只是把刚读到的东西
+    /// 再读一遍（服务端那一趟还会替我们 `refreshGenerationJob`，不免费）。
+    private func runJobPoll(jobID: String, tracked: GenerationJobStatus?, token: Int) async {
+        let schedule = StudioCreatePollSchedule()
+        var previous = tracked
+        var attempt = 1
+        while !Task.isCancelled {
+            // 空观测 = 这一趟还没投。判决在这一次调用里回答"还该不该发"：
+            // 到上限（`.capReached`）或流已经接管这一轮（`.streamOwnsRound`）都会停。
+            let gate = SessionJobPollReconcile.decide(
+                previous: previous, observation: .nothingRead,
+                streamMidRound: busy, attempt: attempt, schedule: schedule
+            )
+            if gate.stops {
+                // `.capReached` 这一档**什么都不写、也什么都不说**：服务端可能仍在跑，
+                // 屏上保持最后一次已知状态。把"我没再读到"讲成"这一轮没能完成"是把
+                // 观察者的预算冒充成被观察者的结论（19 屏那一档叫 `.unconfirmed`，
+                // 而本屏连这一句都不需要 —— 屏上确实没有新事实）。
+                return
+            }
+            try? await Task.sleep(
+                nanoseconds: UInt64(schedule.interval(forAttempt: attempt) * 1_000_000_000)
+            )
+            guard token == jobPollToken, !Task.isCancelled else { return }
+            // 单次读不到不终止整条腿（网络抖动不等于任务失败，19 屏同一口径），
+            // 也不许它改屏上任何东西 —— 所以这里连 `catch` 都不必分支，只把"没读到"交给判决。
+            let polled = try? await session.studioCreateService.generationJob(id: jobID)
+            // 号对不上 ⇒ 这一趟属于已经被取代的那条腿：一个字都不写（`await` 已经回来的
+            // 那一趟不受 `cancel()` 影响，所以这一道比较是必需的，不是双保险）。
+            guard token == jobPollToken, !Task.isCancelled else { return }
+            let job = polled?.job
+            let decision = SessionJobPollReconcile.decide(
+                previous: previous,
+                observation: SessionJobPollReconcile.Observation(job: job),
+                streamMidRound: busy,
+                attempt: attempt,
+                schedule: schedule
+            )
+            applyJobPoll(decision, polled: job)
+            if decision.stops { return }
+            previous = job?.status ?? previous
+            attempt += 1
         }
+    }
+
+    /// 执行一次判决：五个开关各自落到屏上那一个赋值点，本方法不自己加判据。
+    private func applyJobPoll(
+        _ decision: SessionJobPollReconcile.Decision, polled job: GenerationJobDto?
+    ) {
+        if decision.writesJob, let job {
+            // **整行**换上屏是有依据的：两个端点是同一个投影函数
+            // （`projectGenerationJob = { ...withPlayableAudio(job), ...timing }` ——
+            // `web/src/app/api/find-my-song/generation-jobs/route.ts:26-32` 与
+            // `web/src/app/api/find-my-song/sessions/[id]/route.ts:40-46` 逐字相同，
+            // 2026-09-27 真实账号双向只读 GET 实测同一个 succeeded 任务：键集合差为空、
+            // 除签名地址一族外所有同名键逐字节相等）。核对记录全文在
+            // `CovaCore/SessionJobPollReconcile.swift` 文件头。
+            latestJob = job
+        }
+        if decision.writesCandidates, let job {
+            let fresh = job.candidates()
+            // 判决只会在"行里真的带着非空候选"时放行这一维（文件头事实二：submitted 那一行
+            // 没有 `candidates` 键、重试那一行显式写 `[]`）⇒ 这里不可能拿空清单洗屏。
+            // 再比一次才赋值：♡ 的乐观值经不起 5 秒一次的重播种，而"清单其实没变"是常态。
+            if fresh != candidates {
+                candidates = fresh
+                // 清单换成服务端这一份 ⇒ ♡ 账与"已经问过挑哪一版"照 `openSession` 的同一口径
+                // 重播种 / 作废：留着上一份清单上的乐观值或选择钮，就是让用户按着
+                // 已经被后端改掉的清单继续操作。
+                favorites.reseed(from: fresh)
+                choosingVersion = false
+            }
+        }
+        // 终态**只**走这条已有的收口腿：08 那一格的环收口 + `StudioNotifier.reconcileTerminal`。
+        // 不在这里另发一次通知、也不在这里改屏上的失败话术（那一份仍归载荷）。
+        if decision.settles { syncStudioJobLedger() }
     }
 
     /// §3-I 的形态：左文案（`type.subhead` / `color.secondary`）+ 右列（`type.mono` / `color.muted`）
@@ -692,6 +851,9 @@ public struct AISessionDetailView: View {
             await refreshBalance()
             phase = .ready            // 这份载荷是权威状态 ⇒ 顺手把 08 那一格的在途账对齐（收口/推进读数，不新发请求）。
             syncStudioJobLedger()
+            // 这一路若还挂着未终态的那一行，就从这一刻起按节拍读它（§5 P1-5）：
+            // 载荷是这一路的基准，所以**每次**载荷到达都重新起腿（旧号作废）。
+            restartJobPoll()
             // 首页输入卡带过来的一句话：进屏后自动发一次（01 §2「提交后跳转创作会话详情」）。
             if let pending = session.pendingPrompt {
                 session.pendingPrompt = nil
@@ -717,6 +879,8 @@ public struct AISessionDetailView: View {
     private func submit(_ text: String) async {
         busy = true
         defer { busy = false }
+        // 一轮流起来 ⇒ 这一轮的主人换成流：正在途的那趟轮询回来也只能丢（号在这里作废）。
+        stopJobPoll()
         append(.user(text))
         agentBuffer = ""
         thinkingSteps = 0
@@ -742,6 +906,12 @@ public struct AISessionDetailView: View {
         }
         await refreshDegradation()
         if await session.studioStreamState().phase == .finished { runLabel = nil }
+        // 流读完这一轮 ⇒ 主人交还给"下一次读"：这时才允许重新起腿。
+        // `busy` 在这里显式落回 false（上面那道 `defer` 仍在，重复赋 false 是幂等的）——
+        // 不显式落就永远起不来：`canArm` 的第一条就是"流正读着这一轮不起腿"，
+        // 而 defer 要到本函数返回之后才跑。
+        busy = false
+        restartJobPoll()
     }
 
     /// 降级条的文案**由状态机的事实决定**（09 §B）：阶段 + 触发原因，不靠猜。
@@ -862,6 +1032,10 @@ public struct AISessionDetailView: View {
             // 读数此刻还没有（`deliveryProgress` 只在补充制作窗口里出现），传 nil 就是
             // §3.C 那一档「生成中」，不是 0%。
             session.markStudioJobLive(sessionID: sessionID, progress: nil)
+            // 这一行的任务号是**后端刚给的**，屏上那份载荷里还没有它 ⇒ 轮询跟的是这个号，
+            // 而"屏上现在显示的状态"要如实报成未知（`tracked: nil`）：未知不是终态，
+            // 拿上一轮那一行的终态去挡这一条腿，就等于把用户正等着的那一路排除在补腿之外。
+            restartJobPoll(jobID: jobID, tracked: nil)
             // 授权时机：spec 明令**只在开始制作成功之后**索权；被拒不再反复索。
             if await StudioNotifier.requestPermissionAfterPlanStart() {
                 await StudioNotifier.scheduleFallback(

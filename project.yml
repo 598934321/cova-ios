@@ -111,6 +111,16 @@ targets:
         #     并按评审指认补 `.advanced` / `.repeated` **总闸**（引擎确实装着当前项或真有一代
         #     装载在途才允许声称推进）；MIN-R7-1 三个配置旋钮构造期 clamp；MIN-R7-2 toggle 把
         #     `.loading` 归入「正要响」一侧；§20 删不可达收敛腿；PLAYER_MIN 394 → 397
+        # → 0.2.76/94 P1/P2 五屏整批落地（20 works 列表 / 21 补充制作 / 22 co 明细 /
+        #     23 制作人入口 / P1-2 三档操作 UI / P1-5 会话详情 jobs 轮询）。
+        #     生产入口三处一并接上：19 导航条「全部作品」→20、11 资产组「co 变动明细」→22、
+        #     20 行 ⋯「补充制作」与 09 终态行「补充制作」→21、19 计数行「+」→23（灰度空 ⇒ 整枚不出现）。
+        #     22 的「任务」跳 20 走**路由载荷**带 jobId（`Route.worksList(jobID:)`），
+        #     不用 worksList.anchoredJobID 那份状态 —— 状态会被下一次 .task 抹掉、
+        #     也会把上一次的锚点漏到这一次。
+        #     基线按同一次门禁运行抬：CORE 745→901、FEATURE 104→242（PLAYER/APP 未动）。
+        #     两处更正来自实测：extras 产物 type 不是一对一（instrumental-* 属 accompaniment，
+        #     按任务书映射会抹掉母带行）；`isPlayable` 与 `hasStorableSource` 拆成两格。
         # → 0.2.75/92 §5 P1-2 的契约半条：generate 请求体加 sourceClipId / continueAt
         #     （翻唱/续写/重制），并更正一条写死的错判据 —— 「prompt 必填」只在 mode=simple
         #     成立（generate.ts:107），无条件拦会把 advanced 的合法提交挡在本地。
@@ -138,8 +148,8 @@ targets:
         # → 0.2.69/80 R18-2（第 18 轮 Major）：十条美术腿改经 `CovaArtworkResolution`（D23 唯一
         #     裁决面）—— 站内相对封面/头像补成生产 origin 且查询串逐字节保留，出口拒绝点名 host；
         #     并新建 CovaFeature 最小测试目标（`CovaFeatureTests`，23 条，只钉媒体腿，无 UI 快照）
-        CFBundleShortVersionString: "0.2.75"
-        CFBundleVersion: "92"
+        CFBundleShortVersionString: "0.2.76"
+        CFBundleVersion: "94"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

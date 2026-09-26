@@ -446,6 +446,13 @@ public struct MineView: View {
                 CovaLinkRow(title: "我的歌单", symbol: "list.bullet") { chevron } action: { open(.myPlaylists) }
                 CovaRowDivider()
                 CovaLinkRow(title: "我的创作", symbol: "sparkles") { chevron } action: { open(.aiSessions) }
+                CovaRowDivider()
+                // 22「co 变动明细」：C 余额卡按 11 §验收第 1 条**整卡不可点**，所以流水的入口
+                // 只能落在资产组这一排里。文案只用「co / 变动 / 明细」——「积分」是 A15 明令的
+                // 漂移词；这一行只读，不带任何充值/购买语义（D12 那一条闸仍然只管库曲下载）。
+                CovaLinkRow(title: "co 变动明细", symbol: "list.bullet.rectangle") { chevron } action: {
+                    open(.creditsLedger)
+                }
                 // 11 §1/§3.E/§7：「已下载」行在 D12 合规放行前**整项不渲染**（与 04 §3.D 同一条裁决，
                 // 不是置灰/禁用）：放行前给它一个入口，等于向用户承诺一个不存在的页面。
                 // §7 v1.0 同样裁决：三行右侧的**资产计数整项不构造**（无聚合计数端点，

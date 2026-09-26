@@ -1,0 +1,86 @@
+{
+  "producers": [
+    {
+      "id": "prod-northern-light",
+      "displayName": "北光",
+      "fictional": true,
+      "tagline": "把 demo 做成可上架的母带",
+      "audience": "独立音乐人 / 短视频创作者",
+      "greeting": "把你的 demo 交给我，我来出母带。",
+      "stages": [
+        {
+          "id": "brief",
+          "label": "接需求",
+          "summary": "读你的 demo 与歌词，确认目标版本"
+        },
+        {
+          "id": "master",
+          "label": "母带",
+          "summary": "混音 + 响度 + 峰值复核"
+        }
+      ],
+      "deliverables": [
+        {
+          "kind": "master_wav",
+          "label": "母带 WAV",
+          "required": true,
+          "description": "48k/24bit"
+        },
+        {
+          "kind": "stems_zip",
+          "label": "分轨包",
+          "required": false,
+          "description": "按轨拆分"
+        },
+        {
+          "kind": "copyright_certificate",
+          "label": "版权证明",
+          "required": true,
+          "description": "出证由平台条款另行确认"
+        }
+      ],
+      "extensions": [
+        {
+          "id": "remix",
+          "label": "风格 remix",
+          "description": "另出一版不同编曲",
+          "enabled": true
+        },
+        {
+          "id": "vocal-tune",
+          "label": "人声修正",
+          "description": "轻度修音",
+          "enabled": false
+        }
+      ],
+      "demoCount": 6,
+      "cardCount": 2
+    },
+    {
+      "id": "prod-real-studio",
+      "displayName": "潮汐录音棚",
+      "fictional": false,
+      "tagline": "实录与人声代唱",
+      "audience": "品牌方",
+      "greeting": "可以约实录档期。",
+      "stages": [
+        {
+          "id": "book",
+          "label": "排期",
+          "summary": "确认档期"
+        }
+      ],
+      "deliverables": [
+        {
+          "kind": "singer_authorization",
+          "label": "歌手授权",
+          "required": null,
+          "description": "授权条款以另行确认为准"
+        }
+      ],
+      "extensions": [],
+      "demoCount": 0,
+      "cardCount": 1
+    }
+  ]
+}

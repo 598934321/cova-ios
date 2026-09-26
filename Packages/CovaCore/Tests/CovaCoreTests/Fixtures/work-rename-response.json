@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "work": {
+    "id": "job-7f3a:cand-1",
+    "jobId": "job-7f3a",
+    "title": "改过的标题",
+    "coverUrl": "https://covers.invalid/work/x.jpeg",
+    "audioUrl": "/api/media/objects/mo_f12d83ad?ref=mr_67ff4cbf&intent=play",
+    "duration": 118.4,
+    "status": "succeeded",
+    "tags": [
+      "流行"
+    ],
+    "lyrics": "夏天的第一次落雨",
+    "modelVersion": "chirp-hawk",
+    "instrumental": false,
+    "voiceName": null,
+    "errorMessage": null,
+    "createdAt": "2026-09-26T03:12:00.000Z",
+    "source": "studio-create",
+    "providerClipId": "clip-1",
+    "favorited": true
+  }
+}

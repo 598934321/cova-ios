@@ -377,7 +377,33 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 备注文本要走 `PATCH /api/notes/{id}`，而 `storyText` 同时是物化关联键 ⇒ 改它会断开收藏回读。
 `favorite` 与 `dislike` 服务端互斥（点踩会撤收藏）。错误形如 `{error:字符串}`，409 = 作品尚未生成完成。
 
-**extras（补充制作）**：key 闭集 6 个，`instrumental==true` 时服务端**滤掉**
+**extras 产物的 `type` 是哪来的（2026-09-26 逐行读 `web/src/lib/studio/extras-service.ts:313-322`）**
+—— 这一格必须写死在这里，因为**它不是一对一**，按"类型名像什么"去反推 key 会画出真 bug：
+
+| 服务端 kind | 线上 `type` |
+| --- | --- |
+| `master_wav` | `audio-wav` |
+| `accompaniment` | `instrumental-wav`（mime 含 wav）／`instrumental-mp3` |
+| `stems`、`vocals` | **都是 `stems`** |
+| `video`（或 mime 是视频） | `video` |
+| `timing`、`lyrics`、`metadata` | **都是 `doc`** |
+| `cover` / image | `cover` |
+
+⇒ 只有 `audio-wav⇒wav`、`instrumental-*⇒accompaniment`、`video⇒lyrics_video` 三对是**一对一**，
+可以用来把"已经做好的那个 key"从可选组里收掉；`stems`（分轨 + 人声分轨两枚）与 `doc`
+（时间轴 + 歌词 + 元数据三枚）**多义，不许拿它隐藏任何 key** —— 按 `type` 猜就会把
+"做过伴奏的作品"上的「母带 WAV」整行抹掉。认不出身份的产物行**不渲染**（画不出标签就不画），
+可认但多义的行标签用 §8 两枚标签的连接形态「分轨 / 人声分轨」，说"两者之一"而不替服务端指认。
+> 本段是**对协调者任务书的一次纠正**：任务书里写的是「`instrumental-wav` ⇒ wav」，
+> 照抄就会出上述那个 bug。实测在此，谁的旧说法与这段冲突以这段为准。
+
+**extras 的 ledger 与幂等**：reason 是 `media_extra`（扣费，**不在**服务端 `reasonLabel` 映射里
+⇒ 流水页显示「其他变动」）与 `media_extra_refund`（退款，有标签「素材加工退款」）；
+两条 POST 的体里**没有**幂等键字段（§7 #45），且作品级那一条**不按键集去重**（§7 #47）
+⇒ 客户端只落"一次点击 = 一次在途、在途不可再点、失败不自动重发"这一条纪律，
+屏上也不许出现"服务端说这是复用"那类断言。
+
+**extras 的 key 闭集是 6 个**，`instrumental == true` 时服务端**滤掉**
 `lyrics_video/vocal_stems/accompaniment/lyrics_timing` ⇒ 客户端选项集必须跟着滤。
 `works/{id}/extras` **只认伪 id**（裸 jobId 404）且**不回 `deliveryRevision`**；
 `/api/studio/extras?sessionId=` 才回（它是工作流计数器）。`files[].url` 里的 jobId 是
@@ -592,6 +618,8 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 
 | 46 | **作品级补充制作在生产上恒被取消，A8 的产物字节今天拿不到**。2026-09-26 实测（同一行 `e091da30…:054e7f3d…`，两次独立提交、间隔约 8 分钟）：`POST works/{id}/extras {keys:["wav","stems"]}` ⇒ **200** + `{ok,files}` 两行 `version=补充制作准备中`、**无 `url`**；此后每 20s 复列一次，**约 6 分钟后两行都翻成 `version=已取消`**，两批都是这个结局（换第三行只提交 `wav` 也一样）。全程 **ledger 无新增行**（19315 不变）⇒ 与 §4.7 一致：作品级这一支不扣费。所以不是"我没等到"，是**接单之后被取消**：`wav→get_wav`、`stems→create_stems` 这些 worker 任务在这套部署上没有跑起来（与 #29 记的"rehydrate worker 自 2026-08 起离线"同族的症状，但这是另一条 worker 路径） | 待修/待答：这一支 worker 是否需要某个开关（如 `COVA_SUNO_AGENT_ENABLED` 那类）才启用？作品级不扣费却又派工，是否本来就被设计成"只登记不执行"？请给一句结论。**客户端不猜**：`已取消` 就画 `已取消`，不重试成"多试几次总会好" | **A8 判据降级**：已达的一半 = 请求形状 / 200 信封 / 两条腿的字段差（作品级无 `deliveryRevision`、会话级有）/ 不扣费 / pending 无 url 不渲染保存钮 / `已取消` 状态如实上屏；**未达的一半 = 「files 含母带 wav 与分轨 zip」与产物同源 200 流的下载腿**（没有 url 就没有下载腿可验）。21 屏的下载那一格因此只能停在"契约与实现备好、服务端不产出" |
 | 47 | **作品级 extras 的 POST 不按键集去重**：同一行、同一 `{keys:["wav","stems"]}` 第二次 POST ⇒ **返回两个全新的 artifact id**（`extra-c933eb1e…`/`extra-27ff57a0…` 之后又出现 `extra-f096fcd1…`/`extra-e6e5df81…`），而不是复用已有那两条。⇒ §6 A8 那句「GET 复列幂等不重复制作」只在**读**这一侧成立（GET 是纯读，复列恒等）；**写这一侧没有去重**。作品级不扣费所以后果只是多派几份被取消的工，但**会话级那一条腿是扣费的**（wav 20 / stems 50 …）且 #45 已记它没有幂等键 ⇒ 两条合起来 = 用户连点两次「开始补充制作」就是两次扣费，服务端不会替我们兜 | 待答：extras 的 POST 请给同指纹/同键集去重窗口，或按 #45 收 `idempotencyKey`。客户端侧已做的只有"一次点击 = 一次在途、在途不可再点"（`ExtrasService` 的 busy 门 + 21 屏主钮在途换菊花且不可点），**那是交互约束不是协议保证** | 加重 #45；A8 的"幂等"那一半按上面降级口径写，不许写成已达 |
+
+| 48 | **产物落沙盒后文件名的扩展名恒为 `.mp3`，与真实容器不符**：21 的「保存到本机」复用了 `WorkDownloadStore`（作品直存那套 Documents + `manifest.json`），而 `WorkDownloadPath.fileName(forWorkId:)` 写死 `.mp3` 后缀。母带是 wav、分轨是 zip ⇒ **字节是对的、文件名是错的**：`afinfo`/Quick Look 仍按内容识别，但用户拖到"文件"里或第三方 app 按后缀猜容器时会拿到一个假的 `.mp3` | 待办（端侧，不阻塞 A8）：给 store 一个"内容类型 → 后缀"的一格（wav/zip/mp3），或由服务端在 `files[].name` 里给权威文件名（21 待答 1 的一部分）。**不改 store 的命名面属于本屏可改范围之外**，所以先如实记下 | 非阻塞：A8 的产物字节今天本来就取不到（#46），这一格要在服务端修好之后、真正做设备验收之前补 |
 
 > 共 **23 条后端待答/待端点**（#4,5,6,8,9,10/12,11,13,14,15,16,17/23/28,18,19,20,21,22,24,25/33,26,27,29,30,31,32）
 > + **2 条端侧待办**（#34,#35）**+ 1 条端侧落点登记**（#36：作品直存清单落点与 12d 不同屏）
