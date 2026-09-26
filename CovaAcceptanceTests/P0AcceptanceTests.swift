@@ -79,7 +79,7 @@ final class P0AcceptanceTests: XCTestCase {
         // 每一轮都往下滚一格再找：服务端历史要等首屏 feed 的并发请求回来才发，
         // 而区块本身在回落账上也会出现 ⇒ 判据只能是"这 N 条标题都在不在"，不是"区块在不在"。
         var missing = expected
-        for _ in 0..<14 {
+        for _ in 0..<34 {   // 服务端历史已从 5 条涨到 35 条 ⇒ 滚动预算跟着给足
             missing = missing.filter { !home.staticTexts[$0].exists }
             if missing.isEmpty { break }
             feed.swipeUp()
@@ -266,8 +266,32 @@ final class P0AcceptanceTests: XCTestCase {
         //    `recorded:true` 与「play-history 出现 work 行」由服务端复核（屏上看不出来）。
         scrollIntoView(firstRow)
         firstRow.tap()
-        Thread.sleep(forTimeInterval: 12)
+        // 这一格是修出来的：上一版只 sleep 12s 就截图，于是"点了、MiniPlayer 出来了"就算过 ——
+        // 而实测那张截图停在「加载私有音频中…」，**声音从来没起来**，A5 的上报自然也没发生
+        // （play-history 34 条里 work 行 = 0）。判据必须是"真的在放"，不是"起过一个弹层"。
+        var playing = false
+        for _ in 0..<30 {   // 最多再等 120s：5.3MB 的整曲要先下载完才能出声
+            if miniPlayerShowsTime() { playing = true; break }
+            Thread.sleep(forTimeInterval: 4)
+        }
         shot("20-after-play")
+        XCTAssertTrue(
+            playing,
+            "A5：点了行之后 MiniPlayer 始终没有走到「有时间在走」那一态 —— "                + "停在「加载私有音频中…」就说明 D7 那条取字节的腿没通，上报不会发生；标签="                + labelDump()
+        )
+        // 起来之后再多等一会儿：集次上报要真的播过一段才发（不是按下即发）。
+        Thread.sleep(forTimeInterval: 45)
+        shot("20-after-listen")
+    }
+
+    /// MiniPlayer 上有没有"时间在走"那一格（`00:12 / 04:03` 这类文本）。
+    /// 只看数字形状，不依赖任何标签措辞 —— 措辞会改，`mm:ss` 不会。
+    private func miniPlayerShowsTime() -> Bool {
+        let pattern = "^[0-9]{1,2}:[0-9]{2}"
+        for text in app.staticTexts.allElementsBoundByIndex {
+            if text.label.range(of: pattern, options: .regularExpression) != nil { return true }
+        }
+        return false
     }
 
     /// A7（works 行内动作）的设备腿：**clip 级那几项**在行 ⋯ 里，job 级那三项在组头 ⋯ 里。
