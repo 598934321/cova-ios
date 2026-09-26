@@ -414,7 +414,7 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 | # | 项 | 判定方式 |
 |---|---|---|
 | A1 | play-history 读 | 模拟器登录 → 「最近播放」列表出现真条目；`sqlite`/`curl -H "Authorization: Bearer $T" 'https://covalink.cn/api/play-history?limit=5'` 返回 items 非空且 iOS 渲染行数一致；work 行（**`track.workId` 非空**，或 trackId 含 `:`）不丢、不崩 |
-| A2 | source 闭合枚举 | 断点/`os_signpost` 抓取实际上报 body，`source ∈ {discover,playlist,project,track_detail,player}`；代码面 `grep -rn '"app-ios"\|"miniprogram"' Packages/` = 0 命中 |
+| A2 | source 闭合枚举 | 三条机械判据，缺一不可：① **类型面**——上报体的 `source` 只能由 `PlayReportSource` 表达（闭集枚举，越界值在编译期写不出来），且 `PlayReportRequestDto` 的 init 只收 `IdempotentRequestToken`；② **生产码面**——`grep -rn '"app-ios"\|"miniprogram"' Packages/*/Sources --include="*.swift \| grep -vE ':[0-9]+: *(///\|//\|\*)'` **0 命中**（生产码非注释行里不许出现自造值）；③ **反向断言必须在**——`PlayReportDTOTests.swift:74`、`PlayReportCoordinatorTests.swift:384,543` 那三条"这个值再回来就红"的断言不许删。⒊ 抓取实际上报 body 的 `source ∈ {discover,playlist,project,track_detail,player}`。<br>⚠️ **判定式于 2026-09-26 改写**：原式写作 `grep … Packages/ = 0 命中`，实测有 8 处命中，其中 5 处是"该值曾被服务端 400 拒"的注释、3 处在测试面（含那三条反向断言）。原式**分不开"代码在发这个值"与"代码在防这个值回来"** ⇒ 想让它归零只能删掉防回归证据，那是把判据做窄。改后既保住断言，又多了一条原式没有的类型面判据（扫描域从"全 Packages"收窄到"生产码"，作为交换补上 ① 与 ③）。 |
 | A3 | generate simple 闭环 | 真机：填 prompt → 生成 → ≤30min 内列表出现 2 首 `succeeded` 行；期间 Console 无红错；`curl` 复用同 idempotencyKey 重放 → 同 jobId 且余额不二次扣 |
 | A4 | 402/400 错误展示 | 构造余额不足/缺 prompt → UI 分别显示「余额不足，本次需要 N」「请填写音乐描述」（透传服务端文案）；无「未知错误」糊词 |
 | A5 | work_listens 上报 | 播放一首作品 → `POST /api/tracks/play` body trackId=`{jobId}:{candidateId}` → 响应 `recorded:true`；随后 `GET /api/play-history` items 含该 work 行 |
@@ -428,6 +428,34 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 | A13 | 私有音频 | 候选/作品音频仍走「Bearer 下载→校验非空→file://」；`grep -rn "audioUrl" Packages/CovaPlayer` 无直链 https 播放私有候选的路径（`playbackUrl` 作品除外，它本就是免凭证直链） |
 | A14 | 截图证据 | 每屏深/浅双主题各一图存 `docs/acceptance/<date>/`，命名 `NN-屏-主题.png`；截图批次必须同 commit 字节（构建退出码 0 + 产物含当批符号，TD-50 教训） |
 | A15 | 术语口径 | UI 文案只用「co / 作品 / 任务」词表（对齐 `GenerationJobStatusCopy`）；不得出现「积分/歌曲任务」等漂移词 |
+
+### 6.1 设备侧判据怎么执行（A1/A3/A5/A6/A14）
+
+这些判据要**点击与滚动**，而驱动本机会话的进程没有 macOS「辅助访问」权限
+（`cliclick` 报 `Accessibility privileges not enabled`、AppleScript 报 `-25211/1002`），
+`simctl` 本身不提供点击，装 idb/appium 会破零第三方依赖（硬边界 4）。
+⇒ 落点是 **XCUITest**：事件注入发生在模拟器内、由 Xcode 测试基础设施驱动，不需要宿主权限，
+且可复现。载体是独立 target `CovaAcceptanceTests` + 独立 scheme `CovaAcceptance`
+（`CovaAcceptanceTests/P0AcceptanceTests.swift`，一条链跑完 A3→A6→A5→A1）。
+
+```
+TEST_RUNNER_COVA_ACCEPT_EMAIL=… TEST_RUNNER_COVA_ACCEPT_PASSWORD=… \
+xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -resultBundlePath /tmp/acc.xcresult
+```
+
+三条不可省：
+- **`TEST_RUNNER_` 前缀是必须的**：`xcodebuild` 不会把普通环境变量转给测试运行器；
+  少了前缀 ⇒ 用例走 `XCTSkip`，而 `xcodebuild` 仍报 `** TEST SUCCEEDED **`
+  （2026-09-26 实付：第一次跑"绿"了，`xcresulttool` 的 `skippedTests=1` 才揭穿）。
+  ⇒ 这条链的验收必须读 `xcresulttool get test-results summary`，不许读 xcodebuild 的最后一行。
+- **口令不进仓库也不进日志**：只从运行器环境读，缺失即 skip（不是失败，也不是通过）。
+- **它不是门禁的一部分**：这条链要真等一个生成任务（分钟级）并真扣一次 co，
+  塞进 `check.sh` 等于把门禁做成不可靠判据；`check.sh` 的 `Cova` scheme 不引用它。
+  代价说清楚：**这条链红了没人拦**（无基线、无 CI 挂钩），所以每次动了 19/01/播放/直存腿
+  都要手动跑一次并把截图落 `docs/acceptance/`。
+- 截图落在运行器容器的 tmp（`xcrun simctl get_app_container <udid>
+  cn.covalink.ios.acceptance-tests data` 取回），同时挂成 xcresult 附件。
 
 ---
 
@@ -468,10 +496,11 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 | 36 | 作品直存的**清单落点**与 12d 不同屏：本仓落 `Documents/Cova/cova-work-downloads/`（owner 分桶 + `manifest.json`，只存本地文件名与展示字段），入口在 19 作品行内（↓ /「已在本机」/ 删除），**没有**「已下载」整屏 | 已按此交付（2026-09-26）；12d §7 的「本机沙盒 + 本地元数据」方法成立、屏不通用 | 要独立清单页须先出规格（设计闸门硬边界 8）|
 | 37 | 作品 `playbackUrl` 实测签在 **`covalink-uploads-…`** 桶（2026-09-26 生产只读探针，`GET /api/studio/create/works?limit=6` ⇒ 6/6 行同形），不在 D23 存储名单（只有 covers/audio）内 ⇒ iOS 出口守卫按主机名拒掉，**§4.4 那句「App 后台播控必须用它」在本端今天不可用** | 待答：能否改签名单内的桶（或论证把 uploads 桶纳入名单——它是用户私产桶，web 侧正因为这点被否过一次） | 非阻塞（播放走 `audioUrl` + D7 本地化已通） |
 | 38 | `GET /api/me/credits/ledger` 的 `jobId` 实测 **6/6 条 null**（含 1 条 `studio_create_generation`），与 §4.6「由 `metadata.jobId` 解出」不符；本账号这批账可能早于该字段上线 | 待答：请用一条**新生成**后的账目复核；若恒 null 则转为后端缺陷 | **A9 判据未达**（P2 流水页的「任务」关联无从渲染）|
+| 39 | **作品的音频出口落在名单外的桶**：`GET /api/media/objects/<id>?…`（带 Bearer）实测 **302 → `covalink-uploads-1301797874.cos.ap-shanghai.myqcloud.com`**（2026-09-26 只读取证，只打状态码与落地 host），而 D23 名单只有 covers / audio 两桶 ⇒ iOS 侧 `mediaHopEgress` 判 `.refused` ⇒ **作品既播不出也存不下**（A5/A6 的设备侧判据因此未达）。与 #29 同族，这次落在作品上 | 待答：把作品音频改签 `covalink-audio-…`（已在名单），或给出 uploads 桶的公开/私读语义结论后再议名单——**客户端不自己放宽**（硬边界 4/D23） | **A5/A6 阻塞**（P0 唯一未达的两条）|
 
 > 共 **23 条后端待答/待端点**（#4,5,6,8,9,10/12,11,13,14,15,16,17/23/28,18,19,20,21,22,24,25/33,26,27,29,30,31,32）
 > + **2 条端侧待办**（#34,#35）**+ 1 条端侧落点登记**（#36：作品直存清单落点与 12d 不同屏）
-> + **2 条本轮生产实测新增待答**（#37 `playbackUrl` 落在名单外的桶、#38 `ledger.jobId` 实测恒 null）。
+> + **3 条本轮生产实测新增待答**（#37 `playbackUrl` 落在名单外的桶、#38 `ledger.jobId` 实测恒 null、#39 作品 `audioUrl` 302 也落在同一个名单外桶 ⇒ A5/A6 阻塞）。
 >   两条都是 2026-09-26 用只读 GET 打生产得到的，不是从代码推的。
 > 已关闭不录：NEEDS-1（登录契约误判）、2（source 用错值已改）、
 > 3（/me 三键已核）、7（推送 token，本地通知兜底）。
