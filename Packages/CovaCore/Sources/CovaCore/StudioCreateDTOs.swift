@@ -26,12 +26,22 @@ public enum StudioCreateRequestError: Error, Equatable, Sendable, CustomStringCo
     case promptTooLong(limit: Int, actual: Int)
     /// token 的 operation 不是 `.studioCreateGenerate`（串用别的写操作的键）。
     case operationMismatch
+    /// 翻唱/续写/重制没带源（服务端 400 的原文是「翻唱 / 续写 / 重制需要先选择源音乐或上传音频」）。
+    case missingSourceClip
+    case sourceClipIDTooLong(limit: Int, actual: Int)
+    /// 续写起点不在 0…3600 秒（服务端会静默取整到 0.1，越界则不消费）。
+    case continueAtOutOfRange(limit: Double)
 
     public var description: String {
         switch self {
         case .emptyPrompt: return "音乐描述为空"
         case .promptTooLong(let limit, let actual): return "音乐描述过长（\(actual) > \(limit)）"
         case .operationMismatch: return "幂等键与操作类型不匹配"
+        case .missingSourceClip: return "翻唱、续写或重制需要先选一首源作品"
+        case .sourceClipIDTooLong(let limit, let actual):
+            return "源音乐标识过长（\(actual) > \(limit)）"
+        case .continueAtOutOfRange(let limit):
+            return "续写起点要在 0 到 \(Int(limit)) 秒之间"
         }
     }
 }
@@ -48,37 +58,97 @@ public enum StudioCreateRequestError: Error, Equatable, Sendable, CustomStringCo
 public struct StudioCreateGenerateRequestDto: Encodable, Equatable, Sendable {
     /// 服务端上限（`generate.ts:105`）：超出 ⇒ 400「音乐描述过长（最多 2000 字）」。
     public static let promptMaximumLength = 2000
+    /// `sourceClipId` 上限（`generate.ts:121` 的 `optionalTrimmed(..., 200)`）。
+    public static let sourceClipMaximumLength = 200
+    /// `continueAt` 的上界（秒，`generate.ts:147-152`：0–3600，服务端按 0.1 取整）。
+    public static let continueAtMaximumSeconds: Double = 3600
 
     public let mode: StudioCreateMode
     public let operation: StudioCreateOperation
     public let prompt: String
     public let idempotencyKey: IdempotencyKey
+    /// 源音乐的**provider clip id**（翻唱/续写/重制必填）。
+    ///
+    /// ⚠️ 服务端**完全不校验**这一格（§4.7：无存在性/归属/格式检查）⇒ 一个错的 clip id 会
+    /// 照常 200 + 新 jobId + **真扣费**，然后异步失败，只在行的 `status=failed` +
+    /// `errorMessage` 上显形。所以这一层只能保证两件事：本地拦掉"根本没选源"，
+    /// 以及**只把本机从服务端读回来的 `providerClipId` 送进去**（不猜、不拼）。
+    public let sourceClipId: String?
+    /// 续写起点（秒）。只有 `operation == .extend` 且带 `sourceClipId` 时服务端才消费它；
+    /// 缺省时服务端自己取原曲结尾，取不到才回 400「暂时读不到原曲长度，请手动选择续写起点」。
+    public let continueAt: Double?
 
     public init(
         prompt: String,
         mode: StudioCreateMode = .simple,
         operation: StudioCreateOperation = .create,
+        sourceClipId: String? = nil,
+        continueAt: Double? = nil,
         token: IdempotentRequestToken
     ) throws {
         guard token.operation == .studioCreateGenerate else {
             throw StudioCreateRequestError.operationMismatch
         }
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw StudioCreateRequestError.emptyPrompt }
+        // 「prompt 必填」这一条**只在 simple 成立**（`generate.ts:107`）——
+        // 把它写成无条件，advanced 那一档的合法提交会被本地挡掉。
+        guard !trimmed.isEmpty || mode != .simple else {
+            throw StudioCreateRequestError.emptyPrompt
+        }
         let count = trimmed.count
         guard count <= Self.promptMaximumLength else {
             throw StudioCreateRequestError.promptTooLong(
                 limit: Self.promptMaximumLength, actual: count
             )
         }
+        // 空白与"没给"是同一件事：用户在源选择器里没选，与选了一个空格，
+        // 该听到的都是那句「需要先选一首源作品」，而不是"标识为空"。
+        let trimmedClip = sourceClipId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clip = (trimmedClip?.isEmpty == false) ? trimmedClip : nil
+        if let clip {
+            guard clip.count <= Self.sourceClipMaximumLength else {
+                throw StudioCreateRequestError.sourceClipIDTooLong(
+                    limit: Self.sourceClipMaximumLength, actual: clip.count
+                )
+            }
+        }
+        // 非 create 的三种操作**都必须带源**（服务端 400「翻唱 / 续写 / 重制需要先选择源音乐或上传音频」）
+        // ⇒ 本地先拦，省一次往返，也省一次"200 之后才发现做不了"的扣费错觉。
+        if operation != .create, clip == nil {
+            throw StudioCreateRequestError.missingSourceClip
+        }
+        if let continueAt {
+            guard continueAt.isFinite, continueAt >= 0,
+                  continueAt <= Self.continueAtMaximumSeconds else {
+                throw StudioCreateRequestError.continueAtOutOfRange(
+                    limit: Self.continueAtMaximumSeconds
+                )
+            }
+        }
         self.mode = mode
         self.operation = operation
         self.prompt = trimmed
+        self.sourceClipId = clip
+        // 服务端按 0.1 取整 ⇒ 客户端也按 0.1 落，屏上显示的值与发出去的值才是同一个数。
+        self.continueAt = continueAt.map { ($0 * 10).rounded() / 10 }
         self.idempotencyKey = token.key
     }
 
     enum CodingKeys: String, CodingKey {
-        case mode, operation, prompt, idempotencyKey
+        case mode, operation, prompt, idempotencyKey, sourceClipId, continueAt
+    }
+
+    /// **没有值的键不许出现**（不是发 `null`）：服务端用 `optionalTrimmed` 读它们，
+    /// 缺键与显式 null 今天同义，但把"客户端没这个概念"写成 null 交给对方，
+    /// 等于替服务端决定了一次语义（§4.7 的同一口径）。
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(operation, forKey: .operation)
+        try container.encode(prompt, forKey: .prompt)
+        try container.encode(idempotencyKey, forKey: .idempotencyKey)
+        try container.encodeIfPresent(sourceClipId, forKey: .sourceClipId)
+        try container.encodeIfPresent(continueAt, forKey: .continueAt)
     }
 }
 

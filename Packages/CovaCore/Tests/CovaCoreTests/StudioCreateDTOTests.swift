@@ -455,4 +455,111 @@ final class StudioCreateDTOTests: XCTestCase {
         XCTAssertEqual(generous.maximumAttemptCount, 9)
         XCTAssertEqual(generous.elapsed(beforeAttempt: 10), 60)
     }
+
+    // MARK: - P1-2：翻唱 / 续写 / 重制的入参（§4.7）
+
+    private func body(_ request: StudioCreateGenerateRequestDto) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(request)
+        return try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+    }
+
+    /// 没填的键**不许以 null 出现**：create 那一档的线上形状必须与 P0 验收时逐字节一致，
+    /// 否则 19 屏已归档的那张证据就不是这一版代码拍出来的了。
+    func testRemixFieldsAreAbsentNotNullForPlainCreate() throws {
+        let request = try StudioCreateGenerateRequestDto(prompt: "a", token: token())
+        XCTAssertEqual(
+            Set(try body(request).keys),
+            ["mode", "operation", "prompt", "idempotencyKey"],
+            "create 的线上形状不许因为加了新字段而变"
+        )
+    }
+
+    func testCoverCarriesTheSourceClipAndKeepsCreateKeys() throws {
+        let request = try StudioCreateGenerateRequestDto(
+            prompt: "同一旋律换成粤语", mode: .advanced, operation: .cover,
+            sourceClipId: "clip-1", token: token()
+        )
+        let encoded = try body(request)
+        XCTAssertEqual(encoded["operation"] as? String, "cover")
+        XCTAssertEqual(encoded["mode"] as? String, "advanced")
+        XCTAssertEqual(encoded["sourceClipId"] as? String, "clip-1")
+        XCTAssertFalse(
+            encoded.keys.contains("continueAt"),
+            "续写起点只有 extend 才有意义，不许顺手带上"
+        )
+    }
+
+    /// 服务端把 `continueAt` 按 0.1 取整（`generate.ts:147-152`）⇒ 客户端也按 0.1 落，
+    /// 屏上显示 12.34 而发出去 12.3 就是"看到的与发出去的不是同一份数"。
+    func testContinueAtIsRoundedToTheServerPrecision() throws {
+        let request = try StudioCreateGenerateRequestDto(
+            prompt: "接着唱", mode: .advanced, operation: .extend,
+            sourceClipId: "clip-1", continueAt: 12.34, token: token()
+        )
+        XCTAssertEqual(try body(request)["continueAt"] as? Double, 12.3)
+    }
+
+    /// 三种"要有源"的操作，没源就在本地拦下 —— 服务端对这一格**完全不校验**，
+    /// 放它出去只会换来一次真扣费 + 一个异步 failed。
+    func testNonCreateOperationsCannotLeaveWithoutASource() throws {
+        for operation in [
+            StudioCreateOperation.cover, .extend, .remaster
+        ] {
+            for blank in [nil, "", "   "] {
+                XCTAssertThrowsError(
+                    try StudioCreateGenerateRequestDto(
+                        prompt: "p", operation: operation, sourceClipId: blank, token: token()
+                    ),
+                    "\(operation.rawValue) 在 sourceClipId=\(String(describing: blank)) 时不该被放行"
+                ) { error in
+                    XCTAssertEqual(error as? StudioCreateRequestError, .missingSourceClip)
+                }
+            }
+        }
+    }
+
+    /// 「prompt 必填」只在 simple 成立（`generate.ts:107`）：advanced 那一档可以只给源。
+    func testEmptyPromptIsOnlyRejectedWhereTheServerRequiresIt() throws {
+        XCTAssertThrowsError(
+            try StudioCreateGenerateRequestDto(prompt: "  ", token: token())
+        ) { error in
+            XCTAssertEqual(error as? StudioCreateRequestError, .emptyPrompt)
+        }
+        XCTAssertNoThrow(
+            try StudioCreateGenerateRequestDto(
+                prompt: "  ", mode: .advanced, operation: .remaster,
+                sourceClipId: "clip-1", token: token()
+            )
+        )
+    }
+
+    func testRemixBoundsMatchTheServer() throws {
+        XCTAssertThrowsError(
+            try StudioCreateGenerateRequestDto(
+                prompt: "p", operation: .cover,
+                sourceClipId: String(repeating: "c", count: 201), token: token()
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? StudioCreateRequestError,
+                .sourceClipIDTooLong(limit: 200, actual: 201)
+            )
+        }
+        for bad in [-1.0, 3601.0, Double.nan, Double.infinity] {
+            XCTAssertThrowsError(
+                try StudioCreateGenerateRequestDto(
+                    prompt: "p", operation: .extend, sourceClipId: "clip-1",
+                    continueAt: bad, token: token()
+                ),
+                "continueAt=\(bad) 不该被放行"
+            ) { error in
+                XCTAssertEqual(
+                    error as? StudioCreateRequestError,
+                    .continueAtOutOfRange(limit: 3600)
+                )
+            }
+        }
+    }
 }

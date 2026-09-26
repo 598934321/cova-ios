@@ -111,6 +111,14 @@ targets:
         #     并按评审指认补 `.advanced` / `.repeated` **总闸**（引擎确实装着当前项或真有一代
         #     装载在途才允许声称推进）；MIN-R7-1 三个配置旋钮构造期 clamp；MIN-R7-2 toggle 把
         #     `.loading` 归入「正要响」一侧；§20 删不可达收敛腿；PLAYER_MIN 394 → 397
+        # → 0.2.75/92 §5 P1-2 的契约半条：generate 请求体加 sourceClipId / continueAt
+        #     （翻唱/续写/重制），并更正一条写死的错判据 —— 「prompt 必填」只在 mode=simple
+        #     成立（generate.ts:107），无条件拦会把 advanced 的合法提交挡在本地。
+        #     非 create 且没源 ⇒ 本地拦（服务端对这一格完全不校验，放出去就是真扣费 + 异步 failed）；
+        #     continueAt 与服务端同按 0.1 取整、夹 0…3600；空白的 sourceClipId 归一成"没选"，
+        #     用户该听到「需要先选一首源作品」而不是「标识为空」。
+        #     encode 用 encodeIfPresent ⇒ create 的线上形状逐字节不变（有用例钉住，
+        #     这样 19 屏已归档的那张证据仍然算这一版代码拍出来的）。
         # → 0.2.74/91 §7 #40 的客户端那一半：19 屏的扣费文案不再照抄 `charge`
         #     （实测重放时服务端照样回 charge:100，且响应无机器可读的重放标记）⇒
         #     派生 `studioCreateChargeLine(charge:alreadyReported:)`，同一 jobId 第二次回来
@@ -130,8 +138,8 @@ targets:
         # → 0.2.69/80 R18-2（第 18 轮 Major）：十条美术腿改经 `CovaArtworkResolution`（D23 唯一
         #     裁决面）—— 站内相对封面/头像补成生产 origin 且查询串逐字节保留，出口拒绝点名 host；
         #     并新建 CovaFeature 最小测试目标（`CovaFeatureTests`，23 条，只钉媒体腿，无 UI 快照）
-        CFBundleShortVersionString: "0.2.74"
-        CFBundleVersion: "91"
+        CFBundleShortVersionString: "0.2.75"
+        CFBundleVersion: "92"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
