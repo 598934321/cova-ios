@@ -146,6 +146,10 @@ public struct CovaAPIClientPlayReporter: PlayReportSubmitting {
 /// - 同一集次的重试（含补发）**复用同一键**（TD-19 由 `IdempotentRequestToken` 类型契约保证）；
 /// - 集次结束（播完 / 换曲 / teardown）后同一曲目再次播放 → 新集次 → **新键**；
 /// - 私有候选音频一律不上报（design §8）；
+/// - **作品（`.work`）要上报**：`itemID` 就是服务端认的伪 trackId `{jobId}:{candidateId}`，
+///   服务端据「非库曲 + 命中 generation_jobs」把它记进 `work_listens`（DEVELOPMENT.md §4.3 / A5）。
+///   本层不需要知道这件事的形状 —— 它只负责「一次实际播放一把键」，
+///   伪 id 的构造与校验在 `StudioCreateWorkIdentifier`（CovaCore）；
 /// - 前后台转场共用同一去重态：后台不发起新提交，回前台只补发未决集次（同键）；
 /// - 同一集次的提交**已在途**时，补发/重投一律让路（`.submissionInFlight`）：
 ///   「未决」不等于「可以发」，一次实际播放只允许一个写请求在写（F-C）；

@@ -150,6 +150,7 @@ public final class AppSession {
         self.auth = auth
         self.client = CovaAPIClient(transport: CovaDependencies.makeTransport(), credentials: auth)
         self.player = CovaDependencies.makePlayer(auth: auth)
+        self.workDownloads = CovaDependencies.makeWorkDownloads(auth: auth)
     }
 
     public func bootstrap() async {
@@ -186,6 +187,8 @@ public final class AppSession {
             await refreshCollections()
             // 04 §7：登录成功**强制刷新** `/me`（余额/身份在登录后才有意义）。
             await loadMe(force: true)
+            // A1：登录成功后「最近播放」改读服务端那一份（上一个身份的账不留）。
+            await loadRecentHistory(force: true)
             showToast("欢迎回来，\(user.name)")
         } catch let error as CovaAPIError {
             // 不再为 `.decoding` 单开一句「后端返回的用户字段不完整（NEEDS-1 已登记）」：
@@ -213,6 +216,9 @@ public final class AppSession {
     public func signOut() async {
         // 登出先把 18 的待发/已发通知与角标一并撤掉，再清本机账（spec 明令）。
         await StudioNotifier.revokeAll()
+        // A6 的作品直存按 owner 分桶 ⇒ **必须在签出之前**取到是谁的那一份：
+        // 签出之后凭证快照没了，届时连"该清谁的文件"都说不出来（D8 owner 隔离）。
+        let leavingOwner = (try? await auth.currentSession())?.principal
         try? await auth.signOut()
         await player.bindSession(PlaybackSessionContext(owner: nil, generation: .initial))
         authPhase = .guest
@@ -223,6 +229,10 @@ public final class AppSession {
         savedPlaylistIDs = []
         clearRecents()
         resetLiveStudioJobs()
+        // A1/A3/A6 的三本新账同属「这台设备替谁在跑」：换号一律作废（D8 owner 隔离）。
+        resetRecentHistory()
+        resetStudioCreate()
+        await resetWorkDownloads(owner: leavingOwner)
         showToast("已登出：队列与私有音频缓存已清理")
     }
 
@@ -237,6 +247,7 @@ public final class AppSession {
         authPhase = .guest
         resetMe()   // 游客态不发 `me`（04 §7），也不许留着上一个身份的余额
         resetLiveStudioJobs()   // 同一族隔离：游客的 08 列表上没有"这台设备在跑"的账
+        resetRecentHistory()   // 服务端历史同理：游客没有可读的历史，也不许看到上一个人的
     }
 
     // MARK: 导航与收藏态（design 04/06/07/12a/12b）
@@ -251,6 +262,7 @@ public final class AppSession {
         case settings
         case aiSessions
         case aiSession(String)
+        case studioCreate
         case membership
         case enterprise
         case artist(String)
@@ -626,6 +638,115 @@ public final class AppSession {
         recents = []
         lastHeardItemID = nil
     }
+
+    // MARK: 最近播放（A1：登录态以 `GET /api/play-history` 为准，游客/离线回落本地账）
+
+    /// 一行「最近播放」的视图模型：**库曲行与作品行共用同一个形状**（A1 的混排）。
+    ///
+    /// 只有展示字段 + 身份 —— 音频地址不进这一层（签名串禁入持久化索引，硬边界 3），
+    /// 点开时按 `kind` 回读权威端点：库曲 `GET /api/tracks/:id`、
+    /// 作品 `GET /api/studio/create/works?id=<trackId>`。
+    public struct RecentPlayRow: Identifiable, Equatable, Sendable {
+        public enum Kind: String, Equatable, Sendable { case library, work }
+        /// 库曲 = trackId；作品 = 伪 trackId `{jobId}:{candidateId}`（也是上报用的那一个）。
+        public let id: String
+        public let kind: Kind
+        public let title: String
+        /// 作品行的艺人名恒为 null（服务端投影如此）⇒ nil 就是「没有」，UI 自己决定占位，
+        /// **不许**由这一层编一个「未知艺人」。
+        public let artist: String?
+        public let coverURLString: String?
+        public let duration: Double?
+        /// 裸 jobId 的作品行不可播（服务端可能因取不到候选音频而丢行）。
+        public let playable: Bool
+        /// 服务端回显的来源（松散串，只用于诊断，不上屏）。
+        public let source: String?
+    }
+
+    public enum RecentHistoryState: String, Equatable, Sendable {
+        case idle        // 还没发过（游客态不发）
+        case loading     // 在途
+        case loaded      // 最近一次成功
+        case outOfSync   // 最近一次失败（`recentHistory` 可能还留着上次的值）
+    }
+
+    public internal(set) var recentHistory: [RecentPlayRow] = []
+    public internal(set) var recentHistoryState: RecentHistoryState = .idle
+    /// 服务端 items 里读不出身份的行数（**不静默丢行**：少掉的行要能解释）。
+    public internal(set) var recentHistoryUnreadable = 0
+    /// 下面这几个是**实现细节但跨文件**（`PlayHistoryFlow` / `StudioCreateFlow` 两条腿
+    /// 都在同一模块的另一个文件里）⇒ 只能是 module 内可见，不能是 `private`。
+    var recentHistoryOwner: String?
+    var recentHistoryRequestID = 0
+    /// 在途去重（同 `meTask` 那条腿）：抽屉与 01 同一帧都要这一份时只发一次请求。
+    var recentHistoryTask: Task<Void, Never>?
+
+    /// 屏上渲染的那一份（用户裁决 2026-09-26：**服务端为准，游客/离线回落本地账**）。
+    ///
+    /// 回落只在「服务端这一份是空的」时发生 —— 服务端回了一份空历史（新账号）是**事实**，
+    /// 不是失败，那种情况下拿本机旧账顶上就是把「你没有历史」说成「你有」。
+    /// 所以判据是 `recentHistoryState == .loaded` 而不是 `recentHistory.isEmpty`。
+    public var recentRows: [RecentPlayRow] {
+        if recentHistoryState == .loaded { return recentHistory }
+        return recents.map { recent in
+            RecentPlayRow(
+                id: recent.id, kind: .library, title: recent.title, artist: recent.artist,
+                coverURLString: recent.coverURLString, duration: nil, playable: true, source: nil
+            )
+        }
+    }
+
+    // MARK: 创作台（design/screens/19-studio-create.md · A3/A4/A11）
+
+    /// 19 屏的全部状态（一个值类型 ⇒ 视图只读它，不散着读七八个属性）。
+    public struct StudioCreateState: Equatable, Sendable {
+        public enum Phase: Equatable, Sendable {
+            case idle
+            /// 提交在途（CTA 菊花，不可二次点击）。
+            case submitting
+            /// 任务轮询中；携服务端任务态（文案走 `GenerationJobStatus.userLabel`）。
+            case polling(GenerationJobStatus)
+            case succeeded
+            /// 任务终态失败（`errorMessage` 就地展示）。
+            case failed
+            /// **不许说失败**的两格：2xx 没读到任务号、或轮询到上限还没终态
+            /// （任务可能仍在跑）。文案见 `message`。
+            case unconfirmed
+        }
+
+        public var phase: Phase = .idle
+        public var jobId: String?
+        /// 服务端回显的扣费数字（`charge`）。**0 与 nil 都不渲染**那一行（0 也可能只是
+        /// 开发环境开关关闭，客户端无从判别，所以不写「免费」）。
+        public var charge: Int?
+        public var works: [CreateWorkItemDto] = []
+        public var message: String?
+        /// 已等待秒数（D 区计时）。
+        public var elapsed: TimeInterval = 0
+
+        public var isBusy: Bool {
+            switch phase {
+            case .submitting, .polling: return true
+            default: return false
+            }
+        }
+    }
+
+    public internal(set) var studioCreate = StudioCreateState()
+    /// 同一次提交的幂等凭据：**重试复用、新提交重建**（A11）。
+    var studioCreateToken: IdempotentRequestToken?
+    var studioCreateTask: Task<Void, Never>?
+    var studioCreateTicker: Task<Void, Never>?
+    var studioCreateSubmitID = 0
+    /// 屏上输入框的内容（19 §3.B）。放在会话层是为了「返回再进来还在」。
+    public var studioCreatePrompt = ""
+
+    // MARK: 作品直存（A6 / BUG-15：不 checkout、不扣费）
+
+    public let workDownloads: WorkDownloadStore
+    /// 本机已存的作品 id（行内「已在本机」标记的事实源；来自 `WorkDownloadStore`，
+    /// 而它又以**盘上文件**为准，不是清单说了算）。
+    public internal(set) var savedWorkIDs: Set<String> = []
 
     private func startSnapshotPolling() {
         snapshotTask?.cancel()

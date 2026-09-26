@@ -6,6 +6,8 @@ import Foundation
 /// - `downloadCheckout` → `POST /api/downloads/checkout`（扣费）
 /// - `planStart` → `POST /api/studio/one-step/plans/start`（启动制作）
 /// - `playReport` → `POST /api/tracks/play`（播放上报）
+/// - `studioCreateGenerate` → `POST /api/studio/create/generate`（**扣费**：
+///   reason `studio_create_generation`，服务端先落 job 后扣费）
 ///
 /// `rawValue` 与 `keyPrefix` 只服务**本地键的形态**（`cova-<operation>-<hex>`），
 /// 不是任何端点的业务字段：E2 的病根正是把「客户端自造的标识」当成可以随意填的
@@ -15,6 +17,7 @@ public enum IdempotentOperation: String, CaseIterable, Codable, Sendable {
     case downloadCheckout = "download-checkout"
     case planStart = "plan-start"
     case playReport = "play-report"
+    case studioCreateGenerate = "studio-create-generate"
 
     /// 幂等键前缀（`cova-<operation>-`）。
     public var keyPrefix: String { "cova-\(rawValue)-" }

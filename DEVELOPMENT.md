@@ -207,6 +207,19 @@ px→pt 一一对应；iOS 消费文件 `design/tokens.json` → `CovaUI`。
   服务端：非库曲且命中 generation_jobs → INSERT 进 `work_listens`；幂等语义同上。
 - **只要接作品试听，必须同车**：① 上报带伪 trackId；② GET play-history 的 items
   能解码 work 形态（`trackId` 含 `:`、track 字段为 work 投影）——库曲 DTO 直接解码会丢行。
+- ⚠️ **「trackId 含 `:`」不是 work 行的权威判别**（2026-09-26 逐行核对
+  `web/src/lib/play-history.ts`）：服务端 POST 侧的判据是
+  `!track && (trackId.includes(':') || jobExists(trackId))`（`:50`）⇒ **裸 jobId 也会记进
+  `work_listens`**，而它在 GET 里的 `track` 投影**同样带 `workId`**（`:157-182`，
+  注释明写「标位供前端区分」）—— 那种行不含冒号，只按冒号判就会认成库曲。
+  ⇒ iOS 的判别顺序（`PlayHistoryItemDto.rowKind`）：① `track.workId` 非空 = work；
+  ② 否则 `trackId` 含 `:` = work（track 投影缺失时的兜底）；③ 其余 = 库曲。
+  另：裸 jobId 行在 GET 侧若 `result_audio_url` 为空会被**整行丢弃**（`:149-153`）
+  ⇒ iOS 上报一律带候选后缀，且把"没有 candidateId 的 work 行"渲染但**标为不可播**。
+- ⚠️ **`workId` 这个键在库曲行上也存在，只是值为 `null`**（2026-09-26 生产实测
+  `GET /api/play-history?limit=5`：该账号 4/4 条库曲行的 `track` 都是 58 键、含 `workId: null`）
+  ⇒ 判别必须写成「非空字符串」，**不能**写成「这个键在不在」。按存在性判会把
+  每一条库曲行都认成作品行（`PlayHistoryDTOTests` 里那条断言钉的就是这个）。
 
 **`GET /api/play-history`**（iOS 未接，P0 第一项）
 
@@ -217,6 +230,8 @@ px→pt 一一对应；iOS 消费文件 `design/tokens.json` → `CovaUI`。
 ### 4.4 studio/create 高级创作台（iOS 整组未接，P0–P1 主战场）
 
 **`POST /api/studio/create/generate`** → `{ok:true, jobId, charge}`
+（⚠️ **`charge` 是数字，不是对象**，实测 `web/src/lib/studio/create/generate.ts:526-530`；
+本节下面写的 `charged:false` 是同一个字段的旧措辞，读作「`charge` 为 0」。）
 
 - mode：`simple`（prompt 必填≤2000，歌词服务端 `lyricsMode:auto` 代写）｜
   `advanced`（lyrics≤5000 + stylePrompt≤1000，二者至少其一或勾纯音乐）｜
@@ -232,8 +247,13 @@ px→pt 一一对应；iOS 消费文件 `design/tokens.json` → `CovaUI`。
   必须复用同键。
 - 计费：reason = `studio_create_generation`；**先落 job 后扣费**（ledger metadata
   携 `jobId/idempotencyKey/operation/mode`）；余额不足 402
-  `{error:"credits_insufficient", balance, required}`；提交失败自动退款（refund reason
-  `generation_refund`）。`COVA_SUNO_AGENT_ENABLED` 关时 charged:false（开发环境）。
+  `{error:"credits_insufficient", balance, required}`
+  ⚠️ **402 这一档的 `error` 值就是英文码、且不带 `code` 键**（实测
+  `api/studio/create/generate/route.ts:24-30`）—— 其余档（400/502）的 `error` 是中文人话。
+  所以「余额不足」那句只能由客户端按 `required` 组装，而 400 才能透传服务端原文；
+  本仓的裁决面是 `StudioCreateRejection.userMessage`（并把"裸码形状"的 `error` 挡在上屏之外，A15）。
+  提交失败自动退款（refund reason `generation_refund`）。`COVA_SUNO_AGENT_ENABLED` 关时 `charge` 恒 0
+  （开发环境）⇒ **0 不等于免费**，客户端无从判别 ⇒ UI 只在 `charge > 0` 时渲染扣费那一行。
 - modelVersion：`chirp-hawk`（V6 默认）/ `chirp-goose`（V6-mini）/ `chirp-hawk-wild`；
   旧值（v5.5/v5/v4.5plus…）服务端归一为默认 V6；Lyria（`'Lyria 3.5'`/`'Lyria 3 Pro'`）
   仅支持 `operation=create`、无 sourceClip、无音色。
@@ -256,6 +276,15 @@ px→pt 一一对应；iOS 消费文件 `design/tokens.json` → `CovaUI`。
   processing,succeeded,failed,cancelled}`、`tags`、`lyrics`、`modelVersion`、`instrumental`、
   `voiceName?`、`errorMessage?`、`createdAt`、`source`（studio-create/one-step/song-match）、
   `melody?`、`operation?`、`providerClipId?`、`favorited?`、`disliked?`。
+- ⚠️ **`playbackUrl` 这一腿在 iOS 上今天走不通**（上面那句「App 后台播控必须用它」不成立）：
+  2026-09-26 生产实测 `GET /api/studio/create/works?limit=6` **6/6 行同形** ——
+  `audioUrl` 是站内相对 `/api/media?…`（同源，走 D7 的 Bearer 下载→校验→`file://`），
+  而 `playbackUrl` 落在 **`covalink-uploads-1301797874.cos.ap-shanghai.myqcloud.com`**，
+  该桶**不在** §3/D23 的存储名单内（名单只有 covers 与 audio，刻意不含 uploads 这个用户私产桶）
+  ⇒ 直链会被出口守卫点名主机拒掉（`WorkDownloadStoreTests` 钉的就是这一条）。
+  所以本端**播放只吃 `audioUrl`**，`playbackUrl` 仅作直存兜底；
+  P1 若要真按「playbackUrl 优先播放」，须后端改签名单内的桶（登记 §7 #37），
+  **客户端不许自己放宽名单**（D23②）。
 - `PATCH /api/studio/create/works/:id` `{title 1-200}` → `{ok,work}`；
   `DELETE` 软删（metadata.deletedAt）→ `{ok:true}`。
 
@@ -279,6 +308,11 @@ px→pt 一一对应；iOS 消费文件 `design/tokens.json` → `CovaUI`。
 **上游排队语义**：cova api provider lane 被占回 `423 provider_lease_busy /
 confirmed_not_submitted`——可安全重试的排队信号，web 侧就地等待重试；iOS 收到 423
 按「排队中」展示并重试，不当作失败。
+⚠️ **但这条不适用于 `studio/create/generate`**（2026-09-26 逐行核对）：generate 的提交异常
+被 catch-all 统一吞成 `submit_failed`（`lib/studio/create/generate.ts:531-536`），
+**永不返回 423**；`423→503` 的映射只存在于 `lib/studio/create/cova-upstream.ts:205`，
+服务的是 lyrics 代写 / style-suggest 两条通道（响应体 `{ok:false, error:"…通道正忙…"}`）。
+⇒ P0/P1 的 generate 客户端**不实现 423 分支**；接 lyrics 那一屏时再按本句处理。
 
 ### 4.5 一步创作（已接，新线补齐项）
 
@@ -295,12 +329,24 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 
 - `GET/POST /api/downloads/checkout`（DTO 与 `downloadCheckout` 幂等键型已备好，
   **全仓无调用点**——D12 合规门禁未放行，P1 只接 BUG-15 作品直存）。
+  ⚠️ 硬边界 9（D12）**仍然管着库曲那条腿**：作品的免费直存不等于「下载入口已放行」，
+  加库曲 checkout 的 UI 之前必须先有合规结论。
 - **BUG-15 作品直存**：作品行下载走 `CreateWorkItem.audioUrl`（或 `playbackUrl`）
   **直接保存**，不走 downloads/checkout、不扣费；这是作品与库曲下载的双路径分野。
+  ⚠️ 落点是 `Documents/Cova/cova-work-downloads/<owner hex>/{jobId}-{candidateId}.mp3` +
+  同目录 `manifest.json`（**与播放器的 `Caches` 试听缓存分家**，两条生命周期不同：
+  缓存文件名带 `#形态@g代次`、重新登录就换名，用它承载「已在本机」会让用户亲手按出来的
+  标记凭空消失）。清单只落本地文件名与展示字段，**不落任何 URL**（硬边界 3）。
+  12d §7 那句「本机沙盒存在且校验通过的文件 + 本地元数据 = 列表事实源」在方法上成立、
+  落点不是本屏（作品直存不是付费下载，12d 的门 1 不适用），登记在 §7 末尾。
 - `GET /api/me/credits/ledger?limit≤100`（P2 流水页）：`{entries[]}`，
   每条 `{id, type, amount, balanceAfter, reason, reasonLabel, jobId, createdAt}`。
   **`jobId` 由服务端从 `metadata.jobId` 解出**，明细页用它渲染「任务」关联
-  （点击可跳任务/作品）。reasonLabel 映射已含 `studio_create_generation=AI 音乐生成`、
+  （点击可跳任务/作品）。⚠️ **2026-09-26 生产实测该字段全为 `null`**
+  （`GET /api/me/credits/ledger?limit=100` ⇒ 本账号 6 条，含 1 条 `studio_create_generation`，
+  `jobId` 6/6 null）⇒ A9「`studio_create_generation` 行 `jobId` 非空」今天不成立，
+  已登记 §7 #38（也可能是这批账目早于该字段上线，故按"待答"记而不判后端缺陷）；
+  客户端按可选建模、null 时**不渲染**「任务」链接，不猜一个号。reasonLabel 映射已含 `studio_create_generation=AI 音乐生成`、
   `generation_refund=生成失败退款`、`daily_checkin=每日签到`、灵感商店一族等；
   未识别 reason 回落「其他变动」，客户端容忍新值。
 - `GET /api/studio/producers`（P2 制作人入口）：`{producers[]}`，每 producer
@@ -327,15 +373,21 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 ### P1 创作台（7→10）
 
 1. **works 列表**：筛选/搜索/游标分页/状态徽标；行内 favorite·dislike·note·timing·share·
-   rename·delete；`playbackUrl` 优先播放（免 Bearer）。
+   rename·delete。（2026-09-26 部分交付：伪 trackId 的**读**已通 —— 01「继续聆听」与
+   19 结果区都能按 `{jobId}:{candidateId}` 回读单行；筛选/分页/行内动作仍未接。）
 2. **cover/extend/remaster**：作品详情提供「翻唱/续写/重制」入口，sourceClipId=
    `providerClipId`；extend 给 continueAt 选择（缺省=结尾）；melody 模式可后置。
-3. **作品播放上报（work_listens）**：播放作品时按 `{jobId}:{candidateId}` 报
-   `tracks/play`（source=`project` 或 `player`），同车验证 GET play-history 混排不丢行。
-4. **BUG-15 作品直存下载**：`audioUrl` 直接存文件（不 checkout、不扣费），进
-   「已下载」本地清单；库曲 checkout 路径仍受 D12 门禁不接 UI。
+3. **作品播放上报（work_listens）**：✅ **已交付（2026-09-26）**。两处与上面写法的偏差，
+   按实测事实保留：`source` 用 `player`（不是 `project`——全 App 只有一个播放面，
+   语境没有从视图层传到播放层，见 §4.3 的语境口径）、播放地址用 `audioUrl`
+   （不是 `playbackUrl`——后者是名单桶直链，D23 之后不许直接交给播放器）。
+4. **BUG-15 作品直存下载**：✅ 已交付（Documents + 本机清单，不 checkout、不扣费）。
+   但**没有**进 12d 那套「已下载」屏（那是付费下载清单，门 1 未放行且本屏不可达）：
+   作品直存的入口在作品行内（↓ / 「已在本机」/ 删除）。要给它一个独立清单页需先出规格。
+   库曲 checkout 路径仍受 D12 门禁不接 UI。
 5. **轮询断链补腿**：`GET …/generation-jobs?id=` 接进会话详情
    （`AISessionDetailView.swift:514` 自认未接）+ `agent-runs/:id` SSE 恢复。
+   （2026-09-26：该端点已在 19 屏的任务轮询里接通；**会话详情那一处仍未接**。）
 
 ### P2 交付链（10→12）
 
@@ -361,7 +413,7 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 
 | # | 项 | 判定方式 |
 |---|---|---|
-| A1 | play-history 读 | 模拟器登录 → 「最近播放」列表出现真条目；`sqlite`/`curl -H "Authorization: Bearer $T" 'https://covalink.cn/api/play-history?limit=5'` 返回 items 非空且 iOS 渲染行数一致；work 行（trackId 含 `:`）不丢、不崩 |
+| A1 | play-history 读 | 模拟器登录 → 「最近播放」列表出现真条目；`sqlite`/`curl -H "Authorization: Bearer $T" 'https://covalink.cn/api/play-history?limit=5'` 返回 items 非空且 iOS 渲染行数一致；work 行（**`track.workId` 非空**，或 trackId 含 `:`）不丢、不崩 |
 | A2 | source 闭合枚举 | 断点/`os_signpost` 抓取实际上报 body，`source ∈ {discover,playlist,project,track_detail,player}`；代码面 `grep -rn '"app-ios"\|"miniprogram"' Packages/` = 0 命中 |
 | A3 | generate simple 闭环 | 真机：填 prompt → 生成 → ≤30min 内列表出现 2 首 `succeeded` 行；期间 Console 无红错；`curl` 复用同 idempotencyKey 重放 → 同 jobId 且余额不二次扣 |
 | A4 | 402/400 错误展示 | 构造余额不足/缺 prompt → UI 分别显示「余额不足，本次需要 N」「请填写音乐描述」（透传服务端文案）；无「未知错误」糊词 |
@@ -413,9 +465,15 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 | 32 | `sort=relevance` 无 search 时 500；未知 sort 静默回落 | 待答（非法值应 400） | 非阻塞 |
 | 34 | `GET /api/find-my-song/generation-jobs?id=` 与 `agent-runs/:id` 未接 | **待办（iOS 侧）** | P1 轮询断链 |
 | 35 | studio/create 全组、play-history GET、ledger、producers、extras、user-playlists/shared/daily/public、inspiration-shop、checkin、device/apple/sms auth | **待办（iOS 侧）** | 即本手册 §5 全部阶段 |
+| 36 | 作品直存的**清单落点**与 12d 不同屏：本仓落 `Documents/Cova/cova-work-downloads/`（owner 分桶 + `manifest.json`，只存本地文件名与展示字段），入口在 19 作品行内（↓ /「已在本机」/ 删除），**没有**「已下载」整屏 | 已按此交付（2026-09-26）；12d §7 的「本机沙盒 + 本地元数据」方法成立、屏不通用 | 要独立清单页须先出规格（设计闸门硬边界 8）|
+| 37 | 作品 `playbackUrl` 实测签在 **`covalink-uploads-…`** 桶（2026-09-26 生产只读探针，`GET /api/studio/create/works?limit=6` ⇒ 6/6 行同形），不在 D23 存储名单（只有 covers/audio）内 ⇒ iOS 出口守卫按主机名拒掉，**§4.4 那句「App 后台播控必须用它」在本端今天不可用** | 待答：能否改签名单内的桶（或论证把 uploads 桶纳入名单——它是用户私产桶，web 侧正因为这点被否过一次） | 非阻塞（播放走 `audioUrl` + D7 本地化已通） |
+| 38 | `GET /api/me/credits/ledger` 的 `jobId` 实测 **6/6 条 null**（含 1 条 `studio_create_generation`），与 §4.6「由 `metadata.jobId` 解出」不符；本账号这批账可能早于该字段上线 | 待答：请用一条**新生成**后的账目复核；若恒 null 则转为后端缺陷 | **A9 判据未达**（P2 流水页的「任务」关联无从渲染）|
 
 > 共 **23 条后端待答/待端点**（#4,5,6,8,9,10/12,11,13,14,15,16,17/23/28,18,19,20,21,22,24,25/33,26,27,29,30,31,32）
-> + **2 条端侧待办**（#34,#35）。已关闭不录：NEEDS-1（登录契约误判）、2（source 用错值已改）、
+> + **2 条端侧待办**（#34,#35）**+ 1 条端侧落点登记**（#36：作品直存清单落点与 12d 不同屏）
+> + **2 条本轮生产实测新增待答**（#37 `playbackUrl` 落在名单外的桶、#38 `ledger.jobId` 实测恒 null）。
+>   两条都是 2026-09-26 用只读 GET 打生产得到的，不是从代码推的。
+> 已关闭不录：NEEDS-1（登录契约误判）、2（source 用错值已改）、
 > 3（/me 三键已核）、7（推送 token，本地通知兜底）。
 
 **iOS 侧技术债（接手必知）**：TD-41 禁 UI 白名单不拦反射/`dlopen`；

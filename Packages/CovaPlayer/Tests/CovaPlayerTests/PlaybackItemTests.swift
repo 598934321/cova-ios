@@ -153,10 +153,24 @@ final class PlaybackItemTests: XCTestCase {
         XCTAssertFalse(dumped.contains("deadbeefSECRET"), dumped)
     }
 
+    /// 新增档位必须在这里表态 —— `allCases.count` 是刻意钉死的数量判据（本批加 `.work` 时
+    /// 它就直接红，逼着改的人看清「上报 / 不上报」这张表多了一行）。
+    /// 三种 kind 的**实际行为**钉在 `WorkPlaybackReportTests`（各条都真跑到协调器与桩提交器）。
     func testKindDrivesReportingDecision() {
-        XCTAssertEqual(PlaybackItem.Kind.allCases.count, 2)
+        XCTAssertEqual(PlaybackItem.Kind.allCases.count, 3)
+        XCTAssertEqual(
+            PlaybackItem.Kind.allCases, [.libraryTrack, .privateCandidate, .work]
+        )
         XCTAssertEqual(PlaybackItem.Kind.libraryTrack.rawValue, "libraryTrack")
+        XCTAssertEqual(PlaybackItem.Kind.work.rawValue, "work")
         XCTAssertNotEqual(PlaybackItem.Kind.privateCandidate, PlaybackItem.Kind.libraryTrack)
+        // 这张表只有一格是「不上报」：生成候选私有音频（design 02 §8）。
+        // 作品行**要**上报，否则 `work_listens` 永远空、最近播放里永远不会有作品行。
+        let suppressed: Set<PlaybackItem.Kind> = [.privateCandidate]
+        XCTAssertEqual(
+            Set(PlaybackItem.Kind.allCases).subtracting(suppressed),
+            [.libraryTrack, .work]
+        )
     }
 }
 

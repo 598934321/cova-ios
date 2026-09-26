@@ -54,6 +54,21 @@ public enum CovaDependencies {
         )))
         return CovaPlayer(reporter: reporter, sourcePreparer: fetcher)
     }
+
+    /// 作品直存装配（A6 / BUG-15）。
+    ///
+    /// 与播放器**共用同一个落盘式传输**（`URLSessionPrivateAudioTransport`：流式写文件 +
+    /// 逐跳出口裁决），但**不共用目录**：那边是 Caches 里可被清的私有音频缓存，
+    /// 这边是 Documents 里用户主动保存的成品（有自己的清单与 owner 分桶）。
+    /// 这里**没有**任何 `downloads/checkout` 的装配点 —— 作品直存不扣费，
+    /// 而库曲那条腿受 D12 合规门禁约束（未放行 ⇒ 不接 UI）。
+    @MainActor
+    public static func makeWorkDownloads(auth: CovaAuthSession) -> WorkDownloadStore {
+        WorkDownloadStore(
+            transport: URLSessionPrivateAudioTransport(),
+            credentials: auth
+        )
+    }
 }
 
 /// 播放上报提交器：`POST /api/tracks/play` 的唯一生产出口（`CovaAPIClient` ⇒ 只有

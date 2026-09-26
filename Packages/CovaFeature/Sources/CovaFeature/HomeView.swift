@@ -473,36 +473,54 @@ public struct HomeView: View {
         }
     }
 
-    /// 继续聆听（design 01）：本机真的响过的曲目。点一行 = **回读**曲目再播
-    /// （本地账里刻意不存音频地址：它可能带签名，硬边界 3）。
+    /// 继续聆听（A1 / design 01）：登录态读**服务端** `GET /api/play-history`
+    /// （库曲行与作品行混排，`session.recentRows` 是唯一渲染口径），
+    /// 游客/失败回落本机那一份。点一行 = **回读**权威端点再播
+    /// （历史行里刻意没有音频地址：签名串不进持久化索引，硬边界 3）。
+    ///
+    /// 作品行**没有** bpm / 波形 —— 不是"这里先不画"，而是服务端的 work 投影里
+    /// `bpm` 恒 null、`waveformPeaks` 恒空，而本层的投影根本不建模这两个字段（A1）。
     @ViewBuilder
     private var recentlyPlayed: some View {
-        if !session.recents.isEmpty {
+        let rows = session.recentRows
+        if !rows.isEmpty {
             CovaSectionHeader("继续聆听")
             VStack(spacing: 0) {
-                ForEach(session.recents) { track in
+                ForEach(rows) { row in
                     CovaListRow(
-                        title: track.title,
-                        subtitle: track.artist,
-                        artwork: CovaArtwork(resolution: HomeArtwork.recentCover(track), title: track.title)
+                        title: row.title,
+                        subtitle: recentSubtitle(row),
+                        artwork: CovaArtwork(
+                            resolution: HomeArtwork.recentCover(row), title: row.title
+                        )
                     ) {
-                        Image(systemName: "play.circle").foregroundStyle(CovaColor.muted)
+                        Image(systemName: row.playable ? "play.circle" : "circle.dashed")
+                            .foregroundStyle(row.playable ? CovaColor.muted : CovaColor.line)
                             .accessibilityHidden(true)
                     } action: {
-                        Task { await replay(track) }
+                        Task { await session.replay(row) }
                     }
+                    .accessibilityLabel(
+                        row.kind == .work ? "\(row.title)，作品" : row.title
+                    )
                 }
             }
         }
     }
 
-    private func replay(_ track: RecentTrack) async {
-        do {
-            let detail = try await catalog.trackDetail(track.id)
-            await session.play(tracks: [detail.track], at: 0)
-        } catch {
-            session.showToast("这首暂时不能播", isError: true)
+    /// 副标题：作品行没有艺人名（服务端投影恒 null）⇒ 说它是「作品」，
+    /// **不编**一个艺人名字；库曲行照旧。时长有就带，没有就不占位。
+    private func recentSubtitle(_ row: AppSession.RecentPlayRow) -> String {
+        var parts: [String] = []
+        if let artist = row.artist {
+            parts.append(artist)
+        } else if row.kind == .work {
+            parts.append("作品")
         }
+        if let duration = row.duration {
+            parts.append(PlayerTime.elapsed(duration))
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func errorKind(_ failure: CatalogFailure) -> CovaErrorState.Kind {
@@ -528,6 +546,9 @@ public struct HomeView: View {
         } catch {
             phase = .failed(CatalogService.classify(error))
         }
+        // 「继续聆听」与首屏 feed 是**两个来源**（A1：它现在读服务端 play-history），
+        // 所以排在 feed 之后单独取：它失败只让那一栏回落，不把整页拖成错误态（01 §8）。
+        await session.loadRecentHistory()
     }
 }
 
@@ -738,11 +759,11 @@ enum HomeArtwork {
         CovaArtworkResolution(serverValue: track.cover)
     }
 
-    /// 继续聆听：账里存的是 `item.coverURL?.value.absoluteString`（`AppSession` 写入时已过
-    /// `resolveMediaURL`，见 `AppSession.swift:473`），形态是**绝对 + 可能带查询** ⇒
-    /// 这条腿同样先裁决再交图，不因"是本机自己写的"而免检。
-    static func recentCover(_ track: RecentTrack) -> CovaArtworkResolution {
-        CovaArtworkResolution(serverValue: track.coverURLString)
+    /// 继续聆听。两个来源共用这一条腿：本机账存的是 `item.coverURL?.value.absoluteString`
+    /// （绝对 + 可能带查询），服务端历史行的 `track.cover` 两种形态都给过
+    /// ⇒ **先裁决再交图**，不因"来源看着已经是绝对地址"而免检（R18-2 同族）。
+    static func recentCover(_ row: AppSession.RecentPlayRow) -> CovaArtworkResolution {
+        CovaArtworkResolution(serverValue: row.coverURLString)
     }
 
     /// 歌单图有两个候选字段：`cover` 与 `coverUrl`（先到的**非空**值赢）。

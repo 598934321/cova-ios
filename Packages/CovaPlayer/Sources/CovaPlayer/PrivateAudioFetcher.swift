@@ -294,10 +294,13 @@ public actor PrivateAudioFetcher: PrivateAudioFetching, PlaybackSourcePreparing 
     ///   （实测 `duration` 178.84s 与缓存里 19.56s 的预览段并存）⇒ 调用方无法判别，`.unspecified`；
     /// · `.privateCandidate`：生成候选与笔记音频的地址就是「这一条资产本身」，
     ///   不存在同一地址的第二种形态 ⇒ 声明 `.full`，缓存复用照旧。
+    /// · `.work`：作品的 `audioUrl` 同理是「这一条成品本身」（三种形态都是整首：
+    ///   `/audio/*.mp3` 公开静态、`/api/media/objects/…` 需 Bearer、`/api/proxy/audio?…`
+    ///   签名代理）⇒ `.full`。它**不是**库曲那种「同一端点按授权发不同字节」的形状。
     static func contentKind(for item: PlaybackItem) -> PrivateAudioContentKind {
         switch item.kind {
         case .libraryTrack: return .unspecified
-        case .privateCandidate: return .full
+        case .privateCandidate, .work: return .full
         }
     }
 

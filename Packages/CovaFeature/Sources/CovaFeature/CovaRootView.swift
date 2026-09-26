@@ -44,7 +44,7 @@ public struct CovaRootView: View {
             ?? UserDefaults.standard.string(forKey: "COVA_PREVIEW_SHEET")
     }
 
-    /// 走查钩子 3：`COVA_PREVIEW_ROUTE=favorites|myPlaylists|playlist:<id>|track:<id>`。
+    /// 走查钩子 3：`COVA_PREVIEW_ROUTE=favorites|myPlaylists|studioCreate|playlist:<id>|track:<id>`。
     /// 详情/列表页都在 Tab 之下且需要点击才能到达，逐屏走查需要一个「直接落到这一屏」的入口。
     private static func previewRoute() -> AppSession.Route? {
         let raw = ProcessInfo.processInfo.environment["COVA_PREVIEW_ROUTE"]
@@ -56,6 +56,9 @@ public struct CovaRootView: View {
         case "plaza": return .plaza
         case "settings": return .settings
         case "aiSessions": return .aiSessions
+        // 19 创作台：`simctl` 不提供点击（见钩子 4 的理由）⇒ 没有这一格，19 进不了
+        // 逐屏走查的截图集合，A3/A14 的「屏上真条目」就没法取证。
+        case "studioCreate": return .studioCreate
         case "membership": return .membership
         case "enterprise": return .enterprise
         default:
@@ -212,6 +215,7 @@ public struct CovaRootView: View {
                 case .settings: SettingsView()
                 case .aiSessions: AISessionsView()
                 case .aiSession(let id): AISessionDetailView(sessionID: id)
+                case .studioCreate: StudioCreateView()
                 case .membership: MembershipView()
                 case .enterprise: EnterpriseView()
                 case .artist(let id): ArtistHomeView(artistID: id)
@@ -401,7 +405,8 @@ public struct CovaRootView: View {
             case .myPlaylists: return "我的歌单"
             // B 组「创作」与 D 组「我的创作」是同一目的地（08）⇒ 高亮资产组那条：
             // 08 列的是"我的"会话，选中态标在它身上才是实话。
-            case .aiSessions, .aiSession: return "我的创作"
+            // 19 创作台是 08 的子屏 ⇒ 父项高亮同一条（06 → 歌单 同一规则）。
+            case .aiSessions, .aiSession, .studioCreate: return "我的创作"
             case .membership: return "会员"
             case .enterprise: return "企业服务"
             case .settings, .artist: return nil

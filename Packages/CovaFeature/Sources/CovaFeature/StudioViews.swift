@@ -71,6 +71,13 @@ public struct AISessionsView: View {
                     Button("新会话") { Task { await startNewSession() } }
                         .foregroundStyle(CovaColor.accent)
                 }
+                // 19 §1 入口①：创作台与「跟它聊」是**两条通道**（`studio/create/generate`
+                // 直下任务 vs `studio/agent` 的 SSE 会话），所以两个钮并列、各说各的话，
+                // 不把「做歌」塞进新会话的流程里（那会让用户以为它也是聊出来的）。
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("直接做歌") { session.path.append(.studioCreate) }
+                        .foregroundStyle(CovaColor.accentText)
+                }
             }
             .task { await load() }
             .refreshable { await load() }

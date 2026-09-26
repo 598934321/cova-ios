@@ -135,6 +135,22 @@ public struct CatalogService: Sendable {
             : try await client.delete("/api/saved-playlists", body: body)
     }
 
+    /// 最近播放（A1）：`track_listens` 与 `work_listens` 合并后的时间序。
+    ///
+    /// `limit` 是契约给的那个参数（服务端默认 50、钳到 1..100）——
+    /// 这里显式传 50 而不是"不传"，是为了让 01 那一栏的行数有确定口径；
+    /// **不发明**别的查询键。
+    ///
+    /// 解码走 `PlayHistoryPageDto` 的**逐行容错**：库曲 DTO 直解作品行会抛，
+    /// 而 `items` 是数组 ⇒ 一处抛错就是整份历史全丢（不是丢一行）。
+    /// 读不出身份的行计入 `unreadableItemCount`，不静默。
+    public func playHistory(limit: Int = 50) async throws -> PlayHistoryPageDto {
+        try await client.get(
+            "/api/play-history",
+            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
+        )
+    }
+
     public func me() async throws -> CovaMeResponse {
         try await client.get("/api/auth/me")
     }

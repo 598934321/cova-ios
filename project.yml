@@ -111,11 +111,14 @@ targets:
         #     并按评审指认补 `.advanced` / `.repeated` **总闸**（引擎确实装着当前项或真有一代
         #     装载在途才允许声称推进）；MIN-R7-1 三个配置旋钮构造期 clamp；MIN-R7-2 toggle 把
         #     `.loading` 归入「正要响」一侧；§20 删不可达收敛腿；PLAYER_MIN 394 → 397
+        # → 0.2.71/88 P0 三件：GET /api/play-history 混排读 + studio/create 最小闭环
+        #     （simple generate → generation-jobs 轮询 → works 结果行）+ 作品播放上报（work_listens）
+        #     + 作品直存（audioUrl，不 checkout 不扣费）；新增 design/screens/19-studio-create.md
         # → 0.2.69/80 R18-2（第 18 轮 Major）：十条美术腿改经 `CovaArtworkResolution`（D23 唯一
         #     裁决面）—— 站内相对封面/头像补成生产 origin 且查询串逐字节保留，出口拒绝点名 host；
         #     并新建 CovaFeature 最小测试目标（`CovaFeatureTests`，23 条，只钉媒体腿，无 UI 快照）
-        CFBundleShortVersionString: "0.2.70"
-        CFBundleVersion: "87"
+        CFBundleShortVersionString: "0.2.71"
+        CFBundleVersion: "88"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

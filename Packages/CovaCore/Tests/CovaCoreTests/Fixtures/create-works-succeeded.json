@@ -1,0 +1,45 @@
+{
+  "works": [
+    {
+      "id": "job-test-0001:cand-1",
+      "jobId": "job-test-0001",
+      "title": "Summer Signal",
+      "coverUrl": "https://covers.invalid/work/c1.jpeg",
+      "audioUrl": "/audio/summer-signal_9f3a1c2b4d5e6f70.mp3",
+      "duration": 118.4,
+      "status": "succeeded",
+      "tags": ["pop", "summer"],
+      "lyrics": "夏日信号",
+      "modelVersion": "chirp-hawk",
+      "instrumental": false,
+      "voiceName": null,
+      "errorMessage": null,
+      "createdAt": "2026-09-26T03:12:00.000Z",
+      "source": "studio-create",
+      "providerClipId": "provider-clip-1"
+    },
+    {
+      "id": "job-test-0001:cand-2",
+      "jobId": "job-test-0001",
+      "title": "Bright Coast",
+      "coverUrl": "https://covers.invalid/work/c2.jpeg",
+      "audioUrl": "/api/media/objects/obj-2?ref=ref-2&intent=play",
+      "playbackUrl": "https://bucket.invalid/work/c2.mp3?sign=x&exp=1",
+      "duration": 120.0,
+      "status": "succeeded",
+      "tags": [],
+      "lyrics": null,
+      "modelVersion": "chirp-hawk",
+      "instrumental": true,
+      "voiceName": null,
+      "errorMessage": null,
+      "createdAt": "2026-09-26T03:12:00.000Z",
+      "source": "studio-create",
+      "providerClipId": "provider-clip-2",
+      "favorited": true,
+      "operation": "create"
+    }
+  ],
+  "nextCursor": null,
+  "total": 2
+}

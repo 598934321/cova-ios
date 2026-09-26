@@ -1,0 +1,6 @@
+{
+  "error": "请先登录",
+  "code": "AUTH_REQUIRED",
+  "authenticated": false,
+  "items": []
+}

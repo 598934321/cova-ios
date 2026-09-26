@@ -1,0 +1,6 @@
+{
+  "mode": "simple",
+  "operation": "create",
+  "prompt": "夏夜城市里的合成器流行，女声，中速",
+  "idempotencyKey": "cova-studio-create-generate-00000000000000000000000000000000"
+}

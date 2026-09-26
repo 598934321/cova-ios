@@ -124,10 +124,15 @@ public struct PlaybackItem: Hashable, Sendable {
 
     /// 条目性质：决定播放上报与合规行为（design/screens/02-player.md §8）。
     public enum Kind: String, Hashable, Sendable, CaseIterable {
-        /// 曲库曲目：上报播放（`source: "app-ios"`）。
+        /// 曲库曲目：上报播放，`trackId` 就是库曲 id，`source` 由调用点按语境给
+        /// （取值只能是 `PlayReportSource` 的五个闭合值；默认 `.player`）。
         case libraryTrack
         /// 生成候选私有音频：**不上报**、不收藏。
         case privateCandidate
+        /// 作品（studio/create 的成品行）：**要上报**，但 `trackId` 是伪 id
+        /// `{jobId}:{candidateId}` —— 服务端据此记进 `work_listens` 而不是 `track_listens`
+        /// （DEVELOPMENT.md §4.3 / A5）。所以这一类的 `id` 允许含 `:`（见 `validateIdentifier`）。
+        case work
     }
 
     /// 曲目 id 的字符白名单口径（同时是缓存文件名的安全口径，fail-closed）。
@@ -169,9 +174,18 @@ public struct PlaybackItem: Hashable, Sendable {
         return raw
     }
 
-    /// 曲目 id 校验：非空、仅 `[A-Za-z0-9_-]`、长度受限、拒绝 `.` / `..`。
+    /// 曲目 id 校验：非空、仅 `[A-Za-z0-9_:-]`、长度受限、拒绝 `.` / `..`。
     ///
     /// 该 id 会参与缓存文件名与幂等关联，故此处就收紧（路径逃逸与头部注入的源头治理）。
+    ///
+    /// **冒号是作品行要求的**：`PlaybackItem.Kind.work` 的 id 就是上报用的伪 trackId
+    /// `{jobId}:{candidateId}`（服务端 `work_listens` 的判别形状），拒掉 `:` 就等于
+    /// 作品既不能播也不能上报（A5 直接不可达）。
+    ///
+    /// 而 `#`（0x23）与 `@`（0x40）**必须继续拒**：`PrivateAudioPath.fileName` 的形态是
+    /// `<itemID>#<形态>@g<generation>`，这两个字符是缓存身份的分隔符 ——
+    /// 放开任何一个，一个 itemID 就能伪造出「别的形态 / 别的代次」的缓存文件名，
+    /// 于是 `purgeStale` 会扫错、`existingValidFile` 会把另一份字节当成本次要的那一份。
     public static func validateIdentifier(_ id: String) throws {
         if id.isEmpty { throw IdentifierRejection.emptyIdentifier }
         if id == "." || id == ".." { throw IdentifierRejection.reservedIdentifier }
@@ -183,7 +197,7 @@ public struct PlaybackItem: Hashable, Sendable {
             let ok = (v >= 0x61 && v <= 0x7A)
                 || (v >= 0x41 && v <= 0x5A)
                 || (v >= 0x30 && v <= 0x39)
-                || v == 0x2D || v == 0x5F
+                || v == 0x2D || v == 0x5F || v == 0x3A
             if !ok { throw IdentifierRejection.identifierCharacter }
         }
     }

@@ -85,6 +85,20 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
         )
     }
 
+    /// studio/create 的提交请求（DEVELOPMENT.md §4.4 / A3）：模块外可构造、
+    /// 幂等键只能经 token 注入，且编码出的键集与服务端读取清单一致
+    /// （`mode` / `operation` / `prompt` / `idempotencyKey` —— 不多不少，不发明字段）。
+    func testStudioCreateGenerateRequestIsConstructibleAndEncodesContractKeys() throws {
+        let request = try StudioCreateGenerateRequestDto(
+            prompt: "夏夜城市里的合成器流行，女声，中速",
+            token: token(.studioCreateGenerate)
+        )
+        try XCTAssertEncodedJSONEqual(
+            JSONEncoder().encode(request),
+            fixture: "requests/studio-create-generate-request"
+        )
+    }
+
     func testCreateSessionRequestIsConstructibleAndDefaultsToOneStep() throws {
         let request = CovaCreateSessionRequestDto()
         XCTAssertEqual(CovaCreateSessionRequestDto.oneStepWorkflowMode, "one-step")

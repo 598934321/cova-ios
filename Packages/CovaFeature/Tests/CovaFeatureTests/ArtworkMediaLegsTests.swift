@@ -49,12 +49,19 @@ final class ArtworkMediaLegsTests: XCTestCase {
         return found
     }
 
-    private func recent(_ id: String) throws -> RecentTrack {
+    /// 01「继续聆听」这一槽自 2026-09-26 起读的是 `AppSession.RecentPlayRow`
+    /// （服务端 play-history 与本机账两本账合到同一个形状，A1 的混排）⇒ 夹具里那份
+    /// `RecentTrack` 先映射过去。映射只搬封面相关的那几格，其余填合法值 ——
+    /// **本用例验的是封面腿，不是行的语义**（行语义的用例在 `StudioCreateLegTests`）。
+    private func recent(_ id: String) throws -> AppSession.RecentPlayRow {
         let items: [RecentTrack] = try ArtworkFixture.decoded([RecentTrack].self, key: "recentTracks")
         guard let found = items.first(where: { $0.id == id }) else {
             throw ArtworkFixtureError.keyMissing("recentTracks/\(id)")
         }
-        return found
+        return AppSession.RecentPlayRow(
+            id: found.id, kind: .library, title: found.title, artist: found.artist,
+            coverURLString: found.coverURLString, duration: nil, playable: true, source: nil
+        )
     }
 
     // MARK: 16 音乐人主页 —— artist.avatar
