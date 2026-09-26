@@ -377,11 +377,13 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
    19 结果区都能按 `{jobId}:{candidateId}` 回读单行；筛选/分页/行内动作仍未接。）
 2. **cover/extend/remaster**：作品详情提供「翻唱/续写/重制」入口，sourceClipId=
    `providerClipId`；extend 给 continueAt 选择（缺省=结尾）；melody 模式可后置。
-3. **作品播放上报（work_listens）**：✅ **已交付（2026-09-26）**。两处与上面写法的偏差，
-   按实测事实保留：`source` 用 `player`（不是 `project`——全 App 只有一个播放面，
+3. **作品播放上报（work_listens）**：✅ **代码与单测已交付（2026-09-26）**；
+   ⚠️ **设备侧未验收** —— 作品音频 302 落在名单外的桶，播不出声 ⇒ 上报不发生（§7 #39，A5）。
+   两处与上面写法的偏差，按实测事实保留：`source` 用 `player`（不是 `project`——全 App 只有一个播放面，
    语境没有从视图层传到播放层，见 §4.3 的语境口径）、播放地址用 `audioUrl`
    （不是 `playbackUrl`——后者是名单桶直链，D23 之后不许直接交给播放器）。
-4. **BUG-15 作品直存下载**：✅ 已交付（Documents + 本机清单，不 checkout、不扣费）。
+4. **BUG-15 作品直存下载**：✅ 代码与单测已交付（Documents + 本机清单，不 checkout、不扣费）；
+   ⚠️ **设备侧未验收**：同一条 D23 出口规则 ⇒ 沙盒里今天落不下文件（§7 #39，A6）。
    但**没有**进 12d 那套「已下载」屏（那是付费下载清单，门 1 未放行且本屏不可达）：
    作品直存的入口在作品行内（↓ / 「已在本机」/ 删除）。要给它一个独立清单页需先出规格。
    库曲 checkout 路径仍受 D12 门禁不接 UI。
@@ -454,8 +456,15 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
   塞进 `check.sh` 等于把门禁做成不可靠判据；`check.sh` 的 `Cova` scheme 不引用它。
   代价说清楚：**这条链红了没人拦**（无基线、无 CI 挂钩），所以每次动了 19/01/播放/直存腿
   都要手动跑一次并把截图落 `docs/acceptance/`。
-- 截图落在运行器容器的 tmp（`xcrun simctl get_app_container <udid>
-  cn.covalink.ios.acceptance-tests data` 取回），同时挂成 xcresult 附件。
+- 截图落在运行器容器的 tmp，同时挂成 xcresult 附件。取回时的 bundle id **要带 `.xctrunner`
+  后缀**（`xcrun simctl get_app_container <udid> cn.covalink.ios.acceptance-tests.xctrunner data`）；
+  少了后缀 2026-09-26 实测报 `No such file or directory`，会让人误判"截图没落盘"。
+- **不需要点击的屏不必动用 XCUITest**：`SIMCTL_CHILD_COVA_PREVIEW_ROUTE=…`（同族
+  `_LOGIN_EMAIL/_LOGIN_PASSWORD/_TAB/_SHEET/_DRAWER`）配 `xcrun simctl launch` +
+  `simctl io screenshot` 就够，且**零扣费**；深浅档用 `simctl ui <udid> appearance dark|light`
+  翻，app 侧不留残留（主题档位是「跟随系统」时）。两个坑：① 路由是 `bootstrap → 真登录 →`
+  才 push，`sleep 9` 拍到的还是首页 ⇒ 每拍一张都要读图；② `previewRoute()` 会回读
+  `UserDefaults`，别把 `COVA_PREVIEW_*` 留在沙盒里污染下一次启动。
 
 ---
 
@@ -496,7 +505,7 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 | 36 | 作品直存的**清单落点**与 12d 不同屏：本仓落 `Documents/Cova/cova-work-downloads/`（owner 分桶 + `manifest.json`，只存本地文件名与展示字段），入口在 19 作品行内（↓ /「已在本机」/ 删除），**没有**「已下载」整屏 | 已按此交付（2026-09-26）；12d §7 的「本机沙盒 + 本地元数据」方法成立、屏不通用 | 要独立清单页须先出规格（设计闸门硬边界 8）|
 | 37 | 作品 `playbackUrl` 实测签在 **`covalink-uploads-…`** 桶（2026-09-26 生产只读探针，`GET /api/studio/create/works?limit=6` ⇒ 6/6 行同形），不在 D23 存储名单（只有 covers/audio）内 ⇒ iOS 出口守卫按主机名拒掉，**§4.4 那句「App 后台播控必须用它」在本端今天不可用** | 待答：能否改签名单内的桶（或论证把 uploads 桶纳入名单——它是用户私产桶，web 侧正因为这点被否过一次） | 非阻塞（播放走 `audioUrl` + D7 本地化已通） |
 | 38 | `GET /api/me/credits/ledger` 的 `jobId` 实测 **6/6 条 null**（含 1 条 `studio_create_generation`），与 §4.6「由 `metadata.jobId` 解出」不符；本账号这批账可能早于该字段上线 | 待答：请用一条**新生成**后的账目复核；若恒 null 则转为后端缺陷 | **A9 判据未达**（P2 流水页的「任务」关联无从渲染）|
-| 39 | **作品的音频出口落在名单外的桶**：`GET /api/media/objects/<id>?…`（带 Bearer）实测 **302 → `covalink-uploads-1301797874.cos.ap-shanghai.myqcloud.com`**（2026-09-26 只读取证，只打状态码与落地 host），而 D23 名单只有 covers / audio 两桶 ⇒ iOS 侧 `mediaHopEgress` 判 `.refused` ⇒ **作品既播不出也存不下**（A5/A6 的设备侧判据因此未达）。与 #29 同族，这次落在作品上 | 待答：把作品音频改签 `covalink-audio-…`（已在名单），或给出 uploads 桶的公开/私读语义结论后再议名单——**客户端不自己放宽**（硬边界 4/D23） | **A5/A6 阻塞**（P0 唯一未达的两条）|
+| 39 | **作品的音频出口落在名单外的桶**：`GET /api/media/objects/<id>?…`（带 Bearer）实测 **302 → `covalink-uploads-1301797874.cos.ap-shanghai.myqcloud.com`**（2026-09-26 只读取证，只打状态码与落地 host），而 D23 名单只有 covers / audio 两桶 ⇒ iOS 侧 `mediaHopEgress` 判 `.refused` ⇒ **作品既播不出也存不下**（A5/A6 的设备侧判据因此未达）。与 #29 同族，这次落在作品上 | 待答：把作品音频改签 `covalink-audio-…`（已在名单），或给出 uploads 桶的公开/私读语义结论后再议名单——**客户端不自己放宽**（硬边界 4/D23） | **A5/A6 阻塞**（P0 里被这一条卡住的两条。口径更正：P0 未达的**不止**这两条 —— A4 的 402 档还缺一个零余额账号、A11 的服务端两层去重没在生产复跑过，那两条是"证据不够"而不是"被出口守卫卡住"）|
 
 > 共 **23 条后端待答/待端点**（#4,5,6,8,9,10/12,11,13,14,15,16,17/23/28,18,19,20,21,22,24,25/33,26,27,29,30,31,32）
 > + **2 条端侧待办**（#34,#35）**+ 1 条端侧落点登记**（#36：作品直存清单落点与 12d 不同屏）
@@ -511,7 +520,8 @@ TD-42 锁屏命令「已受理未完成」需真机冒烟；TD-43 MPRemoteComman
 TD-45 门面层缺「取消→⏭」复现腿；TD-46 导航矩阵成本须拆用例；TD-47 `@unchecked Sendable`
 9 处已核真锁但缺 `// SAFETY:` 标记机制化；TD-48 **CovaUI/CovaFeature 无测试 target**
 （UI 层只有构建+截图自证）；TD-49 骨架屏未按五族分屏型；TD-50 证据纪律（截图必须钉
-构建退出码 0 + 产物符号）；版本号口径=「影响产物的 commit 才递增」待用户拍板。
+构建退出码 0 + 产物符号）；版本号口径**已消解**：以 §2「纯文档不递增 / 影响产物才递增」为准
+（原记「待用户拍板」，2026-09-26 按 §2 收敛，两处表述不再打架）。
 
 ---
 

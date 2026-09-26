@@ -1,8 +1,17 @@
 # P0 设备侧验收（2026-09-26）
 
-产物来源：commit `80af455` 之上的工作树（含 A1 的 bootstrap 修复与验收 target），
-版本 `0.2.71(88)`；门禁复跑结果见本目录末尾「门禁」。
+产物来源分**三批字节**，逐文件标注（A14 要求"截图批次必须同 commit 字节"，
+不同批的图不能互相顶替）：
+
+| 批次 | 字节 | 本目录里的文件 |
+|---|---|---|
+| 12:18 | `0.2.71(88)`（A1 的 bootstrap 修复**之前**） | `19-studio-create-light.png`、`19-studio-create-dark.png` |
+| 16:10–16:40 | `0.2.72(89)` = HEAD `08767d9` | `01-recent-history-light.png`、`19-form-light.png`、`19-task-polling-light.png`、`19-results-light.png` |
+| 18:13–18:16 | 同上（`-derivedDataPath /tmp/cova-accept-dd`，18:13 重新链接产物，且仓库内无 `.swift` 比它新 ⇒ 确为 HEAD 字节） | `01-recent-history-dark.png`、`19-form-dark.png` |
+
 设备：iPhone 17 Pro 模拟器（iOS 26.5，1206×2622），账号 `opencode@test.com`（口令不落盘）。
+深浅档走 `xcrun simctl ui <udid> appearance dark`（app 内主题档位是「跟随系统」，
+`cova.themeMode` 没写进 UserDefaults ⇒ 翻完外观不留任何 app 侧残留，拍完已翻回 light 并核对过 plist）。
 
 取证方式：**XCUITest**（`CovaAcceptanceTests/P0AcceptanceTests.swift`，独立 scheme
 `CovaAcceptance`）。为什么不是"人工点一下"：驱动本机会话的进程没有 macOS「辅助访问」权限
@@ -33,7 +42,35 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 | `19-form-light.png` | 19 空表单：占位文案、`0/2,000` 计数、CTA disabled 形态；D/E 区不渲染 | — |
 | `19-task-polling-light.png` | **A3 中段**：「本次任务 / 制作中 已等 00:34 / 不确定条 / 本次消耗 100 co」，CTA 在途不可点 | 提交确实发生：ledger 由 6 条 → **7 条**，新行 `reason=studio_create_generation`（扣 100 co，非 315 —— 315 是账号里那条旧 one-step 账） |
 | `19-results-light.png` | **A3 终态**：「已完成 · 本次消耗 100 co」+「作品（2）」两行（Boardwalk After Hours 03:52 / 03:57，各带 ▶ 与 ↓），CTA 转「再做一首」 | `GET /api/studio/create/works?limit=3` ⇒ 新 job `c7fe0807-…` 两行 `status=succeeded`、`source=studio-create`；`generation-jobs?id=` 亦回 `{job}` 且 `status=succeeded` |
-| `19-studio-create-light.png` / `-dark.png` | **A14 双主题**：同一屏深浅两档，色值全部走 token 双值 | — |
+| `19-studio-create-light.png` / `-dark.png` | 19 屏深浅两档（**12:18 旧批次**，早于 A1 的 bootstrap 修复）：色值全部走 token 双值 | — |
+| `01-recent-history-dark.png` | **A14 深色档**：与 `01-recent-history-light.png` 同一屏同一份数据，「继续聆听」5 行全在（未寄出的冬天 / Morning Leash Parade / 粉墙初晴 / Woven Map Awakens the Clocktower / Woven Balloon），各带时长；近黑底 + 白字 + 橙强调，无一处硬编码色 | 同一次 `testRecentHistoryRendersServerRows`（**passed 21.4s**，`xcresulttool`：`passed=1 failed=0 skipped=0`）的逐条点名断言，判据与浅色那张同源 |
+| `19-form-dark.png` | **A14 深色档**：19 空表单（占位文案、`0/2,000`、CTA disabled 形态、D/E 区不渲染），与 `19-form-light.png` 同屏对照 | 零扣费：`COVA_PREVIEW_ROUTE=studioCreate` 只 push 路由，不提交 |
+
+## A14 覆盖到哪、还差什么（不写成"已齐"）
+
+P0 这两屏（01 继续聆听、19 做一首歌）**浅/深各一图，且都在 HEAD 字节上** ⇒ §6 A14 对
+P0 涉及的屏成立。两条边界要说清：
+
+- 19 的**中途态**（任务卡 + 不确定条）与**终态**（作品两行）只有浅色。拍深色要再提交一次
+  生成 = 再扣 100 co，而 A14 的判据是"每屏"双主题、不是"每个状态"双主题 ⇒ 这一笔不花，
+  状态级的颜色证据由 `CovaTokens` 的动态 provider（单测覆盖）+ 表单屏的双档实拍承担。
+- 其余各屏的双主题不在 P0 范围内。如实说现状：`docs/acceptance/wave-20260925/` 那 28 张
+  是**浅色档 + 字号档**走查，没有深色配对 ⇒ 那 20 屏的 A14 仍欠，按各自里程碑补。
+
+**静态屏（不需要点击的那批）走的是另一条更便宜的路**，不必动用 XCUITest：
+
+```
+SIMCTL_CHILD_COVA_PREVIEW_LOGIN_EMAIL=… SIMCTL_CHILD_COVA_PREVIEW_LOGIN_PASSWORD=… \
+SIMCTL_CHILD_COVA_PREVIEW_ROUTE=studioCreate \
+  xcrun simctl launch --terminate-running-process <udid> cn.covalink.ios
+xcrun simctl io <udid> screenshot /tmp/shot.png
+```
+
+⚠️ **`sleep 9` 之后拍到的是一张首页**：`CovaRootView.task` 是 `bootstrap → 真登录 → 才
+path.append(route)`，登录那两步没回来之前路由还没 push（约 1 分钟后再拍才落到 19）。
+⇒ 这条链不能按固定 sleep 收判据，**每拍一张都要读图**（本轮差点把那张首页存成 `19-form-dark.png`）。
+翻外观前后各读一次 `appearance` 与 app 的 plist，确认没把 `cova.themeMode`
+或 `COVA_PREVIEW_*` 留在沙盒里（`previewRoute()` 会回读 UserDefaults，残留会污染下一次启动）。
 
 ## 未证，以及为什么（这条是本轮最有价值的产出）
 
