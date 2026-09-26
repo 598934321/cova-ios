@@ -45,6 +45,7 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 | `19-studio-create-light.png` / `-dark.png` | 19 屏深浅两档（**12:18 旧批次**，早于 A1 的 bootstrap 修复）：色值全部走 token 双值 | — |
 | `01-recent-history-dark.png` | **A14 深色档**：与 `01-recent-history-light.png` 同一屏同一份数据，「继续聆听」5 行全在（未寄出的冬天 / Morning Leash Parade / 粉墙初晴 / Woven Map Awakens the Clocktower / Woven Balloon），各带时长；近黑底 + 白字 + 橙强调，无一处硬编码色 | 同一次 `testRecentHistoryRendersServerRows`（**passed 21.4s**，`xcresulttool`：`passed=1 failed=0 skipped=0`）的逐条点名断言，判据与浅色那张同源 |
 | `19-form-dark.png` | **A14 深色档**：19 空表单（占位文案、`0/2,000`、CTA disabled 形态、D/E 区不渲染），与 `19-form-light.png` 同屏对照 | 零扣费：`COVA_PREVIEW_ROUTE=studioCreate` 只 push 路由，不提交 |
+| —（无截图：这一条是服务端不变式，屏上不体现新信息） | **A11 幂等两层去重** + **A3 的 curl 半条**（「复用同 idempotencyKey 重放 → 同 jobId 且余额不二次扣」）。生产实测三连，同一 prompt：① `key=K1` 首次 ⇒ `{ok:true, jobId:3b4f59bc…, charge:100}`；② **`key=K2`（不同键、同指纹、10min 内）** ⇒ **同一个 jobId**；③ **`key=K1` 重放** ⇒ **同一个 jobId** | **ledger 只多一条**：`-100`，余额 `19415 → 19315`（三次提交、一次扣费）。⚠️ 顺带抓出一条契约缺口并登记 **§7 #40**：重放响应里**没有** `idempotentReplay` 键，而 `charge` 三条都回 100 —— 它回的是"这一单的价格"不是"本次新扣了多少"，所以"没扣"这件事只能从 jobId 相等 + 余额推出，19 屏的「本次消耗」文案在同指纹换键这条路上会说错（待办已记） |
 
 ## A14 覆盖到哪、还差什么（不写成"已齐"）
 
@@ -74,7 +75,20 @@ path.append(route)`，登录那两步没回来之前路由还没 push（约 1 �
 
 ## 未证，以及为什么（这条是本轮最有价值的产出）
 
-**A5（作品播放上报）与 A6（作品直存）在 iOS 上今天做不到，根因在后端的签名主机，不在本仓。**
+> ⚠️ **本节原来的结论已被同日推翻**，保留原文以免"改了就当没发生过"。
+> 原文写的是「A5/A6 在 iOS 上今天做不到，根因在后端的签名主机」——**错了**：
+> 我只试了服务端签发的那一条 `intent=play`。同一个 `ref`、同一台 host 换 `intent=download`
+> 是 **200 `audio/mpeg`、5,315,422 B、零跳转**（服务端 `media/objects/[id]/route.ts:127`
+> 那个 `intent !== 'download'` 的分支；web 侧自己的下载链就走这条）。
+> ⇒ 根因在**客户端挑错了 intent**，不在后端。已修于 commit `59500c5`
+> （`CovaEnvironment.workAudioDirectFetchURL`，**D23 名单一个字都没放宽**），档案更正见 §7 #39。
+> 下面这段"没有放宽名单"的决定**当时是对的**（在没有安全结论前不放开用户私产桶），
+> 但它掩盖了"再试一个参数就行"这个更便宜的解释 —— 教训记进 [[feedback-verify-own-claims-before-archiving]]：
+> 判据卡在外部系统时，先把**同一台机器的其它形状**试完，再宣布"等别人改"。
+
+**A5 / A6 现状**：解阻，设备侧待验收 —— 验收腿改骑 works 列表屏（对**已存在**的作品行点 ▶/↓ ⇒ 零扣费）。
+
+### 原文（2026-09-26 16:40 那次判读，保留）
 
 - 现象：点 ↓ 后标记不翻成「已在本机」，180s 超时（`testStudioCreateLoop…` 红在第 151 行）。
 - 直接取证（只读 GET，只打状态码与落地 host，不打签名串）：
