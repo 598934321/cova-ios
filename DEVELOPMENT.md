@@ -439,6 +439,13 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
    19 结果区都能按 `{jobId}:{candidateId}` 回读单行；筛选/分页/行内动作仍未接。）
 2. **cover/extend/remaster**：作品详情提供「翻唱/续写/重制」入口，sourceClipId=
    `providerClipId`；extend 给 continueAt 选择（缺省=结尾）；melody 模式可后置。
+   （2026-09-26 交付：契约半条 `sourceClipId`/`continueAt` 与服务端同精度取整 + 本地拦"没选源"；
+   UI 半条落在 **19 的 B 区**（19 待裁决 1 本来就把那一格预留给 `continueAt` 选择器），
+   四档操作 chip + 源选择 sheet + 起点滑杆。
+   ⚠️ **这是对 19 §1「非 P0 控件一律不渲染」的一次有记录的范围变更**（不是遗漏后的补漏：
+   那条写的是 P0 期间的口径）。源那一格**只接受本机刚从 `GET works` 读回的那一行**，
+   因为服务端对 `sourceClipId` 完全不校验（§4.7）——拼一个/留一个过期值出去，
+   换来的是 200 + 真扣费 + 异步 failed。`advanced`（歌词/风格分栏）与 `melody` 仍不渲染。）
 3. **作品播放上报（work_listens）**：✅ **代码与单测已交付（2026-09-26）**；
    ⚠️ **设备侧待验收** —— 原先记的"被 302 卡死"是错的（§7 #39 同日推翻）：客户端把同源
    媒体 URL 的 `intent=play` 换成 `intent=download` 即可 200 取字节，D23 名单未放宽。
@@ -578,10 +585,18 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 | 41 | **works 列表屏（`design/screens/20-works-list.md`）开出 12 条待答**，逐条列在该规格末尾「待答」节，此处按指针登记。最需要先答的四条：① `total` 是筛选后还是全量、含不含 `failed/cancelled`；② `cursor` 是**字符串化的行偏移** ⇒ 中途增删行会让翻页漂移或重复，服务端能否给 job 边界对齐（客户端现按 `id` 去重 + 断处重复组头承接）；③ `works/:id/share` 对 `source ∈ {one-step, song-match}` 的行是否可用（现按 `source == "studio-create"` 判可见）；④ `favorite` 与 `PATCH /api/media/references/:id/retention` 是不是同一个布尔、谁是事实源 | 待答（指针：20 §待答 1-12）| 非阻塞（屏按"取不到态就保持已知态"设计）；但 ⑤「rename/delete/share 是 job 级、一次生成产 2 行」这条**必须**进 §4.4 正文，客户端已按端侧核对写死 |
 | 42 | **extras 屏（`design/screens/21-work-extras.md`）开出 8 条待答**（同指针格式）。其中两条**本轮已由 `../web` 逐行答掉**，就地更正以免再问：① 纯音乐被滤掉的确实是 `lyrics_video / vocal_stems / accompaniment / lyrics_timing` 四个 key，且这是**服务端**在 `extras.ts:127-133` 滤的（不是客户端推测）；② extras 的 ledger reason 是 `media_extra`（扣费）与 `media_extra_refund`（退款，标签「素材加工退款」在册），而 `media_extra` **不在**服务端 `reasonLabel` 映射里 ⇒ 流水页会显示「其他变动」（§4.7 已记 13/24 落到兜底这一族就是其一）。仍待答：`artifactId` 取自哪个字段、6 个价目要不要进 §4.6、作品路径是否永远不计费、extras POST 的幂等键字段名 | 部分待答 | 非阻塞；价目硬编码的漂移风险按"只回显服务端字符串、不自算"承接 |
 
+| 43 | **A4 的 402 那一档拿不到设备侧证据，且不是"再试一次"能解决的**：要屏上出现「余额不足，本次需要 N co」必须让服务端真的回 402，而测试账号余额 19,315 co、单次生成 100 co ⇒ 要花光它得提交 ~190 次（且会造出 ~380 个作品行）。另一条路是造一个零余额账号——生产**没有注册端点**（#5 同族），也不该由客户端去开号。400 那一档同样不可达：空 prompt 在本地就被拦（19 §4 明令不花一次往返去换同一句话），CTA 在空输入时是 disabled ⇒ 屏上没有任何路径能发出一个"缺 prompt"的请求 | 待答：给一个**长期零余额的验收账号**（或允许本仓在验收窗口把测试号余额临时清零），否则 A4 的设备半条永远欠着 | **A4 判据降级**：`charge`/400/402 三条信封与两句文案的对应关系由 `StudioCreateDTOTests`（402 信封、`error` 就是英文码且无 `code` 键、裸码不许透传）+ 代码路径证；屏上证据只有 400 的**本地拦**那一格（CTA disabled）看得见 |
+| 44 | **A10 的"非空"分支同样拿不到设备证据**：`GET /api/studio/producers` 的灰度是 `PRODUCER_MODE=on\|off\|allowlist`，而**未设 + `NODE_ENV=production` ⇒ off**（`web/src/lib/producer/flags.ts:10-14`）⇒ 生产上恒回 200 `{producers:[]}`。注册表里其实有一个启用的制作人（`lin-zhixia`），但要它出现需要服务端把开关打到 `on` 或把本账号写进 `PRODUCER_MODE_ALLOWLIST` | 待答：把验收账号加进 `PRODUCER_MODE_ALLOWLIST`（或给一个灰度环境）。这是**服务端一行配置**，不是契约缺口 | 非阻塞。**空列表那一半（入口不可见、不是置灰）今天就能设备验收**；非空那一半由 `ProducersDTOTests` 的真实形状夹具 + 视图代码路径证，并在屏上如实区分"灰度没开"与"没读到"（`producersReadFailed` 与空数组不是一回事）|
+
 > 共 **23 条后端待答/待端点**（#4,5,6,8,9,10/12,11,13,14,15,16,17/23/28,18,19,20,21,22,24,25/33,26,27,29,30,31,32）
 > + **2 条端侧待办**（#34,#35）**+ 1 条端侧落点登记**（#36：作品直存清单落点与 12d 不同屏）
 > + **4 条本轮生产实测新增**（#37 `playbackUrl` 落在名单外的桶、#38 `ledger.jobId` 按新账复测仍 null ⇒ 转后端待修、**#39 已推翻：同源 `intent=download` 直出字节，A5/A6 不是被阻塞而是客户端挑错了 intent**、#40 重放响应无机器可读标记）。
 >   四条都是 2026-09-26 用生产实测得到的（只读 GET + 一次已授权的 A11 提交），不是从代码推的。
+> + **2 条规格开出的待答指针**（#41 works 列表 12 条、#42 extras 8 条，逐条在
+>   `design/screens/20-works-list.md` / `21-work-extras.md` 末尾；#42 里两条本轮已答）
+>   **+ 2 条"设备证据今天结构性拿不到"的降级登记**（#43 A4 的 402 档要零余额账号、
+>   #44 A10 的非空档要服务端灰度）——这两条不是"还没做"，是**做了也拿不到证人**，
+>   所以按判据降级 + 替代证据登记，不写成已验收。
 > 已关闭不录：NEEDS-1（登录契约误判）、2（source 用错值已改）、
 > 3（/me 三键已核）、7（推送 token，本地通知兜底）。
 
