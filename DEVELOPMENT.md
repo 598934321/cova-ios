@@ -524,7 +524,7 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 | # | 项 | 判定方式 |
 |---|---|---|
 | A1 | play-history 读 | 模拟器登录 → 「最近播放」列表出现真条目；`sqlite`/`curl -H "Authorization: Bearer $T" 'https://covalink.cn/api/play-history?limit=5'` 返回 items 非空且 iOS 渲染行数一致；work 行（**`track.workId` 非空**，或 trackId 含 `:`）不丢、不崩 |
-| A2 | source 闭合枚举 | 三条机械判据，缺一不可：① **类型面**——上报体的 `source` 只能由 `PlayReportSource` 表达（闭集枚举，越界值在编译期写不出来），且 `PlayReportRequestDto` 的 init 只收 `IdempotentRequestToken`；② **生产码面**——`grep -rn '"app-ios"\|"miniprogram"' Packages/*/Sources --include="*.swift \| grep -vE ':[0-9]+: *(///\|//\|\*)'` **0 命中**（生产码非注释行里不许出现自造值）；③ **反向断言必须在**——`PlayReportDTOTests.swift:74`、`PlayReportCoordinatorTests.swift:384,543` 那三条"这个值再回来就红"的断言不许删。⒊ 抓取实际上报 body 的 `source ∈ {discover,playlist,project,track_detail,player}`。<br>⚠️ **判定式于 2026-09-26 改写**：原式写作 `grep … Packages/ = 0 命中`，实测有 8 处命中，其中 5 处是"该值曾被服务端 400 拒"的注释、3 处在测试面（含那三条反向断言）。原式**分不开"代码在发这个值"与"代码在防这个值回来"** ⇒ 想让它归零只能删掉防回归证据，那是把判据做窄。改后既保住断言，又多了一条原式没有的类型面判据（扫描域从"全 Packages"收窄到"生产码"，作为交换补上 ① 与 ③）。 |
+| A2 | source 闭合枚举 | 三条机械判据，缺一不可：① **类型面**——上报体的 `source` 只能由 `PlayReportSource` 表达（闭集枚举，越界值在编译期写不出来），且 `PlayReportRequestDto` 的 init 只收 `IdempotentRequestToken`；② **生产码面**——`grep -rn '"app-ios"\|"miniprogram"' Packages/*/Sources --include="*.swift \| grep -vE ':[0-9]+: *(///\|//\|\*)'` **0 命中**（生产码非注释行里不许出现自造值）；③ **反向断言必须在**——`Packages/CovaCore/Tests/CovaCoreTests/PlayReportDTOTests.swift:74`、`Packages/CovaPlayer/Tests/CovaPlayerTests/PlayReportCoordinatorTests.swift:384,543` 那三条"这个值再回来就红"的断言不许删（2026-09-27 补：这三处**跨两个包**，原写法只给了文件名没给包 ⇒ 按 `Packages/CovaCore/…` 去找第二个文件会报 "No such file"，本轮就是这样差点把"在"读成"丢了"）。⒊ 抓取实际上报 body 的 `source ∈ {discover,playlist,project,track_detail,player}`。<br>⚠️ **判定式于 2026-09-26 改写**：原式写作 `grep … Packages/ = 0 命中`，实测有 8 处命中，其中 5 处是"该值曾被服务端 400 拒"的注释、3 处在测试面（含那三条反向断言）。原式**分不开"代码在发这个值"与"代码在防这个值回来"** ⇒ 想让它归零只能删掉防回归证据，那是把判据做窄。改后既保住断言，又多了一条原式没有的类型面判据（扫描域从"全 Packages"收窄到"生产码"，作为交换补上 ① 与 ③）。 |
 | A3 | generate simple 闭环 | 真机：填 prompt → 生成 → ≤30min 内列表出现 2 首 `succeeded` 行；期间 Console 无红错；`curl` 复用同 idempotencyKey 重放 → 同 jobId 且余额不二次扣 |
 | A4 | 402/400 错误展示 | 构造余额不足/缺 prompt → UI 分别显示「余额不足，本次需要 N」「请填写音乐描述」（透传服务端文案）；无「未知错误」糊词 |
 | A5 | work_listens 上报 | 播放一首作品 → `POST /api/tracks/play` body trackId=`{jobId}:{candidateId}` → 响应 `recorded:true`；随后 `GET /api/play-history` items 含该 work 行 |
@@ -613,6 +613,14 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
   （剥掉路径只留 host + `<redacted>`），也不是播放地址。
   ⇒ 这一条判据的"grep 无命中"写法本身不成立（注释里必然提到这个词），**按命中点逐个否证**才是
   它能被机械执行的样子；上面就是这一轮的执行记录。
+- **A2（source 闭合枚举）三条判据本轮重跑**：② 生产码面按原式跑 ⇒ **非注释命中 0**；
+  ③ 三条反向断言逐条点到行：`CovaCore/…/PlayReportDTOTests.swift:74`
+  （`XCTAssertNotEqual(wire, "app-ios", …)`）、`CovaPlayer/…/PlayReportCoordinatorTests.swift:384`
+  （`XCTAssertFalse(json.contains("app-ios"), …)`）、同文件 `:543`
+  （`XCTAssertFalse(body.contains("app-ios"), body)`）⇒ 三条都在，行号也还对得上
+  （行号类指针每次动到这两个包都要重核一次，它比判据本身先烂）。① 是编译期判据
+  （`PlayReportSource` 闭集 + `PlayReportRequestDto` 的 init 只收 `IdempotentRequestToken`），
+  门禁的 clean build 每一步都在重跑它。
 
 ---
 
