@@ -525,6 +525,28 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
   每日/广场、`agent-v2/*`、`cover/jobs`、`home/materials`、`voice-profiles` 展示、
   `producers/projects|deliveries|surveys` 全流程、`auth/login/apple|sms`（上架口径见 §7）。
 
+> **P3 的实现状态 = 一条都没有开始**（不是"做了一半"）。下面这张表是 2026-09-27 对着
+> `../web`（就是 covalink.cn 的事实源）逐条数出来的，作用是让下一轮不必重新考古：
+> 每条线的**端点在不在、几支、iOS 侧缺的是规格还是端点**。
+
+| 线 | 实测端点（`src/app/api/**` 里数到的 route 文件） | iOS 侧现状 | 开工前要先定的那一件 |
+|---|---|---|---|
+| 灵感商店 | `inspiration-shop/` 列表 + `[id]` + `[id]/preview` + `[id]/purchase` + `[id]/refund` + `my-listings` + `my-purchases` + `seller/identity` + `seller/account` + `seller/withdraw` ⇒ **本轮数到 10 支**（§5 原文写 11，差的那一支要么已并面要么改名，开工前再核一次，别照抄"11"） | 无规格屏、无 DTO、无调用点 | **购买/退款是扣费写操作** ⇒ 撞 D12 合规闸门（v1.0 不做任何购买/充值入口，§1 硬边界）。卖家侧（提现）是另一套身份与风控，不在 iOS 首发面 |
+| 签到 `me/checkin` | 1 支 | 无 | 规格：签到态在 11「我的」还是首页卡？要不要连续天数概念 |
+| 自建歌单 `user-playlists` | 3 支（列表 / `[id]` / `[id]/items`） | 无（06 那套是**官方**歌单详情，不是自建） | 规格：编辑器交互（增删曲、改名、封面）—— 这是 P3 里最像"一整屏新功能"的一条 |
+| 分享歌单 `shared-playlists` | 2 支（`[token]` / `[token]/claim`） | 无 | `claim` 是写操作且带 token ⇒ 免登录可达面，与 A7 的 share 同一类外部可见副作用（要人工裁决） |
+| 每日/广场 `playlists/daily\|public` | 2 支（另有 `playlists/`、`playlists/[id]` = 官方那两条） | 广场 05 已接的是 `playlists`，`daily`/`public` 两条**没接** | 小：05/06 的规格能复用，缺的是入口与卡片字段 |
+| `agent-v2/*` | 实际路径是 **`studio/agent-v2/`**：`chat` / `sessions` / `skills` 3 支（`src/app/api/agent-v2` 不存在 ⇒ §5 原文那条路径要按这个改） | 无（09 走的是 v1 `studio/agent`） | 规格：v2 与 v1 是同屏切换还是新屏；`skills` 有没有 UI |
+| `cover/jobs` | 3 支（`cover/generate` / `cover/jobs` / `cover/jobs/[jobId]`） | 无 | 与 19 的 `operation=cover` 是同一条腿的两张脸还是两屏，要先裁 |
+| `home/materials` | 1 支 | 无（01 首页 feed 现在读的是别的源） | 小：首页多一个卡组，规格改 01 就够 |
+| `voice-profiles` | 5 支（列表 / `[id]` / `[id]/start` / `[id]/status` / `[id]/verify`） | 无 | §5 原文只说"展示"，但 `start`/`verify` 是**采集与训练**流程 ⇒ 展示与采集是两件事，先划清 |
+| producers 全流程 | 5 支（`studio/producers` + `projects` + `projects/[id]` + `actions` + `surveys`） | 只有 `studio/producers` 的**读**（23 屏，灰度未开 ⇒ 生产恒空，§7 #44） | 项目/交付/问卷三张屏都没有规格 |
+| `auth/login/apple\|sms` | `auth/login/apple` 在、`auth/sms/send` 在（`head` 截断处还有别的 sms 支，开工前逐条数） | 只有邮箱密码两步登录 | **上架口径**（§7 记着）：Sign in with Apple 是上架要求，短信是境内要求，两条都不是"写代码"这一层能定的 |
+
+⇒ 这一节的每一条都缺**同一件前置**：`design/screens/` 里没有它们的屏规格（现有 26 张只覆盖 P0–P2）。
+按 G2 的交付形态（逐屏规格落地），没有规格就先动 UI 等于绕过已定的交付口径；
+所以本轮把它们**逐条测端点、逐条写清缺的是哪一格**，而不是挑一条最容易的先做掉好凑"进度"。
+
 ---
 
 ## 6. 验收标准（每项可机械判定）
