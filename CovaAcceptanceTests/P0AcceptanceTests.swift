@@ -93,6 +93,14 @@ final class P0AcceptanceTests: XCTestCase {
         )
     }
 
+    /// 屏上所有按钮的「标识符 + 标签」清单。labelDump() 只看 staticText，
+    /// 而这一族失败几乎都是「标识符挂在按钮上、我却只打了文本」—— 没有它就是靠猜。
+    private func buttonDump() -> String {
+        app.buttons.allElementsBoundByIndex.map {
+            "[" + $0.identifier + "]" + $0.label
+        }.joined(separator: " ")
+    }
+
     /// 把元素滚到**可点**：结果行在 ScrollView 里，键盘还占着下半屏时它可能不可命中。
     /// 判据用 `isHittable` 而不是 `exists` —— 存在但被键盘挡住的东西点了不算数。
     private func scrollIntoView(_ element: XCUIElement, maxSwipes: Int = 6) {
@@ -270,7 +278,71 @@ final class P0AcceptanceTests: XCTestCase {
     func testWorksListClipActionsReachTheServer() throws {
         let list = try launchedScreen("我的作品", route: "worksList")
 
-        // ① 行 ⋯ 必须是 clip 级那几项，且**不含**改名/删除/分享（那三项是 job 级的，
+        // ① 组头 ⋯：三项都在，且每一句都带「本次生成的作品」。
+        //    顺序是修出来的 —— 第一版把这一格放在最后，而前面「关掉歌词面板」那一步点的是
+        //    导航条第一个按钮，那正是**返回**：20 整屏被弹掉 ⇒ 这里报「组头没有 ⋯」。
+        //    与其去猜面板的关闭键，不如把不需要弹层的检查放到最前面。
+        //    标识符是在设备上核出来的：组头那枚 ⋯ 实际暴露的是 `cova.works.group.<序号>`
+        //    （源码里写的 `cova.works.groupMenu.<anchor>` 被外层组的标识符盖掉了）。
+        //    选择器不靠读源码猜 —— 上一版就是猜错的，报"组头没有 ⋯"而屏上明明有。
+        let groupMenu = list.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "cova.works.group.")
+        ).element(boundBy: 0)
+        XCTAssertTrue(
+            groupMenu.waitForExistence(timeout: 25),
+            "组头没有 ⋯；按钮标识=" + buttonDump() + "｜标签=" + labelDump()
+        )
+        groupMenu.tap()
+        Thread.sleep(forTimeInterval: 2)
+        // 正面断言：三项都在组头，且每一句都带「本次生成的作品」。
+        // 这一格是上面那条"行 ⋯ 里不许有"的对照面 —— 没有它，那条否定断言可以因为
+        // 标签写错而恒真（本轮第一次写这条时就是这个错法）。
+        for label in [
+            "重命名本次生成的作品", "分享本次生成的作品", "删除本次生成的作品"
+        ] {
+            XCTAssertTrue(
+                list.buttons[label].exists,
+                "组头 ⋯ 少了「\(label)」；标签=" + labelDump()
+            )
+        }
+        shot("20-group-menu")
+    }
+
+    /// A7 的第二条腿：clip 级那几项在**行** ⋯ 里，job 级三项不在。
+    ///
+    /// 为什么单独一条：上一版把两步写在同一次会话里，第一步留下的弹层让第二步的
+    /// `rowMenu` 变成「存在但点不到」（XCUITest 报 `Failed to not hittable`）——
+    /// 那是测试自己的状态泄漏，不是屏上的缺陷。一条用例一个起点，就不必去猜别人的关闭键。
+    func testWorksListClipMenuHoldsOnlyClipActions() throws {
+        let list = try launchedScreen("我的作品", route: "worksList")
+
+        // ① ♡ 真按一次。断言的是"屏上确实有反应"这一格可观察事实：
+        //    按钮清单在点之前与点之后必须不同（翻面、或出现回执/失败说明都算）——
+        //    相同就说明这一发根本没走到会话层，那才是这条判据要挡的东西。
+        let favorite = list.buttons["喜欢"].firstMatch
+        XCTAssertTrue(favorite.waitForExistence(timeout: 10), "行上没有 ♡「喜欢」；" + buttonDump())
+        //    观测量是**选中态**而不是标签：♡ 这一枚的标签恒为「喜欢」，翻面走的是
+        //    `accessibilityAddTraits(on ? .isSelected : [])`（`WorksListView.favoriteRow`）。
+        //    上一版断"按钮清单前后不同"，红了一次 —— 不是没生效，是量错了格：
+        //    服务端同一分钟就多了那条 note 条目（档案里记着这次误判）。
+        //    断言写成**双向翻转 + 复位**，不写成"按之前必须是未收藏"：
+        //    前者与账号当前状态无关，后者会被上一轮跑剩的状态挡死（实测就是这样红过一次，
+        //    而那一次的失败信息恰恰证明选中态是跟着服务端走的）。
+        let before = favorite.isSelected
+        favorite.tap()
+        XCTAssertTrue(
+            favorite.waitForExistence(timeout: 15) && favorite.isSelected != before,
+            "点了 ♡ 选中态没翻面：这一发没走到会话层，或被服务端拒了；" + buttonDump()
+        )
+        shot("20-favorited")
+        favorite.tap()
+        XCTAssertTrue(
+            favorite.waitForExistence(timeout: 15) && favorite.isSelected == before,
+            "再点一次没能翻回原态：撤收藏这一发没生效；" + buttonDump()
+        )
+
+
+        // 行 ⋯ 必须是 clip 级那几项，且**不含**改名/删除/分享（那三项是 job 级的，
         //    这一屏靠"物理上放不到一行上"表达作用域 ⇒ 这里断言它不在，比断言它在别处更硬）。
         let rowMenu = list.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "cova.works.rowMenu.")
@@ -290,9 +362,13 @@ final class P0AcceptanceTests: XCTestCase {
                 || list.buttons["删除本次生成的作品"].exists,
             "A7：job 级的三项不许出现在行 ⋯ 里（作用域靠位置表达）"
         )
+        XCTAssertTrue(
+            list.buttons["补充制作"].exists,
+            "A7：行 ⋯ 少了 21 面板的入口「补充制作」（§5 P2-1 的生产宿主）；标签=" + labelDump()
+        )
         shot("20-row-menu")
 
-        // ② 歌词：有词 ⇒ 屏上出正文；没词 ⇒ 出那两句诚实的空态之一。不许出「未知错误」。
+        // ③ 歌词：有词 ⇒ 屏上出正文；没词 ⇒ 出那两句诚实的空态之一。不许出「未知错误」。
         lyrics.tap()
         Thread.sleep(forTimeInterval: 4)
         let showedLyrics = list.staticTexts.matching(
@@ -305,27 +381,7 @@ final class P0AcceptanceTests: XCTestCase {
             "A7：点「歌词」之后既没有正文也没有空态说明；标签=" + labelDump()
         )
         shot("20-lyrics")
-        list.navigationBars.buttons.element(boundBy: 0).tap()
 
-        // ③ 组头 ⋯：三项都在，且每一句都带「本次生成的作品」（VoiceOver 不许简写成「重命名」）。
-        let groupMenu = list.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "cova.works.groupMenu.")
-        ).element(boundBy: 0)
-        XCTAssertTrue(groupMenu.waitForExistence(timeout: 10), "组头没有 ⋯")
-        groupMenu.tap()
-        Thread.sleep(forTimeInterval: 2)
-        // 正面断言：三项都在组头，且每一句都带「本次生成的作品」。
-        // 这一格是上面那条"行 ⋯ 里不许有"的对照面 —— 没有它，那条否定断言可以因为
-        // 标签写错而恒真（本轮第一次写这条时就是这个错法）。
-        for label in [
-            "重命名本次生成的作品", "分享本次生成的作品", "删除本次生成的作品"
-        ] {
-            XCTAssertTrue(
-                list.buttons[label].exists,
-                "组头 ⋯ 少了「\(label)」；标签=" + labelDump()
-            )
-        }
-        shot("20-group-menu")
     }
 
     /// A9（流水页）的设备腿：行渲染 + 服务端 `reasonLabel` 原样上屏 + **「任务」跳得到作品**。
