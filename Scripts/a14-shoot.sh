@@ -31,14 +31,17 @@ guest=(
 shoot() { # $1=name $2=env-assignments $3=theme $4=login(1/0)
   local name="$1" envs="$2" theme="$3" logged="$4"
   xcrun simctl ui "$UDID" appearance "$theme" >/dev/null 2>&1
-  args=()
-  for kv in $envs; do args+=(--setenv "$kv"); done
+  # 预览键走 SIMCTL_CHILD_ 前缀（§6.1 记录的机制）。这台机器的 simctl 不认 --setenv：
+  # 写在 bundle id 之后 ⇒ 变成传给 app 的启动参数（第一遍 26 张全是默认屏）；
+  # 写在 udid 之前 ⇒ 直接 "Invalid device: --setenv"，app 根本没起来（第二遍 26 张全是桌面）。
+  envs2=()
+  for kv in $envs; do envs2+=("SIMCTL_CHILD_$kv"); done
   if [ "$logged" = "1" ]; then
-    args+=(--setenv COVA_PREVIEW_LOGIN_EMAIL="$EMAIL" --setenv COVA_PREVIEW_LOGIN_PASSWORD="$PASS")
+    envs2+=("SIMCTL_CHILD_COVA_PREVIEW_LOGIN_EMAIL=$EMAIL" "SIMCTL_CHILD_COVA_PREVIEW_LOGIN_PASSWORD=$PASS")
   fi
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1
   sleep 1
-  xcrun simctl launch --terminate-running-process "${args[@]}" "$UDID" "$BUNDLE" >/dev/null 2>&1
+  env "${envs2[@]}" xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" >/dev/null 2>&1
   sleep 11
   xcrun simctl io "$UDID" screenshot "$OUT/$name-$theme.png" >/dev/null 2>&1
   echo "$(ls -la "$OUT/$name-$theme.png" 2>/dev/null | awk '{print $5}') $name-$theme"

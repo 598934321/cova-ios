@@ -1,39 +1,40 @@
-# A14 补配对这一轮：抓到了坑，但**一张都没入档**
+# A14 深色档配对（2026-09-27，批三 = 0.2.78/96）
 
-目标（DEVELOPMENT.md §6.2 那笔账）：给只有单主题的 21 屏补深色档配对。
-字节：`0.2.78/96`（`xcodebuild build` 之后 `plutil` 读到 `CFBundleShortVersionString=0.2.78` /
-`CFBundleVersion=96` 才 `simctl install`，不是拿上一批 0.2.77/95 的产物凑数）。
-设备：iPhone 17 Pro 模拟器；只用 `simctl` + 预览键（不点击、零扣费）。
+字节：0.2.78/96 —— `xcodebuild build` 之后 `simctl install`，屏上自证：`15-settings-{light,dark}`
+的「关于 / 版本」那一行就是 **0.2.78 (96)**（不是靠 `plutil` 单方面声明）。
+设备：iPhone 17 Pro 模拟器；方式：`simctl` + 预览键（不点击、零扣费），
+深浅档用 `simctl ui <udid> appearance dark|light` 翻（app 档位「跟随系统」⇒ 沙盒零残留，拍完翻回 light）。
 
-## 第一遍 26 张全部作废，原因是我自己写错的一行
+## 这一档 13 屏 × 深浅 = 26 张，每张都读过
 
-`xcrun simctl launch --terminate-running-process <udid> <bundle> --setenv K=V …`
-—— **`--setenv` 写在 bundle id 后面就不是环境变量了，是传给 app 的启动参数**。
-app 侧读的是 `ProcessInfo.processInfo.environment`，于是 12 个键一个都没生效，
-`02-player` 到 `15-settings` 拍下来全是首页（只有 `01-home` 那张"看起来对"，因为它本来就该是首页）。
-这一格是 §6.1 那条"每拍一张都要读图"的**又一次实证**：不看图，这 26 张会被当成 A14 的证据入档，
-而它们证明的是"首页有深色档"这一件已经知道的事。
+01-home、02-player、03-library、04-drawer、05-plaza、08-ai-sessions、10-login、11-mine、
+12a-favorites、12b-my-playlists、13-membership、14-enterprise、15-settings。
+（01 首页在批一已有一对，这里是在**本批字节**上重拍的一份；两批各自算各批的账，见 §6.3 末格。）
 
-修法：`--setenv` 全部移到 `<udid> <bundle>` **之前**（`Scripts/a14-shoot.sh` 已是改后的版本）。
+## 读图这一步抓到三次"拍到的不是那屏"——这三条比图本身值钱
 
-## 第二遍的状态：**没读图，所以不入档**
+1. **`--setenv` 写在 bundle id 之后**：`simctl launch <udid> <bundle> --setenv K=V` 里那串
+   不是环境变量，是**传给 app 的启动参数** ⇒ 12 个预览键一个没生效，第一遍 13 张里
+   `02-player` 到 `15-settings` 全是 app 的默认屏（首页）。而 `01-home` 那张"看起来对"
+   —— 它本来就该是首页，所以**只有逐张读才看得见这是整批废图**。
+2. **`--setenv` 写在 udid 之前**：这台机器的 `simctl` 根本不认这个选项，
+   直接 `Invalid device: --setenv`（RC=148）⇒ app 没起来，第二遍 26 张全是桌面（SpringBoard）。
+   正确机制是 §6.1 早就写着的那一条：**`SIMCTL_CHILD_<键名>=<值>` 放在 `xcrun` 之前**
+   （`env SIMCTL_CHILD_COVA_PREVIEW_ROUTE=plaza … xcrun simctl launch …`）。
+   这次两屏一点即中（`plaza`→05、`settings`→15），确认机制后才重跑整批。
+3. **深色档的 04/11 拍到的是"未登录态"**：暖机之后重复带口令启动会被 `/login` 限流，
+   于是 11-mine 深、04-drawer 深 第一版是游客态。改法：**先带口令起一次登录，后续启动只带屏键**
+   （会话已持久化）⇒ 两张重拍后与浅色档同态（账号卡 `opencode test / COVA-00010462 / co 19315 / 专业版` 都在）。
+   04 深还多踩一次：shell 里 `for kv in "${spec##*|}"` 加了引号 ⇒ 两个键被当成一个，
+   `DRAWER=1` 没进去，拍到的是没展开抽屉的首页。
 
-改完之后 26 张的 md5 不再塌成两三个（首页那种"全一样"的形状消失了），
-说明键生效了 —— 但这只证明"它们不是同一屏"，**不证明"每一张都是它该是的那一屏"**。
-A14 的判据是逐屏的深/浅各一图，所以逐张读图这一步没做，就没有任何一张有资格进这个目录。
-⇒ 本目录今天**只有这份 README，零张图**。图在 `/tmp/a14/`（重启模拟器/清 tmp 就没了，
-重跑 `bash Scripts/a14-shoot.sh` 约 6 分钟）。
+## 还缺哪些（不要从这一档读成"A14 做完了"）
 
-## 下一轮要做的两件事（按顺序）
+- 06 / 07 / 09 / 16：要**真数据 id** 才到得了（`playlist:<id>` / `track:<id>` / `aiSession:<id>` / `artist:<id>`）。
+- 12c / 17：**没有预览键** ⇒ 要么加一枚只为截图存在的键，要么走 XCUITest 腿。
+- 23 / 12d / 18：结构性拍不到（§6.2 那一条）。
 
-1. 逐张读 `/tmp/a14/*.png`（13 屏 × 深浅），每张确认"标题栏/主区就是那一屏"；
-   不对的屏要么换键、要么改走 XCUITest 腿（`06/07/09/16` 那四张要真数据 id，本来就不在这 13 屏里）。
-2. 只有读过的才复制进本目录，命名 `NN-屏名-{light,dark}.png`，并在 §6.2 的账上把对应屏从
-   "只有单主题"划到"有成对"。没读的就继续留在"缺"那一栏，不许提前划。
+## 口径
 
-## 顺带说清：这一轮不放宽任何判据
-
-- 没有为了"看起来成对"把首页的深色图改名成别的屏；
-- 没有把 26 张未读图先塞进目录再补验证（那是把证据顺序倒过来）；
-- 口令只走 `--setenv` 的进程环境，不落 `UserDefaults`、不进脚本文件（脚本里那两行是测试号，
-  口令本身由运行者替换 —— 提交版本里刻意留的是占位）。
+- 口令不进仓库也不进脚本：`Scripts/a14-shoot.sh` 里是 `REPLACE_ME_*` 占位，真值只活在运行时。
+- 没读过的图不进这个目录（前两遍共 52 张废图留在 `/tmp`，一张都没归档）。
