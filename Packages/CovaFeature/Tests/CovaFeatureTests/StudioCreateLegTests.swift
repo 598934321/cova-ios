@@ -241,4 +241,34 @@ final class StudioCreateLegTests: XCTestCase {
             CatalogFailure.backendGap("NEEDS-35").userText, "后端契约缺口（NEEDS-35）"
         )
     }
+
+    // MARK: - 扣费那一行（§7 #40：重放时服务端照样回 charge）
+
+    /// 首次报到的 jobId 保持原话 —— 19 那张已验收的截图写的就是这句，改它要重新拍。
+    func testChargeLineKeepsTheOriginalWordingForAFirstReport() {
+        XCTAssertEqual(
+            AppSession.studioCreateChargeLine(charge: 100, alreadyReported: false),
+            "本次消耗 100 co"
+        )
+    }
+
+    /// 同一个 jobId 第二次回来 ⇒ 不许再说"本次消耗"，也不许带数字（那读起来就是又扣了一笔）。
+    func testChargeLineRefusesToRestateASpendForAReplayedJob() {
+        let line = AppSession.studioCreateChargeLine(charge: 100, alreadyReported: true)
+        XCTAssertEqual(line, "这个任务已经提交过（未重复扣费）")
+        XCTAssertFalse(line?.contains("消耗") ?? true, "重放那一格不能沿用首次的措辞")
+        XCTAssertFalse(line?.contains("100") ?? true, "重放时 charge 回的是单价，不是新扣额")
+    }
+
+    /// `nil` 与 `0` 都不渲染这一行，且**都不写成「免费」**（0 可能只是开发环境的计费开关）。
+    func testChargeLineStaysSilentForZeroAndMissingCharge() {
+        for charge in [nil, 0, -100] {
+            for reported in [false, true] {
+                XCTAssertNil(
+                    AppSession.studioCreateChargeLine(charge: charge, alreadyReported: reported),
+                    "charge=\(String(describing: charge)) reported=\(reported) 不该出这一行"
+                )
+            }
+        }
+    }
 }

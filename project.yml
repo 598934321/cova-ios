@@ -111,6 +111,11 @@ targets:
         #     并按评审指认补 `.advanced` / `.repeated` **总闸**（引擎确实装着当前项或真有一代
         #     装载在途才允许声称推进）；MIN-R7-1 三个配置旋钮构造期 clamp；MIN-R7-2 toggle 把
         #     `.loading` 归入「正要响」一侧；§20 删不可达收敛腿；PLAYER_MIN 394 → 397
+        # → 0.2.74/91 §7 #40 的客户端那一半：19 屏的扣费文案不再照抄 `charge`
+        #     （实测重放时服务端照样回 charge:100，且响应无机器可读的重放标记）⇒
+        #     派生 `studioCreateChargeLine(charge:alreadyReported:)`，同一 jobId 第二次回来
+        #     改口「这个任务已经提交过（未重复扣费）」；本会话已见过的 jobId 只活在这份内存账里
+        #     （登出/换号/「再做一首」清空 ⇒ 宁可少说一句，绝不多报一次）
         # → 0.2.73/90 §7 #39 推翻：作品音频不是"后端没给同源出口"，是客户端挑了 `intent=play`
         #     那一条（服务端 302→uploads 名单外桶 ⇒ 出口守卫拒）。新增
         #     `CovaEnvironment.workAudioDirectFetchURL`（同源 + `/api/media/objects/` + 独立成项
@@ -125,8 +130,8 @@ targets:
         # → 0.2.69/80 R18-2（第 18 轮 Major）：十条美术腿改经 `CovaArtworkResolution`（D23 唯一
         #     裁决面）—— 站内相对封面/头像补成生产 origin 且查询串逐字节保留，出口拒绝点名 host；
         #     并新建 CovaFeature 最小测试目标（`CovaFeatureTests`，23 条，只钉媒体腿，无 UI 快照）
-        CFBundleShortVersionString: "0.2.73"
-        CFBundleVersion: "90"
+        CFBundleShortVersionString: "0.2.74"
+        CFBundleVersion: "91"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

@@ -723,6 +723,13 @@ public final class AppSession {
         /// 服务端回显的扣费数字（`charge`）。**0 与 nil 都不渲染**那一行（0 也可能只是
         /// 开发环境开关关闭，客户端无从判别，所以不写「免费」）。
         public var charge: Int?
+        /// 「本次消耗 N co」那句话，由 `AppSession.studioCreateChargeLine` 从
+        /// `(jobId, charge, 本会话已见过的 jobId)` 三样东西派生。
+        ///
+        /// 为什么要派生而不是直接用 `charge`：实测（§7 #40）服务端在**重放**时照样回
+        /// `charge:100`，而响应里没有任何机器可读的重放标记 ⇒ `charge` 是"这一单的价格"
+        /// 不是"本次新扣了多少"。屏上若照抄，就会把"没扣"说成"扣了"。
+        public var chargeLine: String?
         public var works: [CreateWorkItemDto] = []
         public var message: String?
         /// 已等待秒数（D 区计时）。
@@ -739,6 +746,9 @@ public final class AppSession {
     public internal(set) var studioCreate = StudioCreateState()
     /// 同一次提交的幂等凭据：**重试复用、新提交重建**（A11）。
     var studioCreateToken: IdempotentRequestToken?
+    /// 本会话**已经报过一次**的任务号。只用来判"这一条响应是不是重放回显"
+    /// （§7 #40：重放时服务端照样回 `charge`），不参与任何权限/归属判断。
+    var studioCreateSeenJobIDs: Set<String> = []
     var studioCreateTask: Task<Void, Never>?
     var studioCreateTicker: Task<Void, Never>?
     var studioCreateSubmitID = 0

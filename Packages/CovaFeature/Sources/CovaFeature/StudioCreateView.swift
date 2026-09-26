@@ -162,10 +162,11 @@ struct StudioCreateView: View {
                     .font(CovaType.callout)
                     .foregroundStyle(statusIsError ? CovaColor.error : CovaColor.secondary)
             }
-            if let charge = state.charge, charge > 0 {
-                // `charge == 0` 不渲染这一行，也**不写「免费」**：0 也可能只是开发环境
-                // 的开关关闭，客户端无从判别（19 §3.D）。
-                Text("本次消耗 \(charge) co")
+            if let line = state.chargeLine {
+                // 那句话由 `AppSession.studioCreateChargeLine` 派生（不照抄 `charge`：
+                // 重放时服务端照样回 `charge`，见 §7 #40）。nil ⇒ 整行不渲染，
+                // 也**不写「免费」**：0 也可能只是开发环境的开关关闭（19 §3.D）。
+                Text(line)
                     .font(CovaType.caption)
                     .foregroundStyle(CovaColor.muted)
             }

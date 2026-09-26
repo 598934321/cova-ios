@@ -52,6 +52,19 @@ extension AppSession {
         }
     }
 
+    /// 屏上那一行扣费文案（19 §3.D）。派生而不是照抄 `charge`，因为**重放回显**：
+    /// 2026-09-26 生产实测（§7 #40）同一 prompt 三连（首发 / 换键同指纹 / 同键重放）
+    /// 三条响应都回 `charge:100`，而 ledger 只多一条 -100，且响应里**没有**
+    /// `idempotentReplay` 这类机器可读标记。⇒ 只有"这个 jobId 本会话已经报过"
+    /// 才敢断言这次没新扣费；其余情况保持原话，不替服务端编。
+    ///
+    /// `charge == 0` 与 `nil` 同样不渲染这一行，也**不写「免费」**（0 可能只是开发环境
+    /// 的计费开关关着，客户端无从判别）。
+    public static func studioCreateChargeLine(charge: Int?, alreadyReported: Bool) -> String? {
+        guard let charge, charge > 0 else { return nil }
+        return alreadyReported ? "这个任务已经提交过（未重复扣费）" : "本次消耗 \(charge) co"
+    }
+
     private func runStudioCreateSubmission(
         prompt: String, token: IdempotentRequestToken, submitID: Int
     ) async {
@@ -66,6 +79,11 @@ extension AppSession {
             }
             studioCreate.jobId = jobId
             studioCreate.charge = response.charge
+            let alreadyReported = studioCreateSeenJobIDs.contains(jobId)
+            studioCreateSeenJobIDs.insert(jobId)
+            studioCreate.chargeLine = Self.studioCreateChargeLine(
+                charge: response.charge, alreadyReported: alreadyReported
+            )
             studioCreate.phase = .polling(.queued)
             await pollStudioCreate(jobId: jobId, submitID: submitID)
         } catch let failure as StudioCreateSubmissionFailure {
@@ -183,6 +201,9 @@ extension AppSession {
         studioCreate = StudioCreateState()
         studioCreatePrompt = ""
         savedWorkIDs = []
+        // 「再做一首」与换号都算重新开始：不再拿旧 jobId 去判重放，
+        // 宁可少说一句"未重复扣费"，也不多报一次。
+        studioCreateSeenJobIDs = []
     }
 
     /// 当前凭证快照的会话上下文（owner 分桶与 generation 作废都靠它）。
