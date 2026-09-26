@@ -356,6 +356,68 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 
 ---
 
+### 4.7 P1/P2 契约实测卡（2026-09-26 逐条打生产 + 逐行读 `../web` 得到）
+
+> 这一节是 P1/P2 那五件的**唯一落点口径**。上面 §4.4–§4.6 里与它冲突的写法以本节为准，
+> 冲突处已就地标注（不再留两份事实源）。
+
+**works 列表**：`GET /api/studio/create/works`（不带 `id`）⇒ `{works, nextCursor, total}`，
+实测 `limit=6` 回 `nextCursor="6" total=8`。参数只有 `q` / `filter` / `sort` / `cursor` / `limit`：
+`filter` ∈ `all|generating|vocal|instrumental|liked|disliked|cover|extend|remaster`（未知值服务端当 `all`）、
+`sort` ∈ `newest|oldest`、`cursor` 是**字符串化的行偏移**（服务端 v1 简化，不是不透明游标）、
+`limit` 夹在 1..100 默认 30。**没有** `status`/`offset`/`page`/`source` 参数 ⇒ 不许建模。
+行 `id` 有**四种形状**且必须原样保留：`{jobId}:{candidateId}`、`{jobId}:pending-N`、裸 `{jobId}`、
+以及同一 job 两行共用 id 前缀。`favorited`/`disliked` **为 false 时服务端整个键都不发**
+⇒ 缺键即 false 是服务端行为，不是客户端填默认值。
+
+**行内动作**：七个端点**都接受伪 id**（`favorite`/`dislike`/`note`/`timing`/`share`/`PATCH`/`DELETE`），
+三个坑必须写进 UI：① `favorite`/`dislike` 的 body 里 **缺键 ≠ false**（服务端缺省为 `true`）
+⇒ 取消收藏必须显式发 `false`；② **`rename`/`delete`/`share` 是 job 级不是行级**
+（一次生成两行 ⇒ 改一行等于改两行），屏上怎么交代归规格；③ `note` 是**物化成笔记**（返回 `noteId`），
+备注文本要走 `PATCH /api/notes/{id}`，而 `storyText` 同时是物化关联键 ⇒ 改它会断开收藏回读。
+`favorite` 与 `dislike` 服务端互斥（点踩会撤收藏）。错误形如 `{error:字符串}`，409 = 作品尚未生成完成。
+
+**extras（补充制作）**：key 闭集 6 个，`instrumental==true` 时服务端**滤掉**
+`lyrics_video/vocal_stems/accompaniment/lyrics_timing` ⇒ 客户端选项集必须跟着滤。
+`works/{id}/extras` **只认伪 id**（裸 jobId 404）且**不回 `deliveryRevision`**；
+`/api/studio/extras?sessionId=` 才回（它是工作流计数器）。`files[].url` 里的 jobId 是
+**worker job 不是生成 job** ⇒ 只许原样消费、不许自己拼。待做时 `url` 缺键、状态文本塞在 `version` 里
+⇒ 建模成枚举不是字符串。**作品级这一支服务端不扣费**，会话级按 `MEDIA_EXTRA_PRICES` 扣
+（wav 20 / accompaniment 30 / stems 50 / vocal_stems 50 / lyrics_timing 10 / lyrics_video 100）
+⇒ 文案不许在免费的那条腿上暗示价格。产物下载是**同源 200 流**（`Content-Disposition: attachment`），
+`accompaniment` 是**同源 302 到 `intent=download`** —— 与 §7 #39 同一条腿，名单外桶不出现在下载路径上。
+
+**ledger**：`GET /api/me/credits/ledger` **只有 `limit`**（1..100 默认 50），
+**没有 offset/cursor**、响应里**没有 total/balance/nextCursor**，排序固定 `createdAt DESC, id DESC`
+⇒ 「只能看最近 100 条」要如实呈现，不许假装能翻页。
+`reasonLabel` 由服务端映射且**映射表与真实 reason 不同步**：24 个在写的 reason 里 13 个落到「其他变动」
+（含 `media_extra`、`cova_ai_agent_generation`、灵感商店购买/收益、`iap_credits_purchase`、admin 三件）
+⇒ 客户端**原样显示服务端字符串**，绝不自己再映射一遍。
+⚠️ 顺带更正 §4.6 的一处措辞：不存在 `generation_refund` 这个 reason，真实值是
+`cova_one_step_generation_refund` / `cova_ai_agent_generation_refund`（退款标签映射在它们身上）。
+
+**会话详情的"轮询断链补腿"（§5 P1-5）——原写法要改口径**：`GET /api/studio/agent-runs/{id}`
+**是普通 JSON 不是 SSE**（`{run}`，`run` 带 `status/currentStep/timeline[]/retryCount/stopReason`），
+而 `/api/studio/agent` 那条 SSE **每帧只有 `event:`/`data:`、没有 `id:` 行**，服务端
+**没有 `Last-Event-ID` 处理、没有环形缓冲**（客户端断开后事件被静默丢弃）
+⇒ "SSE 恢复"在这台服务端上**不存在**，能做的只有按 `run.status` / `currentStep` /
+`timeline[].sequence` **轮询对账**。§5 那句「+ `agent-runs/:id` SSE 恢复」按此更正。
+
+**generate 的完整入参**（§4.4 只写了 simple 那一格）：`mode` ∈ `simple|advanced|melody`
+（`melody` 强制 cover，配其他 operation 直接 400）、`operation` ∈ `create|cover|extend|remaster`
+（`replace_section` 被这个端点拒）、`prompt≤2000`（simple 必填）/`lyrics≤5000`/`stylePrompt≤1000`/
+`negativeTags≤500`/`title≤200`/`makeInstrumental`/`modelVersion`/`voiceProfileId`/
+`controls{vocalGender,styleWeight,weirdnessConstraint,durationSec 10-360,audioWeight}`/
+`sourceClipId≤200`/`uploadAudioId`（别名进 `sourceClipId`）/`continueAt 0-3600`（只有
+`extend`+`sourceClipId` 才消费）/`inspirationSource{type:'shop',inspirationId,transactionId}`。
+`melody` **不是入参**（服务端按 `mode` 写 metadata）。
+⚠️ **`sourceClipId` 服务端完全不校验**（无存在性/归属/格式检查）⇒ 一个错的 clip id 会
+**照常 200 + 新 jobId + 真扣费**，然后异步失败只在行的 `status=failed`+`errorMessage` 上显形。
+⇒ 客户端只能自己保证只送**本机已知属于本账号**的 `providerClipId`，并把"提交成功"和"做出来了"
+在 UI 上分成两件事（19 屏已经是这个形状）。
+
+---
+
 ## 5. 开发阶段（每阶段可独立验收）
 
 > 阶段间允许并行编码，验收按序。每阶段完成判据见 §6。
@@ -390,8 +452,11 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
    作品直存的入口在作品行内（↓ / 「已在本机」/ 删除）。要给它一个独立清单页需先出规格。
    库曲 checkout 路径仍受 D12 门禁不接 UI。
 5. **轮询断链补腿**：`GET …/generation-jobs?id=` 接进会话详情
-   （`AISessionDetailView.swift:514` 自认未接）+ `agent-runs/:id` SSE 恢复。
-   （2026-09-26：该端点已在 19 屏的任务轮询里接通；**会话详情那一处仍未接**。）
+   （`AISessionDetailView.swift:514` 自认未接）+ `agent-runs/:id` 恢复。
+   （2026-09-26：该端点已在 19 屏的任务轮询里接通；**会话详情那一处仍未接**。
+   ⚠️ 原写法里的「SSE 恢复」按 §4.7 更正：`agent-runs/:id` 是**纯 JSON**，而 agent 那条 SSE
+   既不发 `id:` 也无 `Last-Event-ID`/缓冲 ⇒ 断流后**无法续播**，能做的只有按
+   `run.status/currentStep/timeline[].sequence` 轮询对账。）
 
 ### P2 交付链（10→12）
 
