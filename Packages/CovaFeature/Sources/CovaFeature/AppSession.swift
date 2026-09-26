@@ -163,6 +163,10 @@ public final class AppSession {
                 bindRecents(owner: user.id)
                 await refreshCollections()
                 await loadMe()
+                // A1：恢复会话这一支也必须取服务端历史。过去只有 `signIn` 里调了它 ⇒
+                // **首次登录之后每一次冷启动都走这里**，那一栏会静默退回本机账
+                // （屏上只有 1 行而服务端有 5 行），而且看起来"是好的"。
+                await loadRecentHistory()
             } else {
                 authPhase = .guest
                 bindRecents(owner: nil)

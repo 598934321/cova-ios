@@ -76,6 +76,9 @@ struct StudioCreateView: View {
                     .font(CovaType.body)
                     .foregroundStyle(CovaColor.fg)
                     .focused($promptFocused)
+                    // 验收腿的稳定选择器（`CovaAcceptanceTests` 靠它注入文本；
+                    // 只加标识符，不改任何可见行为与样式）。
+                    .accessibilityIdentifier("cova.prompt")
                     .frame(minHeight: 96, maxHeight: 180)
                     .scrollContentBackground(.hidden)
                     .onChange(of: session.studioCreatePrompt) { _, value in
@@ -200,8 +203,8 @@ struct StudioCreateView: View {
     private var worksSection: some View {
         VStack(alignment: .leading, spacing: CovaSpace.md) {
             CovaSectionHeader("作品（\(state.works.count)）")
-            ForEach(state.works, id: \.id) { work in
-                workRow(work)
+            ForEach(Array(state.works.enumerated()), id: \.element.id) { index, work in
+                workRow(work, index: index)
             }
         }
         .task { await session.refreshSavedWorks() }
@@ -209,7 +212,7 @@ struct StudioCreateView: View {
 
     /// 行点击 = 播放（19 §3.E）；↓/✓ 是**独立一格**的按钮，不与播放共用热区
     /// —— 两件事混在一个 tap 里，用户按下去之前不知道按的是哪个。
-    private func workRow(_ work: CreateWorkItemDto) -> some View {
+    private func workRow(_ work: CreateWorkItemDto, index: Int) -> some View {
         let saved = session.savedWorkIDs.contains(work.id)
         let title = work.displayTitle ?? "未命名作品"
         return CovaListRow(
@@ -240,6 +243,8 @@ struct StudioCreateView: View {
             Task { await session.playWork(work) }
         }
         .frame(minHeight: 64)
+        // 验收腿的稳定选择器：结果行的标题是服务端生成的，测试事先不知道 ⇒ 只能按行号定位。
+        .accessibilityIdentifier("cova.work.row.\(index)")
     }
 
     private func workSubtitle(_ work: CreateWorkItemDto) -> String {
