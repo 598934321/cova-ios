@@ -781,6 +781,8 @@ public final class AppSession {
     public var agentRunService: AgentRunService { AgentRunService(client: client) }
     /// §5 P3 的三条读腿：每日推荐 / 分享歌单广场 / 分享歌单详情（都是只读）。
     public var playlistDiscovery: PlaylistDiscoveryService { PlaylistDiscoveryService(client: client) }
+    /// §5 P3 每日签到（读状态 + 领取；幂等在服务端那一侧）。
+    public var checkinService: CheckinService { CheckinService(client: client) }
 
     // MARK: - 19 屏 P1-2 的三格（翻唱 / 续写 / 重制）
 

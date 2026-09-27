@@ -501,6 +501,46 @@ final class P0AcceptanceTests: XCTestCase {
         }
     }
 
+    /// §5 P3 每日签到的设备腿：11 上那一枚「签到领 N co」点下去要真的换成「今天已签到」。
+    ///
+    /// 两态都算证到：今天没签过 ⇒ 断"点一下之后换格"；已经签过 ⇒ 断"屏上没有可点的签到钮、
+    /// 而说明行在"（同一天重复签不是这条腿要证明的事，服务端那一侧幂等）。
+    func testDailyCheckinRowFlipsAfterTap() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let email = env["COVA_ACCEPT_EMAIL"], let password = env["COVA_ACCEPT_PASSWORD"],
+              !email.isEmpty, !password.isEmpty else {
+            throw XCTSkip("缺 COVA_ACCEPT_EMAIL / COVA_ACCEPT_PASSWORD ⇒ 跳过")
+        }
+        let mine = XCUIApplication()
+        mine.launchEnvironment["COVA_PREVIEW_LOGIN_EMAIL"] = email
+        mine.launchEnvironment["COVA_PREVIEW_LOGIN_PASSWORD"] = password
+        mine.launchEnvironment["COVA_PREVIEW_TAB"] = "mine"
+        mine.launch()
+        app = mine
+        XCTAssertTrue(
+            mine.navigationBars["我的"].waitForExistence(timeout: 25),
+            "11「我的」没到；标签=" + labelDump()
+        )
+        let offer = mine.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "签到领")
+        ).firstMatch
+        if offer.exists {
+            shot("25-checkin-before")
+            offer.tap()
+            XCTAssertTrue(
+                mine.staticTexts["今天已签到"].waitForExistence(timeout: 25),
+                "点了「签到领 N co」而屏上没换成已签到；标签=" + labelDump()
+            )
+            shot("25-checkin-after")
+        } else {
+            XCTAssertTrue(
+                mine.staticTexts["今天已签到"].waitForExistence(timeout: 25),
+                "既没有可点的签到钮、也没有已签到说明 ⇒ 这一格今天没被证到；标签=" + labelDump()
+            )
+            shot("25-checkin-already-done")
+        }
+    }
+
     /// A9（流水页）的设备腿：行渲染 + 服务端 `reasonLabel` 原样上屏 + **「任务」跳得到作品**。
     ///
     /// 这一条同时是 §7 #38 的反面证人：`studio_create_generation` 那两行今天**不该**有链接

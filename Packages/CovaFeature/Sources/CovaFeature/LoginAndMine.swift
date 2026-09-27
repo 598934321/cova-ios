@@ -237,6 +237,11 @@ public struct MineView: View {
     @Environment(AppSession.self) private var session
     /// 11 §6 Dynamic Type：C 卡的套餐徽标在 AX 档换到「余额」标签上方。
     @Environment(\.covaAXLayout) private var axLayout
+    /// §5 P3 每日签到：这一格的状态由**服务端两格真值**拼出来（`DailyCheckinRule`），
+    /// 读不懂就是 `.unknown` ⇒ 整枚不出现，不摆一枚点了不会给任何东西的钮。
+    @State private var checkin: DailyCheckinBoard = .unknown
+    @State private var checkinBusy = false
+    @State private var checkinNote: String?
 
     public init() {}
 
@@ -259,6 +264,7 @@ public struct MineView: View {
             VStack(alignment: .leading, spacing: CovaSpace.lg) {
                 identity
                 balanceCard
+                checkinRow
                 assets
                 commerce
                 others
@@ -270,7 +276,10 @@ public struct MineView: View {
         .navigationBarTitleDisplayMode(.inline)
         // `/me` 的账本在 `AppSession`（04 抽屉 G 区与本页读**同一份**）：
         // 这里只按认证阶段变化触发一次，`loadMe` 自己会合并同身份的重复请求。
-        .task(id: authPhaseKey) { await session.loadMe() }
+        .task(id: authPhaseKey) {
+            await session.loadMe()
+            await loadCheckin()
+        }
     }
 
     // MARK: B 用户卡（§3.B：**无卡底**，直接铺在 canvas 上，免得与 C 卡双层抬升）
@@ -433,6 +442,69 @@ public struct MineView: View {
             .background(Capsule().fill(PlanBadge.background(plan)))
             .overlay(Capsule().strokeBorder(PlanBadge.border(plan), lineWidth: MineMetrics.hairline))
             .accessibilityLabel(MineCopy.planSpoken(plan))
+    }
+
+    // MARK: C2 每日签到（§5 P3）
+
+    /// 缺席的三种情况合并成一格：没读到、读不懂、额度被配成 0
+    /// （`DailyCheckinRule.board` 都折成 `.unknown`）。
+    /// 已签过的那一态是**一行说明**，不是一枚点下去什么也不会发生的钮。
+    @ViewBuilder
+    private var checkinRow: some View {
+        if let title = DailyCheckinRule.actionTitle(checkin) {
+            VStack(alignment: .leading, spacing: CovaSpace.xs) {
+                if checkin == .done {
+                    HStack(spacing: CovaSpace.sm) {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 15)).foregroundStyle(CovaColor.success)
+                        Text(title).font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                        Spacer(minLength: 0)
+                    }
+                    .accessibilityElement(children: .combine)
+                } else {
+                    CovaLinkRow(title: title, symbol: "giftcard") {
+                        if checkinBusy {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13)).foregroundStyle(CovaColor.muted)
+                        }
+                    } action: {
+                        Task { await checkIn() }
+                    }
+                    .disabled(checkinBusy)
+                }
+                if let note = checkinNote {
+                    Text(note).font(CovaType.caption).foregroundStyle(CovaColor.error)
+                }
+            }
+            .padding(.horizontal, CovaSpace.pageGutter)
+        }
+    }
+
+    private func loadCheckin() async {
+        guard case .signedIn = session.authPhase else {
+            checkin = .unknown
+            return
+        }
+        let read = try? await session.checkinService.state()
+        checkin = DailyCheckinRule.board(from: read)
+    }
+
+    private func checkIn() async {
+        guard !checkinBusy else { return }
+        checkinBusy = true
+        defer { checkinBusy = false }
+        do {
+            let receipt = try await session.checkinService.checkIn()
+            checkin = DailyCheckinRule.board(fromResult: receipt)
+            // 失败只说"没签到"这一件事实：服务端对失败没有机器可读的码，
+            // 编一句"额度已发完"就是替后端写文案。
+            checkinNote = receipt.succeeded ? nil : "这次没签到，可以再来一次"
+            if receipt.succeeded { await session.loadMe() }   // 余额是另一本账，签完要重读
+        } catch {
+            checkinNote = "这次没签到，可以再来一次"
+        }
     }
 
     // MARK: D + E 我的资产（§7 v1.0：**计数行右侧值整项不构造**）
