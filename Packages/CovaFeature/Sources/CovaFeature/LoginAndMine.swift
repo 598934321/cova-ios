@@ -501,7 +501,9 @@ public struct MineView: View {
             // 失败只说"没签到"这一件事实：服务端对失败没有机器可读的码，
             // 编一句"额度已发完"就是替后端写文案。
             checkinNote = receipt.succeeded ? nil : "这次没签到，可以再来一次"
-            if receipt.succeeded { await session.loadMe() }   // 余额是另一本账，签完要重读
+            // 余额是另一本账，签完必须重读。这里**要 force**：`loadMe` 对「同身份 + 已 synced」的读
+            // 直接 return（`AppSession.swift:97`），不 force 就是签完了屏上还是旧余额（§7 #53 的成因）。
+            if receipt.succeeded { await session.loadMe(force: true) }
         } catch {
             checkinNote = "这次没签到，可以再来一次"
         }

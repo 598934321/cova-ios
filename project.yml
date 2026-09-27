@@ -111,6 +111,22 @@ targets:
         #     并按评审指认补 `.advanced` / `.repeated` **总闸**（引擎确实装着当前项或真有一代
         #     装载在途才允许声称推进）；MIN-R7-1 三个配置旋钮构造期 clamp；MIN-R7-2 toggle 把
         #     `.loading` 归入「正要响」一侧；§20 删不可达收敛腿；PLAYER_MIN 394 → 397
+        # → 0.2.81/99 §7 #53：签到成功之后余额那一格不跟着变 —— 成因读代码定了：`loadMe`
+        #     对「同身份 + 已 synced」的读直接 return（`AppSession.swift:97`），签完那一次重读
+        #     根本没发出去 ⇒ 改成 `loadMe(force: true)`。设备复证要等明天那一签（今天这一签
+        #     已花掉，腿只会走「已签到」那一支）⇒ 不拿"代码改了"当"屏上验过了"。
+        # → 0.2.80/98 §5 P3 第二条线：`me/checkin` 每日签到 —— 11 的 C2 那一格（可签 /
+        #     已签 / 读不懂三态，第三态整枚不出现：不摆一枚点了不会给任何东西的钮，也不写
+        #     "签到领 0 co"这种假话）；DailyCheckinDTOs + 11 条用例。幂等写在服务端那一侧
+        #     （route 注释：重复点击/多 tab 不重复入账），客户端不带幂等键 —— 硬边界 5 管的
+        #     是扣费写操作，签到是发放，这句话不冒领别人的功劳。
+        # → 0.2.79/97 §5 P3 第一条线：`playlists/daily` + `playlists/public` + 新屏 24
+        #     「分享的歌单」（`shared-playlists/[token]`，免登录可读，标题键是 `name` 不是
+        #     `title` ⇒ 两支封套各解各的）。05 加三源段控件；卡的目的地由 `source` 判
+        #     （分享腿只认 href 里的 token，认不出就渲染成不可点，不"先按官方试一下"）；
+        #     场景 chips 只在官方那一段出现（另两源的投影里没有 `scene` 这个键）。
+        #     契约面 14 条 + 判定面 7 条；CORE_MIN 902 → 916、FEATURE_MIN 251 → 258。
+        #     同批把 `home/materials` 判成**刻意不接**（§7 #54：运营文案绕过 D12 的源码扫描）。
         # → 0.2.78/96 §5 P1-5 的后半条（§7 #52）：09 的 agent 流断了不能续播（§4.7：那条 SSE
         #     既不发 `id:` 也无 `Last-Event-ID`/缓冲），能做的只有记下 runId、在流不活着的
         #     那段时间按 run.status 回读对账。契约面（AgentRunDTOs + 15 条用例）早就在，
@@ -170,8 +186,8 @@ targets:
         # → 0.2.69/80 R18-2（第 18 轮 Major）：十条美术腿改经 `CovaArtworkResolution`（D23 唯一
         #     裁决面）—— 站内相对封面/头像补成生产 origin 且查询串逐字节保留，出口拒绝点名 host；
         #     并新建 CovaFeature 最小测试目标（`CovaFeatureTests`，23 条，只钉媒体腿，无 UI 快照）
-        CFBundleShortVersionString: "0.2.80"
-        CFBundleVersion: "98"
+        CFBundleShortVersionString: "0.2.81"
+        CFBundleVersion: "99"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
