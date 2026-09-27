@@ -535,7 +535,7 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 | 签到 `me/checkin` | 1 支 | 无 | 规格：签到态在 11「我的」还是首页卡？要不要连续天数概念 |
 | 自建歌单 `user-playlists` | 3 支（列表 / `[id]` / `[id]/items`） | 无（06 那套是**官方**歌单详情，不是自建） | 规格：编辑器交互（增删曲、改名、封面）—— 这是 P3 里最像"一整屏新功能"的一条 |
 | 分享歌单 `shared-playlists` | 2 支（`[token]` / `[token]/claim`） | 无 | `claim` 是写操作且带 token ⇒ 免登录可达面，与 A7 的 share 同一类外部可见副作用（要人工裁决） |
-| 每日/广场 `playlists/daily\|public` | 2 支（另有 `playlists/`、`playlists/[id]` = 官方那两条） | 广场 05 已接的是 `playlists`，`daily`/`public` 两条**没接** | 小：05/06 的规格能复用，缺的是入口与卡片字段 |
+| 每日/广场 `playlists/daily\|public` | 2 支（另有 `playlists/`、`playlists/[id]` = 官方那两条） | **已交付（0.2.79/97，2026-09-27）**：05 加了三源段控件（官方 / 每日 / 广场），分享卡的目的地是新屏 **24**（`design/screens/24-shared-playlist.md`）；三条读腿 + 契约面 14 条 + 判定面 7 条用例；设备证据六张（05 三源 × 深浅）+ 两张（24 的标识不合规那一格）在 `docs/acceptance/p3-20260927/`。 **仍欠三格**：① `POST /api/shared-playlists/[token]/claim` 是写操作，本轮只做读面；② 24 的**正常态没有证人** —— 生产 `GET /api/playlists/public` 实测回 `{playlists:[]}`，一条分享歌单都没有 ⇒ 没有一枚真 token 可拍（与 23/12d 同一类结构性缺证人）；③ 分享详情的下载那一格受 D12 与门 1 约束，读了也不画 |
 | `agent-v2/*` | 实际路径是 **`studio/agent-v2/`**：`chat` / `sessions` / `skills` 3 支（`src/app/api/agent-v2` 不存在 ⇒ §5 原文那条路径要按这个改） | 无（09 走的是 v1 `studio/agent`） | 规格：v2 与 v1 是同屏切换还是新屏；`skills` 有没有 UI |
 | `cover/jobs` | 3 支（`cover/generate` / `cover/jobs` / `cover/jobs/[jobId]`） | 无 | 与 19 的 `operation=cover` 是同一条腿的两张脸还是两屏，要先裁 |
 | `home/materials` | 1 支 | 无（01 首页 feed 现在读的是别的源） | 小：首页多一个卡组，规格改 01 就够 |
@@ -543,7 +543,8 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 | producers 全流程 | 5 支（`studio/producers` + `projects` + `projects/[id]` + `actions` + `surveys`） | 只有 `studio/producers` 的**读**（23 屏，灰度未开 ⇒ 生产恒空，§7 #44） | 项目/交付/问卷三张屏都没有规格 |
 | `auth/login/apple\|sms` | `auth/login/apple` 在、`auth/sms/send` 在（`head` 截断处还有别的 sms 支，开工前逐条数） | 只有邮箱密码两步登录 | **上架口径**（§7 记着）：Sign in with Apple 是上架要求，短信是境内要求，两条都不是"写代码"这一层能定的 |
 
-⇒ 这一节的每一条都缺**同一件前置**：`design/screens/` 里没有它们的屏规格（现有 26 张只覆盖 P0–P2）。
+⇒ 这一节里**已经开工的一条**是「每日/广场」（见上表，含新屏 24 的规格）；
+其余各条仍缺**同一件前置**：`design/screens/` 里没有它们的屏规格（现有 27 张覆盖 P0–P2 加 24）。
 按 G2 的交付形态（逐屏规格落地），没有规格就先动 UI 等于绕过已定的交付口径；
 所以本轮把它们**逐条测端点、逐条写清缺的是哪一格**，而不是挑一条最容易的先做掉好凑"进度"。
 
@@ -617,6 +618,9 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
   12b 我的歌单、13 会员权益、14 企业服务、15 设置。**26 张全部逐张肉眼读过**；就是这一步读到
   三次"拍到的不是那屏"（两批整批废图、一张抽屉没展开），过程写在 `a14-20260927/README.md`，
   那两批废图一张都没进仓。
+- **屏内多状态也各自成对（本轮新增）**：05 的三个源（官方 / 每日 / 广场）各有一对深浅
+  （`p3-20260927/05-plaza-{official,daily,shared}-{light,dark}.png`，0.2.79/97）。
+  判据说的是"每屏"，但一屏换源就换了一本账 ⇒ 按源点清比按屏点数诚实。
 - **只有单主题、还缺深色配对（6 屏）**：06 歌单详情、07 曲目详情、09 会话详情、16 音乐人主页
   这四屏要**真数据 id** 才到得了（`ROUTE=playlist:<id>` / `track:<id>` / `aiSession:<id>` /
   `artist:<id>`），本轮没去取 id；12c 我的创作、17 状态画廊 这两屏**没有预览键** ⇒
@@ -625,10 +629,15 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
   仍然算"内容有证人"；再说一遍：`wave-20260925/` 里 `-ax3` 那几张是**读屏三档**取证，不是深色档。
 - **今天结构性拍不到的**：23（制作人入口 —— 生产 `PRODUCER_MODE` 未设 ⇒ 入口整枚不出现，
   §7 #44；没有那一屏可拍，不是漏拍）、12d（付费下载清单，门 1 未放行且生产不可达）、
-  18（本地通知：要系统投递时刻，模拟器上不能按需复现）。
+  18（本地通知：要系统投递时刻，模拟器上不能按需复现）、
+  **24 的正常态**（§5 P3 本轮新增的那一屏：生产 `GET /api/playlists/public` 实测
+  `{playlists:[]}` ⇒ 没有一枚真 token 可拍。已拍到的两张是它"标识不合规、请求没发出去"
+  那一格的深浅对 —— 那是它的一个真状态，**不能**当成"24 拍过了"）。
 
-⇒ **A14 当前状态 = 17/26 屏成对**（本轮从 5 屏推到 17 屏）。还缺的 6 屏里，4 屏缺的是"取一个真 id"、
-2 屏缺的是"加一枚预览键" —— 都不是契约缺口。**这一条仍然不许写成已达**：判据说的是"每屏"。
+⇒ **A14 当前状态 = 18/27 屏有成对图**（本轮从 5 屏推到 17，再加新屏 24 的那一对），
+外加 05 另两个源态各一对。还缺的 6 屏里，4 屏缺的是"取一个真 id"、2 屏缺的是"加一枚预览键" ——
+都不是契约缺口；24 的**正常态**与 23/12d/18 同一类，是结构性缺证人。
+**这一条仍然不许写成已达**：判据说的是"每屏"，而"每屏"要的是那一屏真长出来的样子。
 
 ### 6.3 两条"看起来能一眼判"的判据：本轮真扫过一遍，结果按命中点写
 

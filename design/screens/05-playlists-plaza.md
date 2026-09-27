@@ -177,3 +177,28 @@
 2. **搜索钮去向**：本屏搜索复用 03 曲库搜索（规格如此定），是否改为「歌单内搜索」需产品裁决。
 3. **分页端点**：若歌单量级增长需服务端分页，得先由后端在 `GET /api/playlists` 加封套
    （建议登记 NEEDS），在此之前本屏恒为全量本地过滤。
+
+## 9. 三源段控件（2026-09-27 加，§5 P3 第一条线）
+
+- 位置：A 导航条之下、B 场景 chips 之上；一枚一段，横向排布，沿用 `CovaChip` 的选中语汇
+  （`color.accentSoft` 底 + `color.accentText` 字 + 1pt `color.accent` 描边），不建第二套段控件。
+- 三段：**官方歌单 / 每日推荐 / 歌单广场**。标签是本地词表 —— 服务端给的是
+  `source:"official"|"shared"` 这种机器名，直接上屏就是把工程词给用户看。
+- 数据源逐段：
+  · 官方歌单 = `GET /api/playlists`（既有那条腿，一次全量、无分页）；
+  · 每日推荐 = `GET /api/playlists/daily`（`{date, items}`；服务端把任意 `date` 钳到
+    [昨日, 今日]，非 `YYYY-MM-DD` 回 400 ⇒ 客户端只在形状合法时才带这个参数）；
+  · 歌单广场 = `GET /api/playlists/public`（`{playlists}`，只含已开分享的用户歌单）。
+- **B 场景 chips 只在「官方歌单」这一段出现**：daily / public 两支的投影里都没有 `scene`
+  （逐条核过 web 的 select）⇒ 另两段不给一排"点了必然为空"的分类。
+- 换段 = 整屏重取（一份推荐位属于一个源，不叠成一本总账）；
+  回来时若用户已经换段，那一趟**只丢不写**（与任务轮询同一裁决）。
+- 卡的目的地由 `source` 决定，不由 id 长得像谁决定：
+  `official` → 06；`shared` → **24**（目的地取 `href` 里的 token，
+  `href` 不是 `/share/playlist/<token>` 这个形状 ⇒ 这张卡渲染成**不可点**，
+  不"先按官方试一下"——猜错端点拿到的 404 会被算成服务端的错）。
+- 空态文案逐段不同：官方「歌单还在准备中」；每日「今天还没有推荐位 / 明天这个时候再来看一次」；
+  广场「还没有人把歌单分享出来 / 在官方歌单里挑一张，或自己去建一张」。
+- 走查键：`COVA_PREVIEW_PLAZA_SOURCE=daily|shared`（段控件要点击才换，而 `simctl` 不给点击）。
+- 设备证据：`docs/acceptance/p3-20260927/05-plaza-{official,daily,shared}-{light,dark}.png`
+  （0.2.79/97，六张逐张读过）。

@@ -1,0 +1,37 @@
+# §5 P3 第一条线落地：05 三源 + 24 分享的歌单（2026-09-27）
+
+字节：**0.2.79/97**（门禁产物 `.build/check/DerivedData/.../Cova.app`，`plutil` 读到
+`0.2.79` / `97` 之后 `simctl install`；装完第一遍拍错是因为装成了加走查键**之前**的旧产物，
+重拍后才对上 —— 这条坑与 §6.1 那两个同源）。
+设备：iPhone 17 Pro 模拟器；方式：`simctl` + 预览键（不点击、零扣费）。
+新增的走查键：`COVA_PREVIEW_PLAZA_SOURCE=daily|shared`（段控件要点一下才换源，而 `simctl` 不给点击）。
+
+## 这一档 8 张，每张都读过
+
+| 文件 | 屏上证人 |
+|---|---|
+| `05-plaza-official-{light,dark}.png` | 新的三源段控件（官方歌单 / 每日推荐 / 歌单广场）+ 场景 chips + 双列网格。选中态在**第一枚** |
+| `05-plaza-daily-{light,dark}.png` | 选中「每日推荐」，卡是 `GET /api/playlists/daily` 的真数据（私藏分享：卢卡·罗马诺《深夜植物园》12 首 / 做活动必存 10 首 / …），**场景 chips 整排不出现** —— 这一源的投影里没有 `scene` 这个键 |
+| `05-plaza-shared-{light,dark}.png` | 选中「歌单广场」+ 空态「还没有人把歌单分享出来」，与生产事实一致（见下） |
+| `24-shared-playlist-bad-token-{light,dark}.png` | 新屏 24「分享的歌单」的**标识不合规**那一格：「这个分享链接读不了 / 链接里的标识不合规则，请求没有发出去。」 |
+
+## 屏外对账（只读 GET，只印键名与条数）
+
+- `GET /api/playlists/daily` ⇒ **200**，`{date, items}`，`items` **8 条**，`source` 分布
+  `{official: 8}`，`href` 前缀集合 `['/playlists']`。
+  ⇒ 今天这一源的卡**全部**跳官方详情（06）。分享腿那条分支在屏上没有真数据可走。
+- `GET /api/playlists/public` ⇒ **200**，`{playlists: []}` —— **生产上一条分享歌单都没有**。
+  ⇒ 「歌单广场」的空态就是它的真实形态，不是漏拍；
+  ⇒ 24 的**正常态今天拍不到**（没有一枚真 token 可用），这与 23 / 12d 同一类：
+  结构性缺证人，不是没做。已按这一条把 §6.2 的账同步改过。
+
+## 这一条线今天交付了什么、还欠什么
+
+- 已交付：三条**只读**腿（daily / public / shared 详情）+ 05 的三源切换 + 24 屏本体 +
+  目的地判定（`PlaylistBoard`：分享腿只认 `href` 里的 token，认不出就渲染成**不可点**，
+  不"先按官方试一下"）+ 契约面 14 条用例 + 判定面 7 条用例。
+- 未交付（都记在 §5 P3 那张表的对应行）：
+  `POST /api/shared-playlists/[token]/claim`（写操作，本轮只做读面）；
+  分享详情的**下载**那一格（响应里有 `downloadsEnabled` / `downloadCredits`，但付费下载受 D12
+  与"门 1 未放行"约束，读了也不画）；
+  24 的正常态设备证人（生产没有分享歌单）。

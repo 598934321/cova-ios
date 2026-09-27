@@ -277,6 +277,9 @@ public final class AppSession {
         case membership
         case enterprise
         case artist(String)
+        /// 分享出去的用户歌单（§5 P3）：目的地由卡片的 `href` 里的 token 决定，
+        /// **不是** `playlist(id)` 的变体 —— 那一支的 id 是用户歌单 id，打官方详情只会 404。
+        case sharedPlaylist(String)
     }
     public var path: [Route] = []
 
@@ -776,6 +779,8 @@ public final class AppSession {
     public var extrasService: ExtrasService { ExtrasService(client: client) }
     /// 09 断流之后的恢复腿（§5 P1-5 后半 / §7 #52）：`GET /api/studio/agent-runs/{id}`。
     public var agentRunService: AgentRunService { AgentRunService(client: client) }
+    /// §5 P3 的三条读腿：每日推荐 / 分享歌单广场 / 分享歌单详情（都是只读）。
+    public var playlistDiscovery: PlaylistDiscoveryService { PlaylistDiscoveryService(client: client) }
 
     // MARK: - 19 屏 P1-2 的三格（翻唱 / 续写 / 重制）
 

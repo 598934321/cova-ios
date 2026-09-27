@@ -70,6 +70,10 @@ public struct CovaRootView: View {
             if raw.hasPrefix("playlist:") { return .playlist(String(raw.dropFirst("playlist:".count))) }
             if raw.hasPrefix("artist:") { return .artist(String(raw.dropFirst("artist:".count))) }
             if raw.hasPrefix("aiSession:") { return .aiSession(String(raw.dropFirst("aiSession:".count))) }
+            // 分享歌单详情（§5 P3）：A14 要这一屏的深浅两张，而它没有 Tab 入口。
+            if raw.hasPrefix("sharedPlaylist:") {
+                return .sharedPlaylist(String(raw.dropFirst("sharedPlaylist:".count)))
+            }
             return nil
         }
     }
@@ -214,6 +218,7 @@ public struct CovaRootView: View {
             .navigationDestination(for: AppSession.Route.self) { route in
                 switch route {
                 case .playlist(let id): PlaylistDetailView(playlistID: id)
+                case .sharedPlaylist(let token): SharedPlaylistView(token: token)
                 case .favorites: FavoritesView()
                 case .myPlaylists: MyPlaylistsView()
                 case .plaza: PlaylistsPlazaView()
@@ -407,7 +412,7 @@ public struct CovaRootView: View {
     private var selectedDrawerLabel: String? {
         if let route = session.path.last {
             switch route {
-            case .plaza, .playlist: return "歌单"
+            case .plaza, .playlist, .sharedPlaylist: return "歌单"
             case .favorites: return "收藏"
             case .myPlaylists: return "我的歌单"
             // B 组「创作」与 D 组「我的创作」是同一目的地（08）⇒ 高亮资产组那条：

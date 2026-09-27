@@ -15,6 +15,10 @@ public struct PlaylistsPlazaView: View {
     @Environment(AppSession.self) private var session
     @State private var phase: Phase = .loading
     @State private var playlists: [PlaylistDto] = []
+    /// §5 P3：这一屏从"只有官方"推到三条腿。`picks` 是 daily / 广场 两源共用的卡数组
+    /// （换源就整本重取，不叠 —— 一份推荐位属于一个源，不是全局账）。
+    @State private var source: PlazaSource = .previewDefault
+    @State private var picks: [PlaylistPickDto] = []
     /// 一枚场景 chip：`key` 就是拿去和 `playlist.scene` 比的那个值，`label` 是屏上那两个字
     /// （今天两者同源，都来自 03 那份摊平的 `LibraryFilterTerm.value`）。
     @State private var scenes: [(key: String, label: String)] = []
@@ -26,14 +30,61 @@ public struct PlaylistsPlazaView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            chipRow
+            sourceRow
+            if source.showsSceneChips { chipRow }
             content
         }
         .covaPage()
         .navigationTitle("歌单")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        // 键是**用户选的源**，不是 load 自己会写的 phase/picks ⇒ 不会重演 §7 #50 那种自我取消。
+        .task(id: source) { await loadBoard() }
         .refreshable { await load(silent: true) }
+    }
+
+    /// 三源段控件。标签是本地词表（机器名 `official/daily/shared` 不上屏）。
+    @ViewBuilder
+    private var sourceRow: some View {
+        HStack(spacing: CovaSpace.sm) {
+            ForEach(PlazaSource.allCases) { item in
+                CovaChip(item.label, isSelected: source == item) {
+                    if source != item { source = item }
+                }
+            }
+        }
+        .padding(.horizontal, CovaSpace.pageGutter)
+        .padding(.top, CovaSpace.sm)
+        .accessibilityLabel("歌单来源")
+    }
+
+    /// 换源 = 整屏重取。官方那一本沿用原来的腿（含 taxonomy chips），另两源走 P3 的新腿。
+    private func loadBoard() async {
+        switch source {
+        case .official: await load()
+        case .daily, .shared: await loadPicks()
+        }
+    }
+
+    private func loadPicks() async {
+        let wanted = source   // 值捕获：回来时若用户已换源，这一趟只丢，不写（与任务轮询同一裁决）
+        if phase != .loading { phase = .loading }
+        do {
+            let loaded: [PlaylistPickDto]
+            switch wanted {
+            case .official: return
+            case .daily: loaded = (try await session.playlistDiscovery.dailyPicks()).items
+            case .shared: loaded = (try await session.playlistDiscovery.sharedBoard()).playlists
+            }
+            guard wanted == source else { return }
+            picks = loaded
+            phase = .ready
+        } catch let failure as CatalogFailure {
+            guard wanted == source else { return }
+            phase = .failed(failure)
+        } catch {
+            guard wanted == source else { return }
+            phase = .failed(.network)
+        }
     }
 
     @ViewBuilder
@@ -66,6 +117,44 @@ public struct PlaylistsPlazaView: View {
 
     @ViewBuilder
     private var grid: some View {
+        switch source {
+        case .official: officialGrid
+        case .daily, .shared: pickGrid
+        }
+    }
+
+    @ViewBuilder
+    private var pickGrid: some View {
+        if picks.isEmpty {
+            CovaEmptyState(
+                symbol: "music.note.list",
+                title: source == .daily ? "今天还没有推荐位" : "还没有人把歌单分享出来",
+                hint: source == .daily ? "明天这个时候再来看一次。" : "在官方歌单里挑一张，或自己去建一张。"
+            )
+        } else {
+            ScrollView {
+                LazyVGrid(
+                    columns: axLayout
+                        ? [GridItem(.flexible())]
+                        : [GridItem(.flexible(), spacing: CovaSpace.md), GridItem(.flexible())],
+                    spacing: CovaSpace.lg
+                ) {
+                    ForEach(Array(picks.enumerated()), id: \.element.playlist.id) { _, pick in
+                        pickCard(pick)
+                    }
+                }
+                .padding(.horizontal, CovaSpace.pageGutter)
+                .padding(.top, CovaSpace.md)
+                Text("已显示全部")
+                    .font(CovaType.caption).foregroundStyle(CovaColor.muted)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, CovaSpace.lg)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var officialGrid: some View {
         let shown = filtered
         if playlists.isEmpty {
             CovaEmptyState(
@@ -111,7 +200,32 @@ public struct PlaylistsPlazaView: View {
 
     private func card(_ playlist: PlaylistDto) -> some View {
         Button { session.path.append(.playlist(playlist.id)) } label: {
-            VStack(alignment: .leading, spacing: CovaSpace.xs) {
+            cardBody(playlist)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// P3 两源的卡：目的地由 `PlaylistBoard` 那一格判（分享腿只认 href 里的 token）。
+    /// `.nowhere` ⇒ **渲染成不可点的静态卡**，而不是"点了再说"——点了没反应是骗人，
+    /// 按官方那条腿打过去拿到 404 更是把客户端的猜测算成服务端的错。
+    @ViewBuilder
+    private func pickCard(_ pick: PlaylistPickDto) -> some View {
+        switch PlaylistBoard.destination(for: pick) {
+        case .officialPlaylist(let id):
+            Button { session.path.append(.playlist(id)) } label: { cardBody(pick.playlist) }
+                .buttonStyle(.plain)
+        case .sharedPlaylist(let token):
+            Button { session.path.append(.sharedPlaylist(token)) } label: { cardBody(pick.playlist) }
+                .buttonStyle(.plain)
+        case .nowhere:
+            cardBody(pick.playlist)
+                .accessibilityHint("这张卡暂时打不开")
+        }
+    }
+
+    @ViewBuilder
+    private func cardBody(_ playlist: PlaylistDto) -> some View {
+        VStack(alignment: .leading, spacing: CovaSpace.xs) {
                 ZStack(alignment: .topTrailing) {
                     CovaArtwork(
                         resolution: CovaArtworkResolution(serverValues: [
@@ -138,9 +252,7 @@ public struct PlaylistsPlazaView: View {
                 Text(meta(playlist))
                     .font(CovaType.caption).foregroundStyle(CovaColor.secondary)
                     .lineLimit(1)
-            }
         }
-        .buttonStyle(.plain)
     }
 
     /// `trackCount` 空只显时长；时长秒 → `≥60`「N 分钟」（向下取整）、`<60`「N 秒」。
