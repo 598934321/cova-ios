@@ -1,361 +1,233 @@
-# Covalink iOS App 交接手册
+# Cova iOS 接手手册
 
-**版本**: v0.2.81 / Build 100  
-**基准日期**: 2026-10-01  
-**架构模式**: SwiftUI + Swift 6 strict concurrency  
-**状态**: P0–P3 主流程已闭环，部分扩展功能待开发（§5 P3 剩余 8 条线）
+> 给下一个接手这仓的人：读完这份就能开工。版本账与逐日发布内容看
+> `CHANGELOG.md`；设计闸门、契约口径、已知后端缺口的权威文档是
+> `DEVELOPMENT.md`（868 行，不要跳读）。
+
+**版本**：0.3.4 / Build 106（`project.yml:217-218`）
+**基准日期**：2026-10-04
+**最低系统**：iOS 26（原生 Liquid Glass）
+**架构**：SwiftUI + Swift 6 strict concurrency + XcodeGen（`project.yml` 是工程
+唯一事实源，`*.xcodeproj` 不入 git）+ 4 个本地 SwiftPM 包
 
 ---
 
-## 📦 一、项目概览
+## 一、30 秒上手
 
-### 技术栈
+```bash
+# 1. 确认工具
+xcodegen --version || brew install xcodegen
+xcodebuild -version
 
-| 层 | 技术选型 |
+# 2. 全量门禁（这条命令 = 构建 + 全测试 + 覆盖率 + D12 禁词 + 依赖白名单）
+bash Scripts/check.sh
+# EXIT=0 才算过；任何一步红就停，别绕过。
+
+# 3. 跑应用（模拟器）
+xcodebuild -project Cova.xcodeproj -scheme Cova \
+  -destination 'platform=iOS Simulator,name=iPhone 17' build
+```
+
+⚠️ **跑 `check.sh` 之前先 `git status` 确认工作树干净**：第 3/10 步的 D12 自检
+会往 `Cova/CovaApp.swift`、`AccountDeletionDTOs.swift`、`project.yml`、
+`MembershipAndEnterprise.swift` 植诱饵再按 md5 复原——与别人的编辑并发会互相盖。
+
+---
+
+## 二、这仓是什么
+
+Cova（CovaLink）AI 音乐商用授权平台的 iPhone 原生 App——「会创作、可授权的
+音乐流媒体」：网易云式发现播放 × Suno 式一句话创作 × 音乐 Agent（找歌/做歌
+同一会话入口）× co 币商用授权闭环。
+
+**iOS v1.0 范围**（现状）：
+
+- 原生五页签外壳（TabView + 每页签独立 `NavigationStack`，2026-10-01 由
+  抽屉壳改造，10-02 再加 `Tab(role:.search)` 系统搜索位）：首页 / 曲库 /
+  创作 / 我的 + 搜索。
+- 首页对话型（底置 `CovaComposer` 输入条，生成/搜索两档）。
+- 曲库多维筛选 / `.searchable` / 分页；官方歌单、每日推荐、歌单广场、
+  分享歌单（只读）。
+- 曲目收藏 + 生成 note 双账分流；邮箱密码两步登录。
+- AVPlayer 自研播放层（队列/循环三态/±15s/锁屏/后台播放）+ 播放上报。
+- 一步创作（会话 / SSE / 计划卡 12 态 / 双 Demo 终态规则 / 候选收藏）。
+- studio/create 高级创作台（simple/advanced/melody 三模式、cover/extend/
+  remaster、works 列表、extras 补充制作、producers 入口、credits 明细）。
+- **StoreKit 2 内购**（会员订阅 4 档 + co 包 3 档，`/api/iap/products|verify`）。
+- **账号删除**（`POST /api/auth/delete-account`，5.1.1(v) 合规）。
+
+**v1.0 不做**：远程推送（本地通知兜底）、iPad 专版、灵感商店（D12 合规未放行）。
+
+---
+
+## 三、信息都在哪里（别再问）
+
+| 你要找什么 | 去哪里 |
 |---|---|
-| **UI** | SwiftUI, @Observable root state |
-| **State 管理** | `@mainactor AppSession` (AppSession.swift) |
-| **Services** | Actor-based `CovaAPIClient`, dependency injection |
-| **分层架构** | SPM packages: `CovaCore` / `CovaPlayer` / `CovaUI` / `CovaFeature` |
-| **测试** | XCTest UI tests (`XCUITest` via simulator event injection) |
-| **门禁系统** | `Scripts/check.sh` (10 steps: build→test→coverage→D12 scan) |
+| **权威开发手册**（硬边界 9 条、API 契约实测卡、验收判据 A1–A15、
+  后端缺口 §7、技术债清单） | `DEVELOPMENT.md` |
+| **设计 token 单一事实源** | `design/tokens.json` → `Packages/CovaUI` |
+| **逐屏规格**（UI 改动必须先改这里的规格，设计闸门） | `design/screens/*.md` |
+| **组件规格**（TrackRow/PlanCard/MiniPlayer 等） | `design/components.md` |
+| **每日工作日志**（哪批改了什么、踩了什么坑） | `docs/log/YYYYMMDD.md` |
+| **版本更新账**（每个版本干了什么） | `CHANGELOG.md` |
+| **验收截图证据**（A14 口径：每屏深浅成对，逐张读过） | `docs/acceptance/<批次>/` |
+| **门禁脚本**（10 步：构建→测试→覆盖率→D12→基线） | `Scripts/check.sh` |
+| **测试数基线**（只升不降） | `Scripts/test-count-baseline.env` |
+| **工程配置**（版本号、target、签名） | `project.yml` |
+| **后端契约真相源**（别凭记忆写契约） | `../web/src/app/api/**/route.ts` + `src/lib/` |
 
-### 目录结构
+---
+
+## 四、硬边界（违反即返工，DEVELOPMENT.md §2 同文）
+
+1. 只改本仓；不碰生产 env/DB/服务器与相邻仓（`../web` 只读引用）。
+2. 网络出口唯一 `https://covalink.cn` HTTPS；写/扣费端点未获批准不调。
+3. token 存 Keychain（`ThisDeviceOnly` + principalId）；token/密码/签名 URL
+   禁写日志、禁入持久化索引。
+4. 零第三方依赖白名单（当前为空）；新增须批准并登记决策。
+5. 扣费与写操作必带幂等键（`Idempotency.swift` 登记新 operation）。
+6. 双 Demo 终态硬规则：一步模式只取前两候选，双双 settled 才终态；私有
+   音频先 Bearer 下载沙盒校验非空再 `file://`。
+7. 后端缺口登记制：缺字段/缺端点/契约不符记入 §7，客户端不得自行改后端。
+8. **设计闸门**：UI 改动先改 `design/screens/` 规格，经确认后再写码。
+9. **D12 合规**：App 内购买只走 StoreKit 2；不出现任何站外购买引导
+   （「前往官网/充值/App 内不售卖」词表由 `d12-copy-check.sh` 机械执行）。
+
+**协作约定**：Build → Verify → Commit，每步留证据；纯文档不递增版本号，
+影响产物的递增 `project.yml` 两个版本字段（小 +0.0.1 / 大 +0.1）。
+
+---
+
+## 五、分层架构与代码地图
 
 ```
 Packages/
-├── CovaCore/           # 核心模型、DTOs、API client
-├── CovaPlayer/         # 音频播放引擎、上报逻辑
-├── CovaUI/            # 通用组件库
-└── CovaFeature/       # 特性层（业务逻辑、视图）
-    ├── Sources/CovaFeature/
-    │   ├── AppSession.swift              # Root state (app-wide state)
-    │   ├── CovaRootView.swift            # Root view + preview routes
-    │   ├── LoginAndMine.swift            # §5 P1-P2 / §7 #50/#53
-    │   ├── PlazaAndSettings.swift        # §5 P3 #54 home materials rejected
-    │   ├── PlaylistDiscovery.swift       # 每日/公共/共享三份 read legs
-    │   ├── CheckinService.swift          # 每日签到服务 (GET+/POST)
-    │   └── AgentRunRecovery.swift        # #52 恢复腿纯逻辑层
-designs/screens/      # 逐屏规格（D17）
-docs/acceptance/      # 设备侧验收证据（A1–A15）
-Scripts/
-├── check.sh          # 门禁脚本（构建→测试→覆盖率→D12 扫描）
-└── d12-copy-check.sh # D12 禁词扫描器
-project.yml           # 工程配置 + Changelog (0.2.78→0.2.81)
+├── CovaCore/    # 纯逻辑层（平台中立：禁 UIKit/SwiftUI/#if；全 XCTest）
+│   CovaEnvironment.swift   出口守卫（仅 covalink.cn + sanctionedStorageHosts）
+│   CovaAPIClient.swift     get/post/patch/delete + Bearer + 401 single-flight
+│   AuthSession.swift       signed-out/guest/authenticated；refresh 旋转
+│   *DTOs.swift             Auth/Library/Collection/OneStep/Generation/IAP/
+│                           AccountDeletion/StudioCreate/PlayReport/SSE
+│   SSEStreaming.swift      SSE 传输 + HTTPOneStepPlanPoller
+│   OneStepStream.swift     SSE→轮询降级状态机（10s 首事件/30s 静默/3 坏事件/EOF
+│                           + pollFailureCount）
+│   OneStepThinkingCopy.swift  thinking 公开短语白名单（web 同构表）
+│   OneStepPlanFailureCopy.swift 余额拒绝词表 + 零余额话术
+│   Idempotency.swift       IdempotencyKey + IdempotentRequestToken
+│   SecureStore/KeychainStore/OwnerScopedStorage/SessionLifecycle
+├── CovaPlayer/  # AVPlayer 播放层（禁 UI import：Foundation/AVFoundation/
+│                # MediaPlayer/CovaCore 白名单）
+│   PlayReportCoordinator.swift  播放上报去重（一次播放一键）
+├── CovaUI/      # tokens→Swift、Liquid Glass 组件、骨架/空态/徽标
+│   CovaTokens.swift    dynamicAlpha（8 位 hex）、selectedBg、focusRing
+│   CovaComponents.swift CovaButton（primary=中性液态玻璃、.brand=hero CTA
+│                        渐变胶囊）、CovaChip、CovaCard、CovaTagChip
+│   CovaStates.swift     CovaErrorState、骨架条、CovaPixelCover
+└── CovaFeature/ # 各屏 + 业务服务
+    AppSession.swift            Root state（@MainActor @Observable）
+    CovaRootView.swift          Root view + preview routes
+    HomeView.swift              01 对话型首页（CovaComposer）
+    HomeComposer.swift          底置输入条组件
+    SearchTabView.swift         25 搜索页签（.searchable）
+    LibraryView.swift           03 曲库级联筛选
+    PlazaAndSettings.swift      05 歌单广场三源 + 15 设置 + 11 我的
+    LoginAndMine.swift          10 登录 + 11 我的（签到/余额/Cova 号）
+    WorksListView.swift         20 作品列表
+    StudioCreateView.swift      19 高级创作台
+    StudioService.swift         studio 端点收口 + classify
+    StudioViews.swift           PlanStatusCopy / RunLineCopy / TranscriptLine
+    AISessionDetailView.swift   09 会话详情（2313 行，本屏独立容器族）
+    CollectionsViews.swift      收藏/歌单/我的创作/下载（12a–d）
+    MembershipAndEnterprise.swift 13 会员 + 14 企业
+    IAPService.swift            StoreKit 2 购买 + verify + 恢复
+    AccountService.swift        账号删除（performCoded + 五档分流）
+    CatalogService.swift        目录/收藏/歌单类型化访问
+    ArtistHomeView.swift        16 音乐人主页
+    DetailViews.swift           06/07/17 详情屏
+    PlayerViews.swift           02 播放器 + 迷你条 + tabViewBottomAccessory
+    ProducersPanelView.swift    23 制作人入口面板
+    CreditsLedgerView/Flow      22 co 明细
+    WorkExtrasPanelView/Flow    21 补充制作
+    AgentRunRecovery.swift      #52 断流恢复纯判据层
+    CheckinService.swift        每日签到
+    PlaylistDiscovery.swift     每日/公共/共享三份 read legs
 ```
 
-### 字节批次表
-
-| 版本 | 建码 | 关键变更 |
-|---|---|---|
-| 0.2.78 | 97 | P1 创作台基础闭环 |
-| 0.2.79 | 98 | §5 P3 第一条线：05 三源 + 24 分享歌单 |
-| 0.2.80 | 99 | §5 P3 第二条线：me/checkin 每日签到 |
-| 0.2.81 | 100 | #53 复证关闭、A14 账本更新到 20 屏成对 |
+**测试基线**（`Scripts/test-count-baseline.env`，只升不降）：
+CovaTests 2 / CovaCoreTests 956 / CovaFeatureTests 314 / CovaPlayerTests 483。
+新增测试 → 对应 MIN 抬到实测值。
 
 ---
 
-## ✅ 二、已交付清单
+## 六、还没做完的（下一轮的账）
 
-### P0 止血与基线
+### 上架阻塞（P0）
 
-- ✅ A1 最近播放：`GET /api/play-history`混排展示
-- ✅ A3 studio/create simple 模式 generate→jobId→轮询→渲染最小闭环
-- ✅ A5/A6 作品播放上报、直存同源 intent=download 取字节（不放宽 D23）
-- ✅ A12+A14 门禁全绿与截图证据
-- ✅ 设备侧取证改走 XCUITest（绕过辅助访问权限问题）
+- **§7 #56 IAP 核销链**：`verify` 的 production 分支恒拒（x5c 验签未接）、
+  生产下沙盒不可达、ASSN 通知无端点、productId 权威清单——**验签未上线前
+  内购只能灰度内测，不上架**。
+- **A4/A10 设备证据结构性拿不到**：402 档要零余额账号、producers 非空档
+  要服务端灰度（判据已降级 + 替代证据登记）。
 
-### P1 创作台
+### 功能性缺口（后端，§7 待答）
 
-- ✅ A7 works 列表屏 + 7 项行内动作
-- ✅ P1-2 cover/extend/remaster 入口与请求字段
-- ✅ P1-5 会话详情任务轮询 + agent-runs 回读对账
+- #57 消息侧 `workflowMode`（`POST /api/studio/agent` 不收 mode）。
+- #30 候选级 retry 端点（「重试」现为只读对账，不能重跑失败候选）。
+- #45/#47 extras POST 无幂等键 + 不按键集去重（扣费路径缺协议保证）。
+- #46 作品级补充制作生产上恒被取消（A8 产物字节拿不到）。
+- #48 `.mp3` 硬编码后缀（字节对、后缀错）。
+- NEEDS-23/24 会话条目 schema / 分享短链；09 待裁决 3/4/6（轮询上限/
+  只补做一版/title.candidates）。
 
-### P2 交付链
+### 端侧待办（小账）
 
-- ✅ A8 extras 母带/分轨 + artifacts 同源下载
-- ✅ P2-1 producers 入口 + P2-3 ledger 明细页（A9/A10）
-- ✅ §7 #50 extras 面板设备侧取数失败修复（curl 同 URL 200 ⇒ task id 自身取消模式）
+- #51 `.cancelled` 仍被 `classify` 折进 `.network`（真取消时说「离线」）。
+- #18 类注释漂移（5 处把屏 22 叫「积分流水」，规格名是「co 币明细」）。
+- 09 屏登录态截图（无 `COVA_ACCEPT_*` 凭证，屏上证据待真机/验收腿）。
+- A14 缺的 6 屏深浅配对（06/07/09/16 要真数据 id、12c/17 要预览键）。
+- 24 分享歌单正常态（生产无 token，结构性缺证人）。
 
-### P3 新线（2026-09-27 交付）
+### 技术债（DEVELOPMENT.md 末尾清单）
 
-#### §5 P3 第一条线：05 三源 + 24 分享的歌单
-
-- **文件**: `PlaylistDiscovery.swift` (208 lines), `PlazaAndSettings.swift`
-- **契约面**: 14 条用例验证 daily/public/shared三份 GET
-- **判据面**: 7 条目的地判定（source 枚举而非猜测 unknown→.nowhere）
-- **设备腿**: 模拟器预览键免点击导航（COVA_PREVIEW_PLAZA_SOURCE=daily|shared）
-- **空态真相**: `GET /api/playlists/public` ⇒ `{playlists: []}`（生产尚无分享歌单）
-- **交付范围**: 只读腿，write op (`POST /shared-playlists/[token]/claim`) 排除
-- **未交付**: 下载格受 D12 约束，正常态证人缺 token（结构性问题）
-
-#### §5 P3 第二条线：me/checkin 每日签到
-
-- **文件**: `CheckinService.swift` (77 lines), `LoginAndMine.swift`
-- **契约面**: 11 条用例验证 get/post/ledger
-- **设备腿**: 点「签到领 10 co」⇒ 翻绿勾 + 「今天已签到」
-- **服务端对账**: `+10 每日签到 19325`流水印证
-- **Bug 暴露**: §7 #53 余额刷新延迟（force:true 修复）
-
-### Bug 修复汇总
-
-| Issue | 症状 | 根因 | 解法 |
-|---|---|---|---|
-| **#50** | extras 面板 offline msg，curl 200 | `.task(id: mutable_key)`读取自身修改⇒自取消 | 改用 `workExtrasReadKey(for:)` construction-time constants |
-| **#52** | agent-runs poll 断腿 | decode 路径不一致/类型形状 mismatch | 纯逻辑层恢复 + `LossyPick` helper |
-| **#53** | 签后余额不变 | loadMe()去重吞掉重读 | `session.loadMe(force: true)` |
+TD-41~TD-50 十条（禁 UI 白名单不拦反射、锁屏命令真机冒烟、`@unchecked
+Sendable` SAFETY 标记、CovaUI/CovaFeature 无测试 target、骨架五族、
+证据纪律等）。
 
 ---
 
-## ⏳ 三、阻塞项与未交付
+## 七、开发时的坑（都踩过了，别再踩）
 
-### §5 P3 剩余 8 条线（需先出规格 per G2 交付形态）
-
-| 线号 | 功能 | 状态 | 阻塞原因 |
-|---|---|---|---|
-| **Inspiration Shop** | inspiration-shop | ❌ | D12 conflict（动态数据绕过扫描器） |
-| **User Playlists** | user-playlists CRUD | ❌ | Needs editor spec |
-| **Shared Playlists Claim** | claim write op | ❌ | Write gate closed v1.0 |
-| **Agent v2** | agent-v2 endpoints | ❌ | 3 endpoints待实现 |
-| **Cover/Jobs** | 封面/工单流程 | ❌ | 3 routes待开发 |
-| **Voice Profiles** | voice-profiles 展示 | ❌ | 展示层需求待明确 |
-| **Producers Process** | producers full process | ❌ | 5 routes待开发 |
-| **Apple/SMS Auth** | 登录认证提交 | ⚠️ | Submisison guidelines待获取 |
-
-### A14 深色档配对缺口（6 屏）
-
-| 屏号 | 功能 | 依赖 |
-|---|---|---|
-| **06** | 官方歌单详情 | Need real playlist ID |
-| **07** | 每日推荐详情 | Need real playlist ID |
-| **09** | 作品详情 | Need real work ID |
-| **16** | 会员权益 | Needs update |
-| **12c** | 收藏操作 | Needs preview key |
-| **17** | 生产工作流 | Needs preview key |
-
-### 结构性缺口（无法模拟）
-
-- **24 正常态**: 无生产 token（与 23/12d/18 同类问题）
-- **18 创作者主页**: 需要 real user ID
-- **播放详情页**: 需要 real playlist/work ID
+- **`check.sh` 的 D12 自检会改源码**：植诱饵 → 扫描 → md5 复原；并发编辑
+  会互相盖。跑之前确认 `git status` 干净。
+- **TextField `.onSubmit` 不走 `canSend`**：发送闸要落在 `submit` 行为层
+  不是按钮态（09 屏的教训）。
+- **`xcodebuild` 不把普通环境变量转给测试运行器**：XCUITest 要 `TEST_RUNNER_`
+  前缀；少了就用例 `XCTSkip` 但 `xcodebuild` 仍报 SUCCEEDED——验收必须读
+  `xcresulttool get test-results summary`，不许读最后一行。
+- **截图要钉字节**：A14 的账是「每屏深浅成对 + 钉在同一批字节上」；屏没变、
+  代码变了、图还是旧的 = 悄悄失效。
+- **`simctl` 不能点击**：要点击走 XCUITest（独立 scheme `CovaAcceptance`）；
+  不要点击的屏用 `SIMCTL_CHILD_COVA_PREVIEW_*` 环境变量 + `simctl io
+  screenshot`（零扣费）。
+- **`project.yml` 里 `CFBundleShortVersionString` 与 `CFBundleVersion` 都要动**。
+- **门禁产物保真会读版本号**：`check.sh` 4/10 步打印 `cn.covalink.ios
+  X.Y.Z(N)`，截图验收时核对这个数对不对得上。
 
 ---
 
-## 🔧 四、开发与验收指南
+## 八、联系与真相源
 
-### 环境准备
-
-```bash
-# macOS + Xcode 16+ (Swift 6)
-xcrun simctl list devices available | grep "iPhone"
-```
-
-### 门禁运行
-
-```bash
-./Scripts/check.sh
-# 10 steps: 
-#  ① xcodebuild clean
-#  ② xcodebuild build
-#  ③ xcodebuild test (CORE/PLAYER/FEATURE)
-#  ④ Coverage report
-#  ⑤ D12 copy-check (禁词扫描)
-#  ⑥ xcresult baseline alignment
-#  ...
-```
-
-### 模拟器测试（免点击）
-
-```bash
-# Preview route keys (SIMTL_CHILD_ prefix)
-export SIMTL_CHILD_COVA_PREVIEW_TAB=mine
-export SIMTL_CHILD_COVA_PREVIEW_ROUTE=sharedPlaylist:abc123
-export SIMTL_CHILD_COVA_PREVIEW_PLAZA_SOURCE=daily
-
-# Launch with env injection (correct form)
-env SIMTL_CHILD_COVA_PREVIEW_TAB=mine \
-  xcrun simctl launch --console <bundle_id>
-
-# Or XCUIApplication injection (simulator events)
-xcrun simctl openurl booted <deep-link>
-```
-
-### 设备验收命令参考
-
-```bash
-# Daily playlists source
-curl -s https://covalink.cn/api/playlists/daily | jq '{date, items_count: .items|length}'
-
-# Public playlists (empty state proof)
-curl -s https://covalink.cn/api/playlists/public | jq '.playlists|length'
-
-# Checkin status
-curl -s https://covalink.cn/api/me/checkin | jq '.'
-curl -s https://covalink.cn/api/me/credits/ledger?limit=3 | jq '.'
-
-# Extras (proves #50 fix)
-curl -s -H "Authorization: Bearer $TOKEN" \
-  https://covalink.cn/api/work-extras/[id] | jq '.keys|length'
-```
-
-### 截屏规范
-
-- **光源/暗源**: 每屏配 pair（light + dark）
-- **版本号证据**: 首次安装用 `plutil -extract Version raw Info.plist`钉批次
-- **文件名格式**: `[屏号]-[场景]-{light,dark}.png`
-- **弃用原则**: bad frames（环境变量错误形制如—setenv 位置错）不归档
-- **账本记账**: A14 ledger now at **20 paired screens** (batch doc in README)
+- **后端**：`https://covalink.cn`（生产）；`../web`（Next.js 源码，契约
+  唯一事实源）。
+- **本仓 git**：无 remote（不 push）；提交惯例是叙事式中文 message
+  （conventional 前缀 + 版本号 + 证据段）。
+- **设计**：`design/` 仓内规格（无 Figma 外部依赖）；token 改动双端同步
+  （`tokens.json` → `CovaUI/CovaTokens.swift`）。
 
 ---
 
-## 🚨 五、已知问题与决策记录
-
-### §7 #50：Extras 面板取数失败（已修复）
-
-**问题**: `workExtras.host`被 `.task(id:)`读取，SwiftUI 在 key 变化时 cancel in-flight GET
-
-**证据**: curl 同 URL 200 vs device offline message
-
-**修复**: `workExtrasReadKey(for:)` computed from immutable values (`user.id | host.cacheKey`)
-
-**验证**: Device frame shows six selectable keys visible（正常态），非 offline msg
-
----
-
-### §7 #53：签后余额刷新延迟（已修复）
-
-**问题**: `loadMe()` dedupe guard swallow re-read after sign-in
-
-**代码位置**: `LoginAndMine.swift` line ~200
-
-**修复**: `session.loadMe(force: true)` bypass same-identity dedupe
-
-**验证**: Next-day fresh capture shows 19325 matching server ledger (+10 daily sign-in)
-
----
-
-### §7 #54：Home Materials 刻意拒绝接入（v1.0）
-
-**原因**: Web delivers copywriting via dynamic data delivery; D12 scanner only sees source literals
-
-**合规要求等待**: (a)iOS whitelist section_keys,(b)D12-approved copy review pass,(c)asset URL egress classification
-
-**决策**: Not implemented until requirements met
-
-**归档**: §7 issue #54 with rationale in `DEVELOPMENT.md`
-
----
-
-## 📁 六、验收证据索引
-
-### A14 Screens (20 paired = 40 frames)
-
-Location: `docs/acceptance/a14-20260927/`
-
-| 屏号 | 文件前缀 | 状态 |
-|---|---|---|
-| 01 | `01-home-{light,dark}.png` | ✅ Done |
-| 02 | `02-player-{light,dark}.png` | ✅ Done |
-| 03 | `03-library-{light,dark}.png` | ✅ Done |
-| 04 | `04-drawer-{light,dark}.png` | ✅ Done |
-| 05 | `05-plaza-{official,daily,shared}-{light,dark}.png` | ✅ Done (3×2=6) |
-| 08 | `08-aiSessions-{light,dark}.png` | ✅ Done |
-| 10 | `10-login-{light,dark}.png` | ✅ Done |
-| 11 | `11-mine-{light,dark}.png` | ✅ Done |
-| 12a | `12a-favorites-{light,dark}.png` | ✅ Done |
-| 12b | `12b-myPlaylists-{light,dark}.png` | ✅ Done |
-| 13 | `13-membership-{light,dark}.png` | ✅ Done |
-| 14 | `14-enterprise-{light,dark}.png` | ✅ Done |
-| 15 | `15-settings-{light,dark}.png` | ✅ Done |
-
-**Remaining 6 pairs**: 06/07/09/12c/16/17（need real IDs or preview keys）
-
-### P3 Evidence
-
-Location: `docs/acceptance/p3-20260927/`
-
-| 屏号 | 场景 | 证据文件 |
-|---|---|---|
-| 05 | Plaza three-sources switch | `05-plaza-{official,daily,shared}-{light,dark}.png` |
-| 24 | Shared playlist bad token | `24-shared-playlist-bad-token-{light,dark}.png` |
-| 11 | Checkin row flip | `11-mine-checkin-{light,dark}.png`, `25-checkin-{before,after,tap}-{light,dark}.png` |
-
----
-
-## 🔐 七、GitHub 仓库推送
-
-当前本地 commits ready to push:
-
-```bash
-git log --oneline -5
-# 0a759cf feat(#53): 补签 #53 的设备复证并关闭；更新 A14 账本到 20 屏成对
-# 2884f02 fix(P3): §7 #53 的成因读代码定了 —— 签完那次 loadMe 被同身份合并吞掉，改 force: true
-# ea2b74d docs(§5 P3 / §7 #53 #54): 签到那一行改成已交付并留下欠的那格
-# 740d58c feat(P3): 第二条线 me/checkin 落地（11 的 C2 那一格）
-# 36bd67a feat(P3): 第一条新线落地 —— 05 三源 + 新屏 24「分享的歌单」
-```
-
-**操作步骤**:
-
-1. 在 GitHub 创建仓库：https://github.com/new
-   - Repository name: `iOSApp`
-   - Visibility: Private/Public
-   - Don't initialize with README/.gitignore
-
-2. 复制仓库 URL（应为 `https://github.com/YOUR_USERNAME/iOSApp.git`）
-
-3. 执行推送:
-   ```bash
-   git remote set-url origin https://github.com/YOUR_USERNAME/iOSApp.git
-   git push -u origin main
-   ```
-
----
-
-## 📞 八、联系方式与资源
-
-### 后端真相源
-
-- **URL**: https://covalink.cn
-- **Web Repo**: `../web` directory contains Next.js API routes
-- **API 查询工具**: `curl` for schema inspection before implementing
-
-### 设计规范
-
-- **逐屏规格**: `designs/screens/`目录下每个 `.md` 文件
-- **验收标准**: 《A1–A15 Specification》文档
-- **D12 合规**: 《D12 Copy Check Policy》禁词白名单
-
-### 内部文档
-
-- **DEVELOPMENT.md**: §5 P1–P3进度、§7 bug 追踪、门禁口径
-- **AGENTS.md**: 子代理协作规则、预算/冲突策略
-- **HANDOVER.md**: 本文档（交接手册）
-
----
-
-## 🎯 九、下一步行动计划
-
-### 短期（v0.3.0）
-
-1. **补 A14 配对**: 6 屏深色档（优先 06/07 用于官方歌单深度使用）
-2. **24 normal态证人**: 协调后端产分享 token（或接受 structural gap）
-3. **Agent v2 endpoints**: 3 routes 落地（需 spec review）
-
-### 中期（v0.4.0）
-
-4. **Inspiration Shop**: 解决 D12 conflict（建议：静态文案预置 + runtime filter）
-5. **User Playlists Editor**: 完整 CRUD spec + implementation
-6. **Voice Profiles**: 展示层需求确认 → wireframe → code
-
-### 长期（v1.0）
-
-7. **Payment Gate**: D12 resolved + billing integration（收入型功能规划）
-8. **Producers Full Process**: 5 routes end-to-end
-9. **Apple/SMS Auth**: Submission guidelines compliance
-
----
-
-**Last Updated**: 2026-10-01  
-**Maintainer**: covalink-team @ GitHub  
-**Repository**: https://github.com/covalink/iOSApp (pending creation)
+**接手三件事**：
+① `bash Scripts/check.sh` 看绿不绿；
+② `git log --oneline -5` + `docs/log/` 最新一份看上一批干了什么；
+③ `DEVELOPMENT.md` §7 看后端欠的账。
