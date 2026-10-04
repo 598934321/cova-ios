@@ -11,6 +11,10 @@ import SwiftUI
 ///   其余维度是单栏多选网格；面板顶部搜索本维度词条，底部「清除」/「完成（已选 n）」
 /// · §1/§5 结果计数（服务端 `total`）+ 排序 sheet（四档全部实测为服务端档位）
 ///
+/// **搜索已迁出**（03 §3，2026-10-02 修订）：`.searchable`/防抖/历史账全部归 25 搜索页签；
+/// 本屏只剩**带入条件**：`library(preset)` 路由载荷里的 `search` 落成导航条下一条
+/// 「搜索：{query} ✕」回显行（✕ 清掉回筛选列表），不渲染常驻搜索框。
+///
 /// ## 数据事实（2026-09-26 只读探针 `GET /api/library/taxonomy`，只打印键名与数组长度）
 /// 层级不是 children 字段，而是 `subgenre` 词条 `aliases` 里的 `parent:<父label>`：
 /// 54/54 条 subgenre 都带 parent，其中 47 条挂在 genre 上（二级）、**7 条挂在另一条 subgenre
@@ -25,6 +29,8 @@ import SwiftUI
 public struct LibraryView: View {
     @Environment(AppSession.self) private var session
     private let catalog: CatalogService
+    /// `library(preset)` 路由带进来的预填（取数前消费后即弃，03 §7 同一条规则在两棵栈通用）。
+    private let routePreset: AppSession.LibraryPreset?
     /// 词表摊平结果（取到词表时算一次；DTO 原始载荷不留 —— 级联只认这一份）。
     /// 326 条词条 + 建树不在每次 body 里做。
     @State private var dimensions: [LibraryFilterDimension] = []
@@ -34,20 +40,25 @@ public struct LibraryView: View {
     /// 但它同样是一枚**生效中的筛选** ⇒ 在 §1 的已选行里画得出、也撤得掉。
     @State private var presetArtistID: String?
     @State private var presetArtistLabel: String?
+    /// 带入的检索词（§3 回显行的内容；`nil` = 无搜索条件）。
+    @State private var presetSearch: String?
+    /// 导航标题覆盖（§7：音乐人名 / 分类词条名替换「曲库」）。
+    @State private var presetTitle: String?
+    /// `presetTitle` 是不是预填**显式**给的（§7 的 `title` 键）——不是 ⇒ 标题来自艺人名，
+    /// 艺人筛选被撤掉时跟着回落「曲库」（`clearArtistPreset` 要靠这一格分清两件事）。
+    @State private var presetTitleIsExplicit = false
     @State private var sort: LibrarySort = .recommended
-    @State private var query = ""
     @State private var tracks: [TrackDto] = []
     @State private var page = 1
     @State private var totalPages = 1
     @State private var total: Int?
     @State private var phase: Phase = .loading
-    @State private var searchTask: Task<Void, Never>?
     @State private var panel: Panel?
 
     private enum Phase: Equatable { case loading, ready, failed(CatalogFailure), appending }
 
     /// 屏上三种底部面板（同一时刻只有一个）。
-    private enum Panel: Identifiable {
+    enum Panel: Identifiable {
         case cascade(String)
         case sort
         case moreDimensions
@@ -61,7 +72,10 @@ public struct LibraryView: View {
         }
     }
 
-    public init(catalog: CatalogService) { self.catalog = catalog }
+    public init(catalog: CatalogService, preset: AppSession.LibraryPreset? = nil) {
+        self.catalog = catalog
+        self.routePreset = preset
+    }
 
     // MARK: 可断言的判据（SwiftUI 装配本身不在覆盖之内，这几条是屏上真正说了算的数）
 
@@ -97,7 +111,15 @@ public struct LibraryView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            searchBar
+            // §3：带入的检索词落成回显行（surface 底胶囊行，✕ 清掉回筛选列表）；
+            // 常驻搜索框不存在 —— 搜索入口在 25 页签。
+            if let presetSearch {
+                CovaSearchEchoRow(query: presetSearch) {
+                    // ✕ 只清检索词（§3 逐字）；标题覆盖与筛选值留着 —— 那仍是同一次进入的语境。
+                    self.presetSearch = nil
+                    Task { await reload() }
+                }
+            }
             if !dimensions.isEmpty {
                 dimensionStrip
             }
@@ -108,21 +130,12 @@ public struct LibraryView: View {
             list
         }
         .covaPage()
-        // 04 §1 入口①：曲库是**顶层屏**，按 04 的口径这一屏的顶栏左上就是抽屉入口。
-        // 03 §1 的导航条画的是 `[←] 曲库 [搜索]`（Tab 根屏的 `←` 在本 App 里没有对应动作，
-        // 搜索栏则已在 §3 以页面内常驻的形式实现）⇒ 左上这个空位给触发钮，不与 03 的既有元素抢位。
-        // 03 的整条玻璃导航条（标题 + 右上搜索钮）仍是未实现项，这枚钮不替它充数。
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                DrawerTrigger(opener: .library)
-            }
-        }
-        // D24 构图：03 §1 的导航条是 `[←] 曲库 [搜索]`。Tab 根屏的 `←` 在本 App 没有对应动作
-        // ⇒ 左位给抽屉触发钮，**标题落进导航条**（此前那一行只有字标、没有标题，那条带子是
-        // 空白，整屏读起来就像"内容堆在下面"）；搜索按 §3 以页面内常驻实现，不重复放右上钮。
-        .navigationTitle("曲库")
-        .toolbarTitleDisplayMode(.inline)
+        // 04 §5 对照表：顶栏品牌字标钮随抽屉一并移除；§7 的 `title` 预填替换大标题
+        // （艺人名/分类词条名），返回根屏恢复 —— 页签根屏没有返回钮、没有品牌位。
+        .navigationTitle(navigationTitle)
+        .toolbarTitleDisplayMode(.large)
         .task {
+            apply(routePreset)
             consumeLibraryPreset()
             await loadTaxonomy()
             applyPreviewFilter()
@@ -158,60 +171,15 @@ public struct LibraryView: View {
         }
     }
 
-    private var searchBar: some View {
-        HStack(spacing: CovaSpace.sm) {
-            Image(systemName: "magnifyingglass").foregroundStyle(CovaColor.muted)
-                .accessibilityHidden(true)
-            TextField("搜索曲目 / 风格 / 情绪", text: $query)
-                .font(CovaType.callout)
-                .foregroundStyle(CovaColor.fg)
-                .onChange(of: query) { _, newValue in
-                    searchTask?.cancel()
-                    searchTask = Task {
-                        try? await Task.sleep(nanoseconds: 300_000_000)
-                        guard !Task.isCancelled else { return }
-                        await reload()
-                    }
-                }
-            if !query.isEmpty {
-                Button { query = ""; Task { await reload() } } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(CovaColor.muted)
-                }
-                .accessibilityLabel("清除搜索")
-            }
-        }
-        .padding(CovaSpace.md)
-        .background(Capsule().fill(CovaColor.surface))
-        .padding(.horizontal, CovaSpace.pageGutter)
-        .padding(.vertical, CovaSpace.xs)   // D24 紧凑：搜索条上下各收 4pt
-    }
-
     // MARK: - §2 维度 chips 条
 
-    @ViewBuilder
     private var dimensionStrip: some View {
-        let inline = Array(dimensions.prefix(LibraryFilterSchema.inlineDimensionCount))
-        let hidden = dimensions.dropFirst(LibraryFilterSchema.inlineDimensionCount)
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: CovaSpace.sm) {
-                ForEach(inline, id: \.id) { dim in
-                    CovaChip(dim.title, isSelected: selection.count(in: dim.id) > 0) {
-                        panel = .cascade(dim.id)
-                    }
-                    .accessibilityLabel(
-                        selection.count(in: dim.id) > 0
-                            ? "筛选维度 \(dim.title)，已选 \(selection.count(in: dim.id)) 项"
-                            : "筛选维度 \(dim.title)"
-                    )
-                }
-                if !hidden.isEmpty {
-                    CovaChip("＋ 更多", isSelected: false) { panel = .moreDimensions }
-                        .accessibilityLabel("展开全部筛选维度")
-                }
-            }
-            .padding(.horizontal, CovaSpace.pageGutter)
-            .frame(minHeight: 44)
-        }
+        LibraryDimensionStrip(
+            dimensions: dimensions,
+            selection: selection,
+            onPick: { panel = .cascade($0) },
+            onMore: { panel = .moreDimensions }
+        )
     }
 
     private var hiddenDimensions: [LibraryFilterDimension] {
@@ -225,65 +193,38 @@ public struct LibraryView: View {
     // MARK: - §1 已选 chips 行
 
     private var selectedChipsRow: some View {
-        let chips = selection.chips()
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: CovaSpace.sm) {
-                Text("已选：").font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
-                ForEach(chips, id: \.self) { chip in
-                    Button {
-                        selection.remove(dimension: chip.dimension, value: chip.value)
-                        Task { await reload() }
-                    } label: {
-                        HStack(spacing: CovaSpace.xs) {
-                            Text(chip.value).font(CovaType.subhead)
-                                .foregroundStyle(CovaColor.accentText)
-                            Image(systemName: "xmark").font(CovaType.caption)
-                                .foregroundStyle(CovaColor.accentText)
-                        }
-                        .padding(.horizontal, CovaSpace.md)
-                        .padding(.vertical, CovaSpace.sm)
-                        .background(Capsule().fill(CovaColor.accentSoft))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("移除筛选 \(chip.dimensionTitle) \(chip.value)")
-                }
-                // 艺人预填也是"已选"里的一项：发出去了却不上屏的筛选，用户没法解释
-                // 也没法撤（03 §1 那一行的全部意义就是让生效中的筛选看得见）。
-                if let presetArtistID {
-                    Button {
-                        clearArtistPreset()
-                        Task { await reload() }
-                    } label: {
-                        HStack(spacing: CovaSpace.xs) {
-                            Text("艺人 · \(presetArtistLabel ?? presetArtistID)").font(CovaType.subhead)
-                                .foregroundStyle(CovaColor.accentText)
-                            Image(systemName: "xmark").font(CovaType.caption)
-                                .foregroundStyle(CovaColor.accentText)
-                        }
-                        .padding(.horizontal, CovaSpace.md)
-                        .padding(.vertical, CovaSpace.sm)
-                        .background(Capsule().fill(CovaColor.accentSoft))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("移除筛选 艺人 \(presetArtistLabel ?? presetArtistID)")
-                }
+        LibrarySelectedChipsRow(
+            selection: selection,
+            onRemove: { chip in
+                selection.remove(dimension: chip.dimension, value: chip.value)
+                Task { await reload() }
+            },
+            onClearAll: {
+                clearAllFilters()
+                Task { await reload() }
+            }
+        ) {
+            // 艺人预填也是"已选"里的一项：发出去了却不上屏的筛选，用户没法解释
+            // 也没法撤（03 §1 那一行的全部意义就是让生效中的筛选看得见）。
+            if let presetArtistID {
                 Button {
-                    clearAllFilters()
+                    clearArtistPreset()
                     Task { await reload() }
                 } label: {
-                    Text("清除全部").font(CovaType.subhead)
-                        .foregroundStyle(CovaColor.secondary)
-                        .padding(.horizontal, CovaSpace.md)
-                        .padding(.vertical, CovaSpace.sm)
-                        .contentShape(Rectangle())
+                    HStack(spacing: CovaSpace.xs) {
+                        Text("艺人 · \(presetArtistLabel ?? presetArtistID)").font(CovaType.subhead)
+                            .foregroundStyle(CovaColor.selected)
+                        Image(systemName: "xmark").font(CovaType.caption)
+                            .foregroundStyle(CovaColor.selected)
+                    }
+                    .padding(.horizontal, CovaSpace.md)
+                    .padding(.vertical, CovaSpace.sm)
+                    .background(Capsule().fill(CovaColor.selectedBg))
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("清除全部筛选")
+                .accessibilityLabel("移除筛选 艺人 \(presetArtistLabel ?? presetArtistID)")
             }
-            .padding(.horizontal, CovaSpace.pageGutter)
-            .frame(minHeight: 44)
         }
     }
 
@@ -367,7 +308,7 @@ public struct LibraryView: View {
                         }
                         .contextMenu {
                             Button("曲目详情") { session.detailTrackID = track.id }
-                            Button("查看艺人") { session.path.append(.artist(track.artist.id)) }
+                            Button("查看艺人") { session.push(.artist(track.artist.id)) }
                         }
                     }
                     if page < totalPages {
@@ -400,34 +341,55 @@ public struct LibraryView: View {
 
     // MARK: - 03 §7 的跨屏预填（01 §6 音乐人栏 → 曲库）
 
-    /// 屏上有**任何**一枚生效中的筛选吗（维度 chips + 那颗艺人预填）。
-    /// §1 的已选行、空态那句「试试放宽条件」与「清除全部」都读这一条 —— 否则艺人筛选单独
-    /// 生效时，那一行既不存在也撤不掉。
-    private var hasActiveFilters: Bool { !selection.isEmpty || presetArtistID != nil }
+    /// 屏上有**任何**一枚生效中的筛选吗（维度 chips + 那颗艺人预填 + 带入的检索词）。
+    /// §1 的已选行、空态那句「试试放宽条件」与「清除全部」都读这一条 —— 否则艺人/搜索
+    /// 筛选单独生效时，那一行既不存在也撤不掉。
+    private var hasActiveFilters: Bool {
+        !selection.isEmpty || presetArtistID != nil || presetSearch != nil
+    }
+
+    /// 导航标题：§7 的 `title` 覆盖 > 艺人预填名 > 「曲库」。
+    private var navigationTitle: String {
+        presetTitle ?? presetArtistLabel ?? "曲库"
+    }
 
     /// 只撤艺人那一枚：它不在 `selection` 里，`clearAll()` 碰不到它。
+    /// 标题覆盖跟随撤销：标题取自艺人名的那一屏（没带显式 `title`），撤掉艺人筛选后
+    /// 导航回落「曲库」；显式 `preset.title`（25 分类卡）不受艺人 chip 牵连。
     private func clearArtistPreset() {
         presetArtistID = nil
         presetArtistLabel = nil
+        if !presetTitleIsExplicit { presetTitle = nil }
     }
 
-    /// 「清除全部」清的是屏上画得出的**每一项**，漏掉那颗预填就是一句做不到的承诺。
+    /// 「清除全部」清的是屏上画得出的**每一项**：维度 chips + 艺人预填 + 带入的检索词，
+    /// 漏掉任何一颗就是一句做不到的承诺（标题覆盖随艺人预填一起回落）。
     private func clearAllFilters() {
         selection.clearAll()
         clearArtistPreset()
+        presetSearch = nil
     }
 
-    /// 取走 01 递过来的预填载荷：`consumeLibraryPreset()` **读到即销**，所以第二次进屏
-    /// （用户已经自己筛过一轮）不会被同一个 artistId 悄悄重放一遍。
-    /// 维度部分走 `LibraryFilterSelection.merge`（合并去重、带上限），艺人是独立参数键。
-    private func consumeLibraryPreset() {
-        guard let preset = session.consumeLibraryPreset() else { return }
+    /// 一份 `LibraryPreset` 落成屏上状态（路由载荷与 `pendingLibraryPreset` 两条腿共用）：
+    /// 维度部分走 `LibraryFilterSelection.merge`（合并去重、带上限），艺人是独立参数键，
+    /// `search`/`title` 落在自己的两格里。
+    private func apply(_ preset: AppSession.LibraryPreset?) {
+        guard let preset else { return }
         presetArtistID = preset.artistID
         presetArtistLabel = preset.artistLabel
+        presetSearch = preset.search
+        presetTitle = preset.title
+        presetTitleIsExplicit = preset.title != nil
         selection.merge(preset.dimensions)
     }
 
-    /// 走查钩子 6（**只为模拟器逐屏截图存在**，与 `COVA_PREVIEW_ROUTE/SHEET/DRAWER` 同一性质）：
+    /// 取走 `pendingLibraryPreset` 那条旧腿递过来的预填：`consumeLibraryPreset()` **读到即销**，
+    /// 所以第二次进屏（用户已经自己筛过一轮）不会被同一个 artistId 悄悄重放一遍。
+    private func consumeLibraryPreset() {
+        apply(session.consumeLibraryPreset())
+    }
+
+    /// 走查钩子 6（**只为模拟器逐屏截图存在**，与 `COVA_PREVIEW_ROUTE/SHEET` 同一性质）：
     /// `COVA_PREVIEW_FILTER=<维度>:<值>[;<维度>:<值>…]` 在词表到位后把已选装进选择态，
     /// 再配 `COVA_PREVIEW_SHEET=filter` 直接展开 §2 的「+」全维度面板。
     /// 为什么必须有它：`simctl` 不提供点击（引入 idb/appium 会破零依赖白名单），没有它这两格
@@ -466,7 +428,7 @@ public struct LibraryView: View {
     private func requestTracks(page: Int) async throws -> TrackPageDto {
         try await catalog.tracks(
             queryItems: selection.queryItems(
-                search: query, sort: sort, artistID: presetArtistID, page: page
+                search: presetSearch, sort: sort, artistID: presetArtistID, page: page
             )
         )
     }
@@ -505,7 +467,8 @@ public struct LibraryView: View {
 /// 维度选择面板：风格维度 = 三栏级联（有 `parent:` 链才画，没链就退回单栏网格），
 /// 其余维度 = 单栏多选网格。面板改的是**草稿**，「完成」才提交 —— 与 §2 底部那颗
 /// 「完成（已选 n）」胶囊一致，也避免每点一个词条就打一次网络。
-private struct LibraryCascadePanel: View {
+/// internal（不是 private）：25 结果态的吸顶筛选条复用同一枚面板（25 §3.B）。
+struct LibraryCascadePanel: View {
     @Environment(AppSession.self) private var session
     @Environment(\.covaAXLayout) private var axLayout
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -668,7 +631,7 @@ private struct LibraryCascadePanel: View {
             Button { toggle(node) } label: {
                 HStack(spacing: CovaSpace.sm) {
                     Image(systemName: checked ? "checkmark.square.fill" : "square")
-                        .foregroundStyle(checked ? CovaColor.accent : CovaColor.muted)
+                        .foregroundStyle(checked ? CovaColor.selected : CovaColor.muted)
                     Text(node.term.value)
                         .font(CovaType.subhead)
                         .foregroundStyle(CovaColor.fg)
@@ -697,7 +660,7 @@ private struct LibraryCascadePanel: View {
         .frame(minHeight: 44)
         .background(
             RoundedRectangle(cornerRadius: CovaRadius.control - 4, style: .continuous)
-                .fill(expanded ? CovaColor.accentSoft : .clear)
+                .fill(expanded ? CovaColor.selectedBg : .clear)
         )
     }
 
@@ -713,7 +676,7 @@ private struct LibraryCascadePanel: View {
                     Button { toggle(term.value) } label: {
                         HStack(spacing: CovaSpace.sm) {
                             Image(systemName: checked ? "checkmark.square.fill" : "square")
-                                .foregroundStyle(checked ? CovaColor.accent : CovaColor.muted)
+                                .foregroundStyle(checked ? CovaColor.selected : CovaColor.muted)
                             Text(term.value)
                                 .font(CovaType.subhead).foregroundStyle(CovaColor.fg)
                                 .lineLimit(axLayout ? 2 : 1)
@@ -724,7 +687,7 @@ private struct LibraryCascadePanel: View {
                         .frame(minHeight: 44)
                         .background(
                             RoundedRectangle(cornerRadius: CovaRadius.control, style: .continuous)
-                                .fill(checked ? CovaColor.accentSoft : CovaColor.surface)
+                                .fill(checked ? CovaColor.selectedBg : CovaColor.surface)
                         )
                         .contentShape(Rectangle())
                     }
@@ -756,11 +719,13 @@ private struct LibraryCascadePanel: View {
             Button {
                 onCommit(draft)
             } label: {
+                // 「完成」是面板主钮不是 hero CTA：中性玻璃档（v2.65 按钮族），不走渐变。
                 Text("完成（已选 \(selectedCount)）")
                     .font(CovaType.headline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(CovaColor.fg)
                     .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(Capsule().fill(CovaColor.accent))
+                    .background(Capsule().fill(.ultraThinMaterial))
+                    .overlay(Capsule().strokeBorder(CovaColor.line, lineWidth: 0.5))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -793,7 +758,7 @@ private struct LibraryCascadePanel: View {
 // MARK: - §5 排序面板
 
 /// 四档排序 = 服务端 `sort` 的四个实测存在的档位（客户端不做二次排序，见 `LibrarySort`）。
-private struct LibrarySortPanel: View {
+struct LibrarySortPanel: View {
     @Environment(\.covaAXLayout) private var axLayout
     private let sort: LibrarySort
     private let onPick: (LibrarySort) -> Void
@@ -824,7 +789,7 @@ private struct LibrarySortPanel: View {
                         Spacer()
                         if option == sort {
                             Image(systemName: "checkmark")
-                                .foregroundStyle(CovaColor.accent)
+                                .foregroundStyle(CovaColor.selected)
                         }
                     }
                     .padding(.horizontal, CovaSpace.pageGutter)
@@ -845,7 +810,7 @@ private struct LibrarySortPanel: View {
 
 // MARK: - §2「+」展开全部维度
 
-private struct LibraryDimensionListPanel: View {
+struct LibraryDimensionListPanel: View {
     @Environment(\.covaAXLayout) private var axLayout
     private let dimensions: [LibraryFilterDimension]
     private let counts: (String) -> Int
@@ -876,7 +841,7 @@ private struct LibraryDimensionListPanel: View {
                             .lineLimit(axLayout ? 2 : 1)
                         Spacer()
                         if picked > 0 {
-                            Text("\(picked)").font(CovaType.mono).foregroundStyle(CovaColor.accentText)
+                            Text("\(picked)").font(CovaType.mono).foregroundStyle(CovaColor.selected)
                         }
                         Image(systemName: "chevron.right").font(CovaType.subhead)
                             .foregroundStyle(CovaColor.muted)
@@ -908,5 +873,100 @@ private struct LibraryDimensionListPanel: View {
 enum LibraryArtwork {
     static func cover(_ track: TrackDto) -> CovaArtworkResolution {
         CovaArtworkResolution(serverValue: track.cover)
+    }
+}
+
+// MARK: - 与 25 结果态共用的两条筛选带（03 §1/§2 同一形态，internal）
+
+/// §2 维度 chips 条：前 `inlineDimensionCount` 维直接露出，其余收「＋ 更多」。
+/// 03（页签根屏）与 25（输入态吸顶）共用同一枚 —— 两个屏不该长两套筛选条。
+struct LibraryDimensionStrip: View {
+    let dimensions: [LibraryFilterDimension]
+    let selection: LibraryFilterSelection
+    let onPick: (String) -> Void
+    let onMore: () -> Void
+
+    var body: some View {
+        let inline = Array(dimensions.prefix(LibraryFilterSchema.inlineDimensionCount))
+        let hidden = dimensions.dropFirst(LibraryFilterSchema.inlineDimensionCount)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: CovaSpace.sm) {
+                ForEach(inline, id: \.id) { dim in
+                    CovaChip(dim.title, isSelected: selection.count(in: dim.id) > 0) {
+                        onPick(dim.id)
+                    }
+                    .accessibilityLabel(
+                        selection.count(in: dim.id) > 0
+                            ? "筛选维度 \(dim.title)，已选 \(selection.count(in: dim.id)) 项"
+                            : "筛选维度 \(dim.title)"
+                    )
+                }
+                if !hidden.isEmpty {
+                    CovaChip("＋ 更多", isSelected: false, action: onMore)
+                        .accessibilityLabel("展开全部筛选维度")
+                }
+            }
+            .padding(.horizontal, CovaSpace.pageGutter)
+            .frame(minHeight: 44)
+        }
+    }
+}
+
+/// §1 已选 chips 行：「已选：」+ 逐枚 ✕ chip + 尾缀「清除全部」；`extra` 槽放
+/// 维度表之外的生效筛选（03 的艺人预填 chip），25 传空。
+struct LibrarySelectedChipsRow<Extra: View>: View {
+    let selection: LibraryFilterSelection
+    let onRemove: (LibraryFilterSelection.Chip) -> Void
+    let onClearAll: () -> Void
+    @ViewBuilder let extra: Extra
+
+    init(
+        selection: LibraryFilterSelection,
+        onRemove: @escaping (LibraryFilterSelection.Chip) -> Void,
+        onClearAll: @escaping () -> Void,
+        @ViewBuilder extra: () -> Extra
+    ) {
+        self.selection = selection
+        self.onRemove = onRemove
+        self.onClearAll = onClearAll
+        self.extra = extra()
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: CovaSpace.sm) {
+                Text("已选：").font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                ForEach(selection.chips(), id: \.self) { chip in
+                    Button {
+                        onRemove(chip)
+                    } label: {
+                        HStack(spacing: CovaSpace.xs) {
+                            Text(chip.value).font(CovaType.subhead)
+                                .foregroundStyle(CovaColor.selected)
+                            Image(systemName: "xmark").font(CovaType.caption)
+                                .foregroundStyle(CovaColor.selected)
+                        }
+                        .padding(.horizontal, CovaSpace.md)
+                        .padding(.vertical, CovaSpace.sm)
+                        .background(Capsule().fill(CovaColor.selectedBg))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("移除筛选 \(chip.dimensionTitle) \(chip.value)")
+                }
+                extra
+                Button(action: onClearAll) {
+                    Text("清除全部").font(CovaType.subhead)
+                        .foregroundStyle(CovaColor.secondary)
+                        .padding(.horizontal, CovaSpace.md)
+                        .padding(.vertical, CovaSpace.sm)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清除全部筛选")
+            }
+            .padding(.horizontal, CovaSpace.pageGutter)
+            .frame(minHeight: 44)
+        }
     }
 }

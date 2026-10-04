@@ -2,46 +2,39 @@ import CovaCore
 import CovaUI
 import SwiftUI
 
-/// 首页（design 01）：§2 会话输入卡 → §3 今日推荐大卡 → 推荐歌单轨道 → §4 场景精选 →
-/// 曲库精选行 → 继续聆听 → §5 你的创作 → §6 AI 音乐人。
-/// 公开段匿名可读；§5 那一格**单独**跟着登录态走（它要登录）。
-/// 加载=骨架、空=空态、失败=三分类错误态；**不伪造数据**。
+/// 首页（design 01，G2 2026-10-02 重写）：§2 问候区 → §3 模式切换 → §5 引导标签 →
+/// §6 内容 feed（A 推荐歌单 / B 最近播放 / C 新歌上架 / D 你的创作 / E 场景精选 / F AI 音乐人），
+/// §4 底置 CovaComposer（`safeAreaInset`，浮于 MiniPlayer accessory 之上）。
+///
+/// 三句必须说清的话：
+/// · **登录专属分区（B/D）游客整区不渲染**（§6 公共规则：不留标题不留占位）；
+/// · **生成交互不再在首页收**：§4 的提交建会话后落到 09（`navigate(to:.aiSession)`），
+///   本屏只递 `pendingPrompt`/`pendingDeepThinking`，不渲染结果；
+/// · **F 区的卡不可点**：`/api/studio/producers` 的 dto 没有 artistId 落点（23 §7 同一裁决），
+///   画一个点了没用的东西就是谎。
 public struct HomeView: View {
     @Environment(AppSession.self) private var session
     private let catalog: CatalogService
-    @State private var phase: Phase = .loading
-    @State private var search = ""
-    @State private var prompt = ""
-    @State private var promptMode: PromptMode = .auto
+
+    // MARK: - §4 输入条状态（档位放 `AppSession`，会话内记忆 §3）
+    @State private var composerText = ""
     @State private var deepThinking = false
-    @State private var creatingSession = false
-    /// §3 播放钮的在途标记：点一下要先发 `GET /api/playlists/:id` 取曲目，
-    /// 期间吞掉第二次点击（连点会建出两条队列，第二条盖掉第一条）。
+    @State private var sending = false
+    @FocusState private var composerFocused: Bool
+    /// §3 大卡播放钮的在途标记（点一下要先发 `GET /api/playlists/:id` 取曲目）。
     @State private var featuredPlaying = false
-    /// §5「你的创作」：**分区独立加载**（§8），这一格走的是**要登录**的会话列表，
-    /// 与上面那两段匿名内容不共命运 —— 它失败只该盖住它自己那一格。
-    @State private var creations: CreationPhase = .pending
-    /// §5 空态的 CTA 是「聚焦会话框」⇒ 输入框得先有一个可被聚焦的身份。
-    @FocusState private var promptFocused: Bool
 
-    /// §5 + §8 的登录门槛四档。`pending` 单独存在（而不是并进 `loading`）的理由：
-    /// 登录态回读期间既不是"游客"也不该发一个必 401 的请求 —— 那是硬边界里
-    /// 「未登录不播放/不写」的同一条判据在取数侧的形态。
-    private enum CreationPhase: Equatable {
-        case pending
-        case guest
+    // MARK: - §6 分区账本（各自独立成败，§6 公共规则）
+    /// A 歌单 + E 场景共享同一枪 `GET /api/playlists`（§10 数据契约：全量一次取）。
+    @State private var playlistsPhase: FeedPhase<[PlaylistDto]> = .loading
+    /// C 新歌。
+    @State private var newestPhase: FeedPhase<[TrackDto]> = .loading
+    /// D 你的创作（仅 signedIn 才发请求）。
+    @State private var worksPhase: FeedPhase<[WorksListRowDto]> = .loading
+
+    private enum FeedPhase<Payload>: Equatable where Payload: Equatable {
         case loading
-        case ready([StudioSessionDto])
-        case failed(CatalogFailure)
-    }
-
-    /// 输入卡的三种模式。**只有 UI 状态**：`POST /api/studio/agent` 的请求体 schema 未文档化
-    /// （NEEDS-13），所以这里**不发明** `mode` 之类的键去发后端 —— 默认「自动」由 agent 自己判意图。
-    enum PromptMode { case auto, find, make }
-
-    private enum Phase {
-        case loading
-        case ready(playlists: [PlaylistDto], tracks: [TrackDto])
+        case ready(Payload)
         case failed(CatalogFailure)
     }
 
@@ -49,189 +42,221 @@ public struct HomeView: View {
 
     public var body: some View {
         ScrollView {
-            // D24 构图：区块间距 24→16、上下留白 16→12。原来每块之间都是 `xl`，配合大字号
-            // 让首屏"两屏半才看完一个区块"；紧凑档下层级靠**标题字重 + 留白对比**拉开，
-            // 而不是靠把所有间距都放大。
             VStack(alignment: .leading, spacing: CovaSpace.lg) {
-                header
-                promptCard
-                content
-                recentlyPlayed
-                creationsSection
-                artistSection
+                greetingSection
+                VStack(alignment: .center, spacing: CovaSpace.md) {
+                    modeTabs
+                    tagRows
+                }
+                .frame(maxWidth: .infinity)
+                feed
             }
             .padding(.vertical, CovaSpace.md)
         }
+        .scrollDismissesKeyboard(.interactively)
+        // §4 键盘交互：点 feed 任意处收键盘（在钮的命中判定之下 —— simultaneous 不吞点击）。
+        .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
         .covaPage()
-        // 04 §1 入口①：顶层屏顶栏左上的字标钮（01 §1 顶栏那一行的 logo 位）。
-        // 01 顶栏的其余部分（玻璃材质、右侧 32pt 头像位）本轮**没有**一并施工 —— 那是另一条
-        // 未实现项，不在"抽屉不可达"这一刀的范围内；这里只把入口接上，不留一个假装的顶栏。
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                DrawerTrigger(opener: .home)
-            }
+        // 问候即标题区：系统大标题栏不用（§2），只留透明导航位。
+        .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) { composerBar }
+        // feed 首载：A/E/C/F 匿名可读（§10），B/D 跟着登录态走。
+        .task {
+            await loadPublicFeed()
+            await loadRecentAndWorks()
         }
-        .task { await load() }
-        // 登录态一落定就决定这一格取不取：`authPhase` 是 Equatable ⇒ `task(id:)` 只在
-        // restoring → guest / signedIn 那一次跳变上重跑，不被别的状态变动牵着重发。
-        .task(id: session.authPhase) { await loadCreations() }
+        // `authPhase` 是 Equatable ⇒ 只在 restoring → guest/signedIn 的跳变上重跑，
+        // 不被别的状态变动牵着重发。
+        .task(id: session.authPhase) {
+            await loadRecentAndWorks()
+            await session.loadProducerCards()
+        }
         .refreshable {
-            await load()
-            await loadCreations()
+            await loadPublicFeed()
+            await loadRecentAndWorks()
+            await session.loadProducerCards(force: true)
         }
     }
 
-    private var header: some View {
+    // MARK: - §2 问候区（display 字阶；「Cova」的 o 着 accent）
+
+    private var greetingSection: some View {
         VStack(alignment: .leading, spacing: CovaSpace.xs) {
-            Text("晚上好").font(CovaType.largeTitle).foregroundStyle(CovaColor.fg)
-            Text("找一首能用的曲子").font(CovaType.callout).foregroundStyle(CovaColor.secondary)
+            // §2：未取到昵称时省略昵称与逗号（guest 或 me 未回的 signedIn 早期帧）。
+            Text(greetingLine)
+                .font(CovaType.display)
+                .foregroundStyle(CovaColor.fg)
+                // `type.display` 的 `tracking: -0.01`（tokens.json 逐字）：28pt × −0.01 = −0.28pt。
+                .tracking(-0.28)
+                .lineLimit(2)
+            // 「今天想和 Cova 一起创作些什么？」—— spec 明写「Cova」中字母「o」着 accent。
+            // iOS 26 起 `Text + Text` 弃用；内插 Text 段保留自己的着色。
+            Text("今天想和 C\(Text("o").foregroundStyle(CovaColor.accent))va 一起创作些什么？")
+                .foregroundStyle(CovaColor.fg)
         }
+        .font(CovaType.display)
+        .tracking(-0.28)
         .padding(.horizontal, CovaSpace.pageGutter)
     }
 
-    @ViewBuilder
-    private var content: some View {
-        switch phase {
-        case .loading:
-            CovaSkeleton(rows: 4)
-        case .failed(let failure):
-            CovaErrorState(kind: errorKind(failure)) { Task { await load() } }
-        case .ready(let playlists, let tracks):
-            if playlists.isEmpty && tracks.isEmpty {
-                CovaEmptyState(
-                    symbol: "music.quarternote.3",
-                    title: "还没有可推荐的内容",
-                    hint: "曲库上线后这里会出现推荐歌单与场景精选。"
-                )
-            } else {
-                if let featured = HomeFeaturedCard.hero(of: playlists) {
-                    featuredSection(featured)
-                }
-                if !playlists.isEmpty {
-                    CovaSectionHeader("推荐歌单", trailing: "全部 ›") {
-                        session.path.append(.plaza)
-                    }
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        // `LazyHStack`：这一条轨道在线上给的是**全量 593 条**歌单
-                        // （`GET /api/playlists` 无分页），`HStack` 会把 593 张卡一次性建出来，
-                        // 首屏就卡在还没滚到的卡上。
-                        LazyHStack(spacing: CovaSpace.md) {
-                            ForEach(Array(playlists.enumerated()), id: \.offset) { _, playlist in
-                                PlaylistCard(playlist: playlist) {
-                                    session.path.append(.playlist(playlist.id))
-                                }
-                            }
-                        }
-                        .padding(.horizontal, CovaSpace.pageGutter)
-                    }
-                }
-                let scenes = HomeSceneRail.groups(of: playlists)
-                if !scenes.isEmpty {
-                    sceneRail(scenes)
-                }
-                if !tracks.isEmpty {
-                    CovaSectionHeader("曲库精选")
-                    VStack(spacing: 0) {
-                        ForEach(Array(tracks.prefix(8).enumerated()), id: \.offset) { index, track in
-                            CovaListRow(
-                                title: track.titleCn ?? track.title,
-                                subtitle: "\(track.artistNameCn ?? track.artist.name) · \(track.scenes.joined(separator: "/"))",
-                                artwork: CovaArtwork(resolution: HomeArtwork.cover(track), title: track.title)
-                            ) {
-                                Text(track.vocalType).font(CovaType.caption).foregroundStyle(CovaColor.muted)
-                            } action: {
-                                Task { await session.play(tracks: tracks, at: index) }
-                            }
-                            .contextMenu {
-                                Button("曲目详情") { session.detailTrackID = track.id }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// 今日推荐（design 01 §3 / components §2 大卡）：宽 = 屏宽 − 2×`pageGutter`、高 200、
-    /// 圆角 `hero`；封面全幅裁切 + 底部 45% 深色渐变遮罩；遮罩上歌单名（headline/白）
-    /// 与「曲数 · 总时长」（subhead/白 80%、tabular-nums）；右上 44pt 玻璃圆播放钮；
-    /// 点卡进歌单详情。
-    ///
-    /// **封面焦点裁剪做不到**：`CovaArtwork`（CovaStates，本批不可改）没有 alignment/focal 入参，
-    /// 所以 `coverMedia.focalX/focalY` 今天进不了裁剪那一手 ⇒ 这里是中心裁剪。
-    /// 需要的是 `CovaArtwork(resolution:title:focal:)`（`UnitPoint`），已在本批报告里点名。
-    private func featuredSection(_ playlist: PlaylistDto) -> some View {
-        let title = playlist.titleCn ?? playlist.title
-        let meta = HomeFeaturedCard.metaLine(
-            trackCount: playlist.trackCount,
-            totalDuration: playlist.totalDuration
+    /// `{时段称呼}，{昵称}` 或纯时段称呼（§2 两档）。
+    private var greetingLine: String {
+        let salutation = HomeComposerCopy.salutation(
+            hour: Calendar.current.component(.hour, from: Date())
         )
-        return VStack(alignment: .leading, spacing: CovaSpace.xs) {
-            CovaSectionHeader("今日推荐", trailing: "更多 ›") {
-                session.path.append(.plaza)
+        guard let name = session.meUser?.name,
+              let trimmed = Optional(name.trimmingCharacters(in: .whitespacesAndNewlines)),
+              !trimmed.isEmpty
+        else { return salutation }
+        return "\(salutation)，\(trimmed)"
+    }
+
+    // MARK: - §3 模式切换 + §5 引导标签
+
+    /// `CovaModeTabs`（居中）。档位记忆在 `session.homeComposerMode`（§3 会话内记忆）。
+    private var modeTabs: some View {
+        CovaModeTabs(selection: Binding(
+            get: { session.homeComposerMode },
+            set: { mode in
+                // §9：标签区/输入条内容交叉淡化 duration.fast；Reduce Motion 由组件侧承担。
+                withAnimation(CovaMotion.fast) { session.homeComposerMode = mode }
             }
-            Button { session.path.append(.playlist(playlist.id)) } label: {
-                ZStack(alignment: .bottomLeading) {
-                    CovaArtwork(resolution: HomeArtwork.playlistCover(playlist), title: title)
-                        // 中心裁剪：让封面铺满 200 高的槽再截掉溢出（`CovaArtwork` 自己是 scaledToFill）。
-                        .frame(height: HomeFeaturedCard.heroHeight)
-                        .clipped()
-                        .accessibilityHidden(true)
-                    LinearGradient(
-                        colors: [.clear, Color.black.opacity(HomeFeaturedCard.scrimMaxAlpha)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: HomeFeaturedCard.heroHeight * HomeFeaturedCard.scrimHeightRatio)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: CovaSpace.xs) {
-                        Text(title).font(CovaType.headline).foregroundStyle(.white)
-                            .lineLimit(2)
-                        if let meta {
-                            // §3 的 tabular-nums：等宽数字只加在这一行（时长/曲数会随刷新变位宽）。
-                            Text(meta).font(CovaType.subhead).foregroundStyle(.white.opacity(0.8))
-                                .monospacedDigit()
+        ))
+    }
+
+    /// §5 引导标签（随模式换词，wrap 居中；Reduce Motion 一帧切换由 withAnimation 之外的
+    /// 环境层承担 —— matchedGeometryEffect 组件侧已自查，这里不再叠一层判据）。
+    @ViewBuilder
+    private var tagRows: some View {
+        ChipFlowLayout(spacing: CovaSpace.sm, alignment: .center) {
+            if session.homeComposerMode == .generate {
+                ForEach(HomeComposerCopy.generateTags, id: \.self) { tag in
+                    CovaTagChip(title: tag) { sendGenerate(tag) }
+                }
+            } else {
+                ForEach(HomeComposerCopy.searchTags, id: \.self) { tag in
+                    CovaTagChip(title: tag) { sendSearch(tag) }
+                }
+            }
+        }
+        .padding(.horizontal, CovaSpace.pageGutter)
+        .accessibilityElement(children: .contain)
+    }
+
+    // MARK: - §6 内容 feed（分区独立成败；feedEntrance 错峰 40ms/区）
+
+    @ViewBuilder
+    private var feed: some View {
+        // A 推荐歌单：大卡 + 其余官方歌单 140 方卡带 +「更多 ›」→ 05。
+        recommendedSection.feedEntrance(index: 0)
+        // B 最近播放（登录态；游客/空都不渲染）。
+        recentSection.feedEntrance(index: 1)
+        // C 新歌上架。
+        newestSection.feedEntrance(index: 2)
+        // D 你的创作（登录态；空不渲染，空态引导并入 §5 生成档标签区）。
+        worksSection.feedEntrance(index: 3)
+        // E 场景精选（沿用原场景分组横滑）。
+        sceneSection.feedEntrance(index: 4)
+        // F AI 音乐人（producers 灰度空 ⇒ 整区不渲染）。
+        producersSection.feedEntrance(index: 5)
+    }
+
+    // MARK: A 推荐歌单（§6.A）
+
+    @ViewBuilder
+    private var recommendedSection: some View {
+        switch playlistsPhase {
+        case .loading:
+            sectionShell("推荐歌单", more: false) { HomeRailSkeleton() }
+        case .failed(let failure):
+            sectionShell("推荐歌单", more: false) { sectionError(failure) { Task { await loadPlaylists() } } }
+        case .ready(let playlists):
+            if !playlists.isEmpty {
+                sectionShell("推荐歌单", more: true) {
+                    VStack(alignment: .leading, spacing: CovaSpace.md) {
+                        if let featured = HomeFeaturedCard.hero(of: playlists) {
+                            featuredCard(featured)
+                        }
+                        // 大卡吃掉第一条：剩下的走 140 方卡带（§6.A「其余官方歌单横滑小卡带」）。
+                        let rest = Array(playlists.dropFirst())
+                        if !rest.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                // 线上 `GET /api/playlists` 无分页、给的是全量 ⇒ Lazy（同旧版同一条理由）。
+                                LazyHStack(spacing: CovaSpace.md) {
+                                    ForEach(rest, id: \.id) { playlist in
+                                        PlaylistCard(playlist: playlist) {
+                                            session.push(.playlist(playlist.id))
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, CovaSpace.pageGutter)
+                            }
                         }
                     }
-                    .padding(CovaSpace.lg)
                 }
-                .frame(height: HomeFeaturedCard.heroHeight)
-                .background(CovaColor.surface)
-                .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            // 播放钮挂在**卡之外**：嵌在同一个 Button 的 label 里，内层命不中（点了只会进详情）。
-            .overlay(alignment: .topTrailing) {
-                featuredPlayButton(playlist)
-                    .padding(CovaSpace.md)
             }
         }
     }
 
-    /// §3 右上玻璃圆播放钮（44pt = TG-03 的最小触控档）。
-    private func featuredPlayButton(_ playlist: PlaylistDto) -> some View {
-        Button {
-            Task { await playFeatured(playlist) }
-        } label: {
-            Image(systemName: featuredPlaying ? "hourglass" : "play.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: HomeFeaturedCard.playButtonSide, height: HomeFeaturedCard.playButtonSide)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 0.5))
+    /// §6.A 大卡：宽 = 屏宽 − 2×`pageGutter`、高 200、圆角 `hero`；封面全幅 + 底部 45%
+    /// 深色渐变遮罩 + 歌单名/「曲数 · 总时长」+ 右上 44pt 玻璃圆播放钮。
+    /// （沿用 G1 的实现面 —— spec 修订只改了它的位置，没改卡本身。）
+    private func featuredCard(_ playlist: PlaylistDto) -> some View {
+        let title = playlist.titleCn ?? playlist.title
+        return Button { session.push(.playlist(playlist.id)) } label: {
+            ZStack(alignment: .bottomLeading) {
+                CovaArtwork(resolution: HomeArtwork.playlistCover(playlist), title: title)
+                    .frame(height: HomeFeaturedCard.heroHeight)
+                    .clipped()
+                    .accessibilityHidden(true)
+                LinearGradient(
+                    colors: [.clear, Color.black.opacity(HomeFeaturedCard.scrimMaxAlpha)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: HomeFeaturedCard.heroHeight * HomeFeaturedCard.scrimHeightRatio)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: CovaSpace.xs) {
+                    Text(title).font(CovaType.headline).foregroundStyle(.white)
+                        .lineLimit(2)
+                    if let meta = HomeFeaturedCard.metaLine(
+                        trackCount: playlist.trackCount,
+                        totalDuration: playlist.totalDuration
+                    ) {
+                        Text(meta).font(CovaType.subhead).foregroundStyle(.white.opacity(0.8))
+                            .monospacedDigit()
+                    }
+                }
+                .padding(CovaSpace.lg)
+            }
+            .frame(height: HomeFeaturedCard.heroHeight)
+            .background(CovaColor.surface)
+            .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("播放整个歌单")
+        .padding(.horizontal, CovaSpace.pageGutter)
+        // 播放钮挂在卡之外：嵌在同一个 Button 的 label 里内层命不中。
+        .overlay(alignment: .topTrailing) {
+            Button {
+                Task { await playFeatured(playlist) }
+            } label: {
+                Image(systemName: featuredPlaying ? "hourglass" : "play.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: HomeFeaturedCard.playButtonSide, height: HomeFeaturedCard.playButtonSide)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 0.5))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("播放整个歌单")
+            .padding(CovaSpace.pageGutter + CovaSpace.md)
+        }
     }
 
-    /// 「点一下播整张歌单」= 取详情曲目 → 交给 `session.play(tracks:at:)`。
-    ///
-    /// **不开第二条播放入口**：06 的「播放全部」、03/16 的曲目行走的都是这一个函数，
-    /// 队列构造、地址裁决、歌词归属、播放上报全在它里面（`AppSession.swift` 「播放意图（UI 唯一入口）」。
-    /// 游客**不播**（未登录不播放），走既有的登录门槛：`requireLoginForCollections()`
-    /// 弹登录并返回 false，这里就直接不发起请求。
+    /// 「点一下播整张歌单」= 取详情曲目 → `session.play(tracks:at:)`（播放唯一入口）。
+    /// 游客不播（硬边界：未登录不播放），走既有登录门。
     private func playFeatured(_ playlist: PlaylistDto) async {
         guard !featuredPlaying else { return }
         guard session.requireLoginForCollections() else { return }
@@ -250,219 +275,27 @@ public struct HomeView: View {
         }
     }
 
-    /// 场景精选（design 01 §4）：140×140 横滑卡，封面 + 底部标题条。
-    ///
-    /// **「按 scene 分组」落成的形状**（§1 的版面只给这一区画了**一条**横滑轨道，
-    /// 所以分组不做成一堆子标题，也不给场景造一个落地页 —— 那需要一个契约里不存在的
-    /// 「场景 → 歌单」入口）：轨道里的卡**按组相邻**，每张卡的标题条上把 `scene`
-    /// 原样写出来，读得出"这几张是同一组"。分组与挑选的判据全在 `HomeSceneRail`（CovaCore，可测），
-    /// 线上 593 条里只有 101 条带非空 `scene` ⇒ 另外 492 条不进这一区，也不给它们编一个「其他」桶。
-    private func sceneRail(_ groups: [HomeSceneRail.Group]) -> some View {
-        VStack(alignment: .leading, spacing: CovaSpace.xs) {
-            CovaSectionHeader("场景精选")
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: CovaSpace.md) {
-                    ForEach(groups, id: \.scene) { group in
-                        // 组内相邻 = 「按 scene 分组」在这一条轨道里的全部落地形式（见上方说明）。
-                        ForEach(group.playlists, id: \.id) { playlist in
-                            ScenePlaylistCard(scene: group.scene, playlist: playlist) {
-                                session.path.append(.playlist(playlist.id))
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, CovaSpace.pageGutter)
-            }
-        }
-    }
+    // MARK: B 最近播放（§6.B，登录态专属）
 
-    /// 会话输入卡（design 01 §2，「本屏灵魂」）：sparkle + 占位文案 + 模式 chip +
-    /// 深度思考开关 + 圆形发送钮（空输入置灰）。
-    /// 提交后**首页不展示结果**（spec 明令）：建会话 → 落到 09 会话详情。
-    private var promptCard: some View {
-        VStack(alignment: .leading, spacing: CovaSpace.md) {
-            HStack(spacing: CovaSpace.sm) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(CovaColor.accent)
-                    .accessibilityHidden(true)
-                if prompt.isEmpty {
-                    Text("想听什么？找歌或做歌，一句话搞定")
-                        .font(CovaType.body).foregroundStyle(CovaColor.muted)
-                }
-                TextField("", text: $prompt, axis: .vertical)
-                    .font(CovaType.body).foregroundStyle(CovaColor.fg)
-                    .lineLimit(1...3)
-                    .labelsHidden()
-                    // §5 空态 CTA 的落点：「CTA 聚焦会话框」要有真东西可聚焦，
-                    // 而不是一个把用户丢在原地、什么都不发生的按钮。
-                    .focused($promptFocused)
-                Spacer(minLength: 0)
-            }
-            HStack(spacing: CovaSpace.sm) {
-                CovaChip("找歌", isSelected: promptMode == .find) {
-                    promptMode = promptMode == .find ? .auto : .find
-                }
-                CovaChip("做歌", isSelected: promptMode == .make) {
-                    promptMode = promptMode == .make ? .auto : .make
-                }
-                Spacer()
-                CovaChip("深度思考", isSelected: deepThinking) { deepThinking.toggle() }
-                Button {
-                    Task { await submitPrompt() }
-                } label: {
-                    Image(systemName: creatingSession ? "hourglass" : "arrow.up")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(CovaColor.accentText)
-                        .frame(width: 40, height: 40)
-                        .background(Circle().fill(canSubmit ? CovaColor.accent : CovaColor.line))
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSubmit || creatingSession)
-                .accessibilityLabel("发送")
-            }
-        }
-        .padding(CovaSpace.lg)
-        .covaGlass(elevated: true)
-        .padding(.horizontal, CovaSpace.pageGutter)
-    }
-
-    private var canSubmit: Bool {
-        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func submitPrompt() async {
-        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        guard session.requireLoginForCollections() else { return }
-        creatingSession = true
-        defer { creatingSession = false }
-        do {
-            let id = try await session.studio.createSession()
-            prompt = ""
-            session.pendingPrompt = text
-            session.pendingDeepThinking = deepThinking
-            session.path.append(.aiSession(id))
-        } catch {
-            session.showToast("会话没建起来：\(StudioService.classify(error).uiMessage)", isError: true)
-        }
-    }
-
-    /// 你的创作（design 01 §5）：双列网格（卡宽 = (屏宽−2×gutter−md)/2，圆角 `card`）
-    /// + 封面 + 标题（subhead）+ 状态徽标。
-    ///
-    /// **封面今天恒为像素占位**，这一句是实话不是保守：列表行确实带 `firstCoverUrl` 这个键，
-    /// 但线上逐行可以是 `null`（2026-09-26 实测那 5 条 one-step 会话全是 `null`）⇒
-    /// 「每行都有一张封面」不成立（`StudioSessionCover.hasCoverFieldInListPayload == false`），
-    /// 而 §数据源明令不得为封面逐行发详情请求（N+1）⇒ 这一格继续按 §5 的另一支走
-    /// PixelCard 式像素占位呼吸。**01 §5 尚未接逐行的那张图**：08 §3.C 已接（`SessionCoverSlot`），
-    /// 这一格要接的是同一份 `firstCoverUrl`，改的是本屏而不是 08 那批的口径 —— 需求点已记在本批报告。
-    /// 同理，**状态徽标今天也不会出现**：`HomeCreationGrid.statusFieldInListPayload == false`
-    /// （线上 `listOwnedSessions` 连 status 列都没有）⇒ 映射与色档已照 spec 施工好，
-    /// 字段一上线就点亮，界面上不出现"猜出来的状态"。
+    /// `/api/play-history` 前 12 条横卡带。游客**整区不渲染**（§6 公共规则），
+    /// 取数由 `session.loadRecentHistory()` 承担（服务端为准、游客/离线回落本机账）；
+    /// 空列表同样整区不渲染（「feed 没有空壳分区」）。
     @ViewBuilder
-    private var creationsSection: some View {
-        VStack(alignment: .leading, spacing: CovaSpace.xs) {
-            CovaSectionHeader("你的创作", trailing: "全部 ›") {
-                guard session.requireLoginForCollections() else { return }
-                session.path.append(.aiSessions)
-            }
-            switch creations {
-            case .pending, .loading:
-                CovaSkeleton(rows: 2)
-            case .guest:
-                creationGuide
-            case .failed(let failure):
-                // §8：分区级错误（error 色 + 「重试」），不阻塞整页。
-                CovaErrorState(kind: errorKind(failure)) { Task { await loadCreations() } }
-            case .ready(let items):
-                if items.isEmpty {
-                    creationGuide
-                } else {
-                    LazyVGrid(
-                        columns: Array(
-                            repeating: GridItem(.flexible(), spacing: CovaSpace.md),
-                            count: HomeCreationGrid.columnCount
-                        ),
-                        spacing: CovaSpace.md
-                    ) {
-                        ForEach(items.prefix(HomeCreationGrid.cardLimit)) { item in
-                            CreationCard(item: item) {
-                                session.path.append(.aiSession(item.id))
-                            }
-                        }
-                    }
-                    .padding(.horizontal, CovaSpace.pageGutter)
+    private var recentSection: some View {
+        if case .signedIn = session.authPhase {
+            let rows = Array(session.recentRows.prefix(12))
+            if session.recentHistoryState == .outOfSync && rows.isEmpty {
+                // 分区级失败（§6 公共规则）：错误条 + 重试，不阻塞整页。
+                sectionShell("最近播放", more: false) {
+                    sectionError(.network) { Task { await session.loadRecentHistory(force: true) } }
                 }
-            }
-        }
-    }
-
-    /// §5 的空态引导：未登录 / 无创作两支共用同一句话，CTA 是把焦点交给会话输入框
-    /// （spec 原话「CTA 聚焦会话框」），**不是**替用户建一个会话 —— 建会话是 POST，
-    /// 游客点了就该先被带去登录，而不是凭空多出一条会话。
-    private var creationGuide: some View {
-        CovaEmptyState(
-            symbol: "sparkles",
-            title: "用一句话开始你的第一首歌",
-            hint: "说场景、说情绪、说时长都行，剩下的交给 Cova。",
-            actionTitle: "写一句话",
-            action: { promptFocused = true }
-        )
-    }
-
-    /// §5 的取数：游客**不发**这一枪（`GET /api/find-my-song/sessions` 实测回 401），
-    /// 直接把这一格切成空态引导 —— 把「你还没登录」演成一个错误态是撒谎，也是噪音。
-    private func loadCreations() async {
-        switch session.authPhase {
-        case .restoring:
-            creations = .pending
-            return
-        case .guest, .failed:
-            creations = .guest
-            return
-        case .signedIn:
-            break
-        }
-        creations = .loading
-        do {
-            creations = .ready(try await session.studio.sessions())
-        } catch {
-            creations = .failed(StudioService.classify(error))
-        }
-    }
-
-    /// AI 音乐人专栏（design 01 §6）：圆形头像 64pt 横滑 + 名字（caption / secondary）。
-    ///
-    /// **这一栏没有自己的请求**：§6 写的接口面是「`artistId` 筛选 tracks」，而契约里
-    /// 根本没有艺人端点（16 §7 的同一句裁决）⇒ 人设只从**这份已经取到的曲目**里内嵌的
-    /// `artist` 去重（`HomeArtistRail`）。所以它在 `.loading` / `.failed` 两档下**不出现**：
-    /// 那份数据还没到，而它没有任何独立的取数路径可标"骨架"或"错误"。
-    /// 点击落点 = **曲库 + `artistId` 预填**（§6 原文那一句），不是 16 的艺人主页：
-    /// 曲库是 Tab 根屏、不在 `path` 里，所以跨屏递的是 `AppSession.pendingLibraryPreset`
-    /// 这一份一次性载荷（03 进屏 `consumeLibraryPreset()` 读到即销）。
-    /// 16 `ArtistHomeView` 仍然到得了 —— 曲目行「查看艺人」那条菜单项是它的路由入口。
-    @ViewBuilder
-    private var artistSection: some View {
-        if case .ready(_, let tracks) = phase {
-            let artists = HomeArtistRail.artists(from: tracks)
-            if !artists.isEmpty {
-                VStack(alignment: .leading, spacing: CovaSpace.xs) {
-                    CovaSectionHeader("AI 音乐人")
+            } else if !rows.isEmpty {
+                sectionShell("最近播放", more: false) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(alignment: .top, spacing: CovaSpace.md) {
-                            ForEach(artists, id: \.id) { artist in
-                                HomeArtistCell(artist: artist) {
-                                    // §6 原文那一格：曲库预填 artistId。递的是**一次性载荷**，
-                                    // 不是把 artistId 塞进路由 —— 三个 Tab 共用同一个
-                                    // `NavigationStack(path:)`，栈里的路由会跨 Tab 活着，
-                                    // 所以先清栈再切 Tab（同 `handleNotificationTap` 那一手）。
-                                    session.pendingLibraryPreset = AppSession.LibraryPreset(
-                                        artistID: artist.id,
-                                        artistLabel: HomeArtistRail.displayName(artist)
-                                    )
-                                    session.path = []
-                                    session.tab = .library
+                            ForEach(rows) { row in
+                                RecentPlayCard(row: row) {
+                                    Task { await session.replay(row) }
                                 }
                             }
                         }
@@ -473,86 +306,300 @@ public struct HomeView: View {
         }
     }
 
-    /// 继续聆听（A1 / design 01）：登录态读**服务端** `GET /api/play-history`
-    /// （库曲行与作品行混排，`session.recentRows` 是唯一渲染口径），
-    /// 游客/失败回落本机那一份。点一行 = **回读**权威端点再播
-    /// （历史行里刻意没有音频地址：签名串不进持久化索引，硬边界 3）。
-    ///
-    /// 作品行**没有** bpm / 波形 —— 不是"这里先不画"，而是服务端的 work 投影里
-    /// `bpm` 恒 null、`waveformPeaks` 恒空，而本层的投影根本不建模这两个字段（A1）。
+    // MARK: C 新歌上架（§6.C）
+
+    /// `GET /api/tracks?sort=newest&pageSize=12`（sort 闭集内 `newest`，§10 明文不发明 `relevance`）。
     @ViewBuilder
-    private var recentlyPlayed: some View {
-        let rows = session.recentRows
-        if !rows.isEmpty {
-            CovaSectionHeader("继续聆听")
-            VStack(spacing: 0) {
-                ForEach(rows) { row in
-                    CovaListRow(
-                        title: row.title,
-                        subtitle: recentSubtitle(row),
-                        artwork: CovaArtwork(
-                            resolution: HomeArtwork.recentCover(row), title: row.title
-                        )
-                    ) {
-                        Image(systemName: row.playable ? "play.circle" : "circle.dashed")
-                            .foregroundStyle(row.playable ? CovaColor.muted : CovaColor.line)
-                            .accessibilityHidden(true)
-                    } action: {
-                        Task { await session.replay(row) }
+    private var newestSection: some View {
+        switch newestPhase {
+        case .loading:
+            sectionShell("新歌上架", more: false) { HomeRailSkeleton() }
+        case .failed(let failure):
+            sectionShell("新歌上架", more: false) {
+                sectionError(failure) { Task { await loadNewest() } }
+            }
+        case .ready(let tracks):
+            if !tracks.isEmpty {
+                sectionShell("新歌上架", more: false) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(alignment: .top, spacing: CovaSpace.md) {
+                            ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                                HomeTrackCard(track: track) {
+                                    Task { await session.play(tracks: tracks, at: index) }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, CovaSpace.pageGutter)
                     }
-                    .accessibilityLabel(
-                        row.kind == .work ? "\(row.title)，作品" : row.title
-                    )
                 }
             }
         }
     }
 
-    /// 副标题：作品行没有艺人名（服务端投影恒 null）⇒ 说它是「作品」，
-    /// **不编**一个艺人名字；库曲行照旧。时长有就带，没有就不占位。
-    private func recentSubtitle(_ row: AppSession.RecentPlayRow) -> String {
-        var parts: [String] = []
-        if let artist = row.artist {
-            parts.append(artist)
-        } else if row.kind == .work {
-            parts.append("作品")
+    // MARK: D 你的创作（§6.D，登录态专属）
+
+    /// `GET /api/studio/create/works?limit=12`。空列表 → 整区不渲染（§6.D：
+    /// 空态引导句并入 §5 生成档标签区，不在本区另做空态卡）。
+    @ViewBuilder
+    private var worksSection: some View {
+        if case .signedIn = session.authPhase {
+            switch worksPhase {
+            case .loading:
+                sectionShell("你的创作", more: false) { HomeRailSkeleton() }
+            case .failed(let failure):
+                sectionShell("你的创作", more: false) {
+                    sectionError(failure) { Task { await loadWorks() } }
+                }
+            case .ready(let works):
+                if !works.isEmpty {
+                    sectionShell("你的创作", more: false) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHStack(alignment: .top, spacing: CovaSpace.md) {
+                                ForEach(works, id: \.id) { row in
+                                    HomeWorkCard(row: row) {
+                                        // 落点是 20 的作品组（`jobID` 锚定那一档），不是某个不存在的详情页。
+                                        session.navigate(to: .worksList(jobID: row.jobId))
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, CovaSpace.pageGutter)
+                        }
+                    }
+                }
+            }
         }
-        if let duration = row.duration {
-            parts.append(PlayerTime.elapsed(duration))
-        }
-        return parts.joined(separator: " · ")
     }
 
-    private func errorKind(_ failure: CatalogFailure) -> CovaErrorState.Kind {
-        switch failure {
-        case .network: return .network
-        case .server: return .server
-        case .unauthenticated: return .unauthenticated
-        case .backendGap(let id): return .backendGap(id)
+    // MARK: E 场景精选（§6.E，沿用原分组横滑）
+
+    /// 「按 scene 分组」沿用 `HomeSceneRail` 的判据（可测）：按组相邻横滑 140 方卡，
+    /// 标题条带 scene 原文。「更多 ›」→ 05（§6 公共规则：仅 A/E 有更多入口）。
+    @ViewBuilder
+    private var sceneSection: some View {
+        if case .ready(let playlists) = playlistsPhase {
+            let groups = HomeSceneRail.groups(of: playlists)
+            if !groups.isEmpty {
+                sectionShell("场景精选", more: true) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(spacing: CovaSpace.md) {
+                            ForEach(groups, id: \.scene) { group in
+                                ForEach(group.playlists, id: \.id) { playlist in
+                                    ScenePlaylistCard(scene: group.scene, playlist: playlist) {
+                                        session.push(.playlist(playlist.id))
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, CovaSpace.pageGutter)
+                    }
+                }
+            }
+        }
+        // playlists 加载中/失败：E 不自己再画一条错误 —— A 区的错误条已经是这份数据的
+        // 失败面，同一枪的错误不该在屏上说两遍。
+    }
+
+    // MARK: F AI 音乐人（§6.F）
+
+    /// `/api/studio/producers`：`producersEntranceVisible` 是唯一可见判据（23 §7/A10：
+    /// 灰度空/读不到/游客 ⇒ **整区不构造**，连标题都不出现）。
+    /// 卡 = 64 圆头像 + `displayTitle`（caption/secondary）。**不可点**：dto 没有
+    /// artistId 落点（契约里根本没有艺人路由能承接它），按钮就是谎。
+    @ViewBuilder
+    private var producersSection: some View {
+        if session.producersEntranceVisible {
+            sectionShell("AI 音乐人", more: false) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: CovaSpace.md) {
+                        ForEach(session.producerCards, id: \.id) { card in
+                            VStack(spacing: CovaSpace.xs) {
+                                // 契约里没有头像字段（`ProducerCardDto` 键集实测无 cover/avatar）
+                                // ⇒ 恒像素占位，不发明一条不存在的图片腿。
+                                CovaArtwork(resolution: .absent, title: card.displayTitle ?? "AI 音乐人")
+                                    .frame(width: HomeArtistRail.avatarDiameter, height: HomeArtistRail.avatarDiameter)
+                                    .clipShape(Circle())
+                                if let name = card.displayTitle {
+                                    Text(name)
+                                        .font(CovaType.caption).foregroundStyle(CovaColor.secondary)
+                                        .multilineTextAlignment(.center)
+                                        .lineLimit(2)
+                                        .frame(width: HomeArtistCell.nameWidth)
+                                }
+                            }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("\(card.displayTitle ?? "AI 音乐人")，非交互内容")
+                        }
+                    }
+                    .padding(.horizontal, CovaSpace.pageGutter)
+                }
+            }
         }
     }
 
-    private func load() async {
-        phase = .loading
+    // MARK: - §4 底置输入条（本屏灵魂）
+
+    /// `CovaComposer` 挂 `safeAreaInset(.bottom)`：浮于标签栏/MiniPlayer accessory 之上
+    /// （系统 inset 分层自动避让），浮层本体玻璃材质 + card 圆角（组件内）。
+    private var composerBar: some View {
+        CovaComposer(
+            text: $composerText,
+            mode: Binding(
+                get: { session.homeComposerMode },
+                set: { session.homeComposerMode = $0 }
+            ),
+            target: Binding(
+                get: { session.homeSearchTarget },
+                set: { session.homeSearchTarget = $0 }
+            ),
+            deepThinking: $deepThinking,
+            sending: sending,
+            onSend: sendComposer,
+            focused: $composerFocused
+        )
+        // §4 选项行展开 = duration.fast；聚焦本身没有 spec 动画要求。
+        .animation(CovaMotion.fast, value: composerFocused)
+    }
+
+    /// §4 发送行为：按当前档位分两条腿。
+    private func sendComposer() {
+        let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch session.homeComposerMode {
+        case .generate:
+            sendGenerate(text)
+        case .search:
+            sendSearch(text)
+        }
+    }
+
+    /// 生成档：`POST /api/find-my-song/sessions` → 拿 sessionId → `navigate` 到 09，
+    /// 首发文本与深度思考由 09 的既有 pending 机制发出（§4 发送行为第一行）。
+    /// **游客点发送 = 17-S6 登录引导 sheet**（不建会话、不切页签、不清输入 ——
+    /// 登完回来那句话还在，这是引导而不是没收）。
+    private func sendGenerate(_ raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !sending else { return }
+        guard session.requireLoginForCollections() else { return }
+        sending = true
+        composerFocused = false
+        Task {
+            defer { sending = false }
+            do {
+                // §7 #55：首条 prompt 落成会话真名（规范化=首行截 30；空 → 不带键）。
+                let id = try await session.studio.createSession(
+                    title: CovaCreateSessionRequestDto.normalizedTitle(text))
+                composerText = ""
+                session.pendingPrompt = text
+                session.pendingDeepThinking = deepThinking
+                session.navigate(to: .aiSession(id))
+            } catch {
+                session.showToast("会话没建起来：\(StudioService.classify(error).uiMessage)", isError: true)
+            }
+        }
+    }
+
+    /// 搜索档：**空文本是合法发送**（§4：空文本 → push 无条件的列表页，对齐 web
+    /// 「空查询只进对应页面」）。目标=曲库 → `library(preset)`；目标=歌单 → `plazaSearch`。
+    /// 全档游客可用（公开内容，§4 游客态行）。
+    private func sendSearch(_ raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        composerFocused = false
+        switch session.homeSearchTarget {
+        case .library:
+            session.push(.library(text.isEmpty ? nil : AppSession.LibraryPreset(search: text)))
+        case .playlists:
+            session.push(text.isEmpty ? .plaza : .plazaSearch(text))
+        }
+    }
+
+    // MARK: - 分区公共件（§6 公共规则）
+
+    /// 分区标题行：`headline`/`fg` 左；`more` 只在 A/E 用（「更多 ›」→ 05）。
+    private func sectionShell<Content: View>(
+        _ title: String, more: Bool, @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: CovaSpace.md) {
+            if more {
+                CovaSectionHeader(title, trailing: "更多 ›") { session.push(.plaza) }
+            } else {
+                CovaSectionHeader(title)
+            }
+            content()
+        }
+    }
+
+    /// 分区级错误条（§6 公共规则：error 色 icon + 「重试」，不阻塞整页）。
+    private func sectionError(_ failure: CatalogFailure, retry: @escaping () -> Void) -> some View {
+        HStack(spacing: CovaSpace.sm) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(CovaColor.error)
+                .accessibilityHidden(true)
+            Text(failure.uiMessage)
+                .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            Button("重试", action: retry)
+                .font(CovaType.subhead).foregroundStyle(CovaColor.accentText)
+                .buttonStyle(.plain)
+                .frame(minHeight: ShellMetrics.touchMin)
+        }
+        .padding(.horizontal, CovaSpace.pageGutter)
+    }
+
+    // MARK: - 取数
+
+    /// A/E/C/F 的匿名可读分区：playlists 一枪供 A+E，`sort=newest` 一枪供 C。
+    /// 两枪分账不合并成一个错误面（§6 各分区独立加载/失败）。
+    private func loadPublicFeed() async {
+        await loadPlaylists()
+        await loadNewest()
+    }
+
+    private func loadPlaylists() async {
+        playlistsPhase = .loading
         do {
-            async let playlists = catalog.featuredPlaylists()
-            // 一枪取 60 首而不是 8 首，唯一的理由是 §6：那一栏**没有自己的端点**
-            // （契约里只有 `tracks` 的 `artistId` 筛选），内容源只能是这份列表里内嵌的 `artist`。
-            // 2026-09-25 只读实测：pageSize=60 ⇒ 60 行 / **11 位**不同音乐人（193KB、≈1.3s）；
-            // 100 行才见得到 13 位（323KB、≈1.9s）⇒ 首屏不为多两位付一倍的量。
-            // 上限由 `HomeArtistRail.limit`（15 = A01–A15）守着，视图侧不再截一次。
-            async let page = catalog.tracks(pageSize: 60)
-            phase = .ready(playlists: try await playlists, tracks: try await page.tracks)
+            playlistsPhase = .ready(try await catalog.featuredPlaylists())
         } catch {
-            phase = .failed(CatalogService.classify(error))
+            playlistsPhase = .failed(CatalogService.classify(error))
         }
-        // 「继续聆听」与首屏 feed 是**两个来源**（A1：它现在读服务端 play-history），
-        // 所以排在 feed 之后单独取：它失败只让那一栏回落，不把整页拖成错误态（01 §8）。
+    }
+
+    private func loadNewest() async {
+        newestPhase = .loading
+        do {
+            let page = try await catalog.tracks(
+                queryItems: LibraryFilterSelection().queryItems(
+                    search: nil, sort: .newest, page: 1, pageSize: 12
+                )
+            )
+            newestPhase = .ready(page.tracks)
+        } catch {
+            newestPhase = .failed(CatalogService.classify(error))
+        }
+    }
+
+    /// B/D 的登录态分区（§6 公共规则：游客整区不渲染 ⇒ 游客**不发**这两枪；
+    /// `GET /api/play-history` 与 `…/create/works` 在游客态分别是 401/无效请求）。
+    private func loadRecentAndWorks() async {
+        guard case .signedIn = session.authPhase else {
+            worksPhase = .loading   // 回落默认档；反正游客态这一区不渲染
+            return
+        }
         await session.loadRecentHistory()
+        await loadWorks()
+    }
+
+    private func loadWorks() async {
+        worksPhase = .loading
+        do {
+            let page = try await session.worksService.page(WorksListQuery(limit: 12))
+            worksPhase = .ready(Array(page.works.prefix(12)))
+        } catch {
+            worksPhase = .failed(CatalogService.classify(error))
+        }
     }
 }
 
-/// 歌单卡（横向滚动单元）：封面 + 名称 + 曲目数；玻璃底。
+/// 歌单卡（§6.A 卡带单元）：140 方封面 + 名称 + 曲目数；沿用原首页横滑卡规格。
 public struct PlaylistCard: View {
     private let playlist: PlaylistDto
     private let action: () -> Void
@@ -564,27 +611,25 @@ public struct PlaylistCard: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: CovaSpace.sm) {
                 CovaArtwork(resolution: HomeArtwork.playlistCover(playlist), title: playlist.title)
-                    .frame(width: 148, height: 148)
+                    .frame(width: CGFloat(HomeSceneRail.cardSide), height: CGFloat(HomeSceneRail.cardSide))
                     .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
                 Text(playlist.titleCn ?? playlist.title).font(CovaType.headline).foregroundStyle(CovaColor.fg).lineLimit(1)
-                // 「没给曲数」与「0 首」是两件事：同屏的 hero 大卡走 `HomeSectionFacts.metaLine`
-                // 的省略规则，这里以前用 `?? 0` 把缺席印成一个读数（第 20 轮 R20-4，变异 `?? 999`
-                // 存活 ⇒ 这行零覆盖）。
+                // 「没给曲数」与「0 首」是两件事：缺席不印读数（第 20 轮 R20-4 同口径）。
                 if let count = playlist.trackCount {
                     Text("\(count) 首").font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                 }
             }
-            .frame(width: 148)
+            .frame(width: CGFloat(HomeSceneRail.cardSide), alignment: .leading)
         }
         .buttonStyle(.plain)
     }
 }
 
-/// 场景精选卡（design 01 §4）：140×140、圆角 `card`，封面铺满 + **底部标题条**（subhead / fg）。
+/// 场景精选卡（design 01 §6.E）：140×140、圆角 `card`，封面铺满 + **底部标题条**。
 ///
-/// 标题条自带 `elevated` 底：§4 给的是 `fg`（不是 §3 大卡那种白字），而 `fg` 在浅主题下
-/// 是深色 —— 直接压在来路不明的封面上没有对比度保证，加一层不透明底条是这一档文字色的
-/// 唯一读法。`scene` 那一行是后端原文（不翻译、不改写），它就是"这几张卡是同一组"的记号。
+/// 标题条自带 `elevated` 底：spec 给的 `fg` 文字色在浅主题下是深色 —— 直接压在来路不明的
+/// 封面上没有对比度保证，加一层不透明底条是这一档文字色的唯一读法。`scene` 那一行是
+/// 后端原文（不翻译、不改写），它就是"这几张卡是同一组"的记号。
 public struct ScenePlaylistCard: View {
     private static let side = CGFloat(HomeSceneRail.cardSide)
     private let scene: String
@@ -624,12 +669,100 @@ public struct ScenePlaylistCard: View {
     }
 }
 
-// MARK: - 01 §5 你的创作（候选小卡）
+// MARK: - §6.B/C 横卡带单元（140 方封面 + 标题 2 行 + 一行 caption）
 
-/// 徽标三档 → token 色（§5：生成中 `warning` / 完成 `success` / 失败 `error`）。
-///
-/// 形状**沿用本仓已有的那一档状态徽标**（`PlayerViews.swift` 的「生成候选 · 仅本人可见」：
-/// `caption` 字 + 同色 12% 胶囊底），不再为首页长第二种徽标形状。
+/// §6.B 最近播放卡。work 行（`kind == .work`）封面右上挂 `sparkles` 角标
+/// （创作产物标记，§6.B 逐字）。不可播的行照常渲染（A1 口径：点不开要说得出为什么，
+/// 而不是让它凭空消失 —— `session.replay` 会 toast 解释）。
+struct RecentPlayCard: View {
+    let row: AppSession.RecentPlayRow
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: CovaSpace.xs) {
+                ZStack(alignment: .topTrailing) {
+                    CovaArtwork(resolution: HomeArtwork.recentCover(row), title: row.title)
+                        .frame(width: CGFloat(HomeSceneRail.cardSide), height: CGFloat(HomeSceneRail.cardSide))
+                        .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
+                        .accessibilityHidden(true)
+                    if row.kind == .work {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(CovaSpace.xs)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .padding(CovaSpace.xs)
+                            .accessibilityHidden(true)
+                    }
+                }
+                Text(row.title)
+                    .font(CovaType.subhead).foregroundStyle(CovaColor.fg)
+                    .lineLimit(2)
+                Text(caption)
+                    .font(CovaType.caption).foregroundStyle(CovaColor.secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: CGFloat(HomeSceneRail.cardSide), alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(row.kind == .work ? "\(row.title)，作品" : row.title)
+    }
+
+    /// 「艺人/来源」行：作品行没有艺人名（服务端投影恒 null）⇒ 说它是「作品」，
+    /// 不编一个艺人名字；时长有就带，没有就不占位。
+    private var caption: String {
+        var parts: [String] = []
+        if let artist = row.artist {
+            parts.append(artist)
+        } else if row.kind == .work {
+            parts.append("作品")
+        }
+        if let duration = row.duration {
+            parts.append(PlayerTime.elapsed(duration))
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// §6.C 新歌卡：同 B 的卡规格（140 方 + 标题两行 + 艺人·时长一行）。
+struct HomeTrackCard: View {
+    let track: TrackDto
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: CovaSpace.xs) {
+                CovaArtwork(resolution: HomeArtwork.cover(track), title: track.title)
+                    .frame(width: CGFloat(HomeSceneRail.cardSide), height: CGFloat(HomeSceneRail.cardSide))
+                    .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
+                    .accessibilityHidden(true)
+                Text(track.titleCn ?? track.title)
+                    .font(CovaType.subhead).foregroundStyle(CovaColor.fg)
+                    .lineLimit(2)
+                Text(caption)
+                    .font(CovaType.caption).foregroundStyle(CovaColor.secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: CGFloat(HomeSceneRail.cardSide), alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var caption: String {
+        var parts = [track.artistNameCn ?? track.artist.name]
+        let duration = Int(track.duration)
+        if duration > 0 { parts.append(PlayerTime.elapsed(track.duration)) }
+        return parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - §6.D 你的创作（横卡带单元）
+
+/// 徽标三档 → token 色（§6.D：生成中 `warning` / 完成 `success` / 失败 `error`）。
+/// 映射本身在 `HomeCreationGrid.badge(forStatus:)`（CovaCore，可测）——这里只钉色。
 enum CreationBadgeFacts {
     static func color(_ badge: HomeCreationGrid.Badge) -> Color {
         switch badge {
@@ -638,35 +771,32 @@ enum CreationBadgeFacts {
         case .failed: return CovaColor.error
         }
     }
-    /// §5 徽标的胶囊底不透明度：与 02 §8 那一枚同一个值（同一个组件族就该同一个数）。
+    /// 胶囊底不透明度：与 02 §8「生成候选 · 仅本人可见」那一枚同一个值。
     static let backgroundAlpha = 0.12
 }
 
-/// §5 的小卡：像素占位封面 + 标题（subhead）+ 状态徽标。
-///
-/// 封面腿在这里**不接任何 URL**：会话列表没有封面字段（见 `HomeView.creationsSection`
-/// 的说明），而 §数据源禁止为封面逐行发详情请求 ⇒ 像素占位是这一格今天的正确形态。
-/// 点了进 09 会话详情（08/12c 同一条路由，不另开入口）。
-struct CreationCard: View {
-    private let item: StudioSessionDto
-    private let action: () -> Void
-    /// §Dynamic Type：网格里的标题在 AX 档多给一行（图不放大，字要放得下）。
-    @Environment(\.covaAXLayout) private var axLayout
+/// §6.D 卡：生成封面（`coverUrl`，公开读桶直链）/像素占位 + 标题（subhead 2 行）+
+/// 状态徽标（占位行 `{jobId}:pending-N` 按「生成中」读 —— 它本来就是还没做出音频的那一档）。
+struct HomeWorkCard: View {
+    let row: WorksListRowDto
+    let action: () -> Void
 
-    init(item: StudioSessionDto, action: @escaping () -> Void) {
-        self.item = item
-        self.action = action
+    private var badge: HomeCreationGrid.Badge? {
+        if row.isPendingPlaceholder { return .generating }
+        return HomeCreationGrid.badge(forStatus: row.status?.rawValue)
     }
-
-    private var badge: HomeCreationGrid.Badge? { HomeCreationGrid.badge(forStatus: item.status) }
 
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: CovaSpace.xs) {
                 ZStack(alignment: .topTrailing) {
-                    CovaPixelCover()
-                        .aspectRatio(1, contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
+                    CovaArtwork(
+                        resolution: CovaArtworkResolution(serverValue: row.coverUrl),
+                        title: row.displayTitle ?? "未命名作品"
+                    )
+                    .frame(width: CGFloat(HomeSceneRail.cardSide), height: CGFloat(HomeSceneRail.cardSide))
+                    .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
+                    .accessibilityHidden(true)
                     if let badge {
                         Text(HomeCreationGrid.label(of: badge))
                             .font(CovaType.caption)
@@ -681,36 +811,37 @@ struct CreationCard: View {
                             .padding(CovaSpace.xs)
                     }
                 }
-                Text(item.displayTitle)
+                Text(row.displayTitle ?? "未命名作品")
                     .font(CovaType.subhead).foregroundStyle(CovaColor.fg)
-                    .lineLimit(axLayout ? 3 : 2)
+                    .lineLimit(2)
             }
+            .frame(width: CGFloat(HomeSceneRail.cardSide), alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityText)
     }
 
-    /// 一张卡一个可聚焦元素（08 §6 同口径）；没有徽标时**不**念一个"没有状态"。
+    /// 一张卡一个可聚焦元素；没有徽标时不念一个"没有状态"。
     private var accessibilityText: String {
-        guard let badge else { return item.displayTitle }
-        return "\(item.displayTitle)，\(HomeCreationGrid.label(of: badge))"
+        let title = row.displayTitle ?? "未命名作品"
+        guard let badge else { return title }
+        return "\(title)，\(HomeCreationGrid.label(of: badge))"
     }
 }
 
-// MARK: - 01 §6 AI 音乐人栏的一格
+// MARK: - 01 §6 AI 音乐人栏的一格（16/25 的 LibraryPreset 入口仍走它）
 
-/// §6：圆形头像 64pt + 名字（caption / secondary）。
+/// §6（G1）：圆形头像 64pt + 名字（caption / secondary）。
 ///
-/// §6 原文的第二半句是「点击进音乐人曲目列表（**曲库页预填 artistId 筛选**）」，
-/// 落点因此是 03 而不是 16：载荷 = `AppSession.pendingLibraryPreset`（一次性，03 读到即销），
-/// 03 那边把它落成 `artistId` 查询参数 + 已选行里那颗可撤的「艺人 · 名字」chip。
-/// 16 `ArtistHomeView` 仍然到得了（曲目行右键「查看艺人」），这一格不再替它占位。
+/// 今天 F 区改读 `/api/studio/producers`（`producersSection`，卡不可点），
+/// 本卡**不再被 01 使用**：留下的唯一理由是 `HomeArtistRailLegTests` 钉着
+/// `side`/`nameWidth` 两档几何，而它同时是 `ArtistDto → LibraryPreset` 那条
+/// 旧腿（16 曲目行「查看艺人」之外、其他屏递 `pendingLibraryPreset` 时）的展示件。
 public struct HomeArtistCell: View {
     /// §6 的头像档。
     static let side = CGFloat(HomeArtistRail.avatarDiameter)
     /// 名字行的宽度档：spec 没给 ⇒ 取"比头像宽一点、让这一格仍是一根柱子"的 76pt。
-    /// 不给上限的话，长名字会把整条横滑栏撑成一段散文。
     static let nameWidth: CGFloat = 76
 
     private let artist: ArtistDto
@@ -739,29 +870,27 @@ public struct HomeArtistCell: View {
         .buttonStyle(.plain)
     }
 
-    /// 名字优先级与 16 §3.C 同一条：`nameCn ?? name`（两个都空的行已在去重那一步被丢掉）。
+    /// 名字优先级与 16 §3.C 同一条：`nameCn ?? name`。
     private var name: String { HomeArtistRail.displayName(artist) ?? artist.name }
 }
 
 // MARK: - 美术腿（R18-2）
 
-/// 01 屏的四条封面腿：场景精选/曲目行 `track.cover`、继续聆听 `recent.coverURLString`、
-/// 推荐歌单 `playlist.cover`/`coverUrl`、§6 头像 `track.artist.avatar`。
+/// 01 屏的封面腿：新歌卡 `track.cover`、最近播放 `recent.coverURLString`、
+/// 推荐歌单 `playlist.cover`/`coverUrl`、音乐人头像 `track.artist.avatar`。
 ///
 /// 判据一律在 `CovaArtworkResolution`（CovaUI 唯一裁决面）：本屏只回答「哪个字段进哪个槽」。
-/// 线上事实（2026-09-25 只读核对，见 D23 名单补充）：`GET /api/tracks` 内嵌的 `artist.avatar`
-/// 是**站内相对**（20 行里 11 行相对 / 9 行没有），`GET /api/user-playlists` 的 `coverUrl` /
-/// `imageUrl` 是**站内相对 + 带查询串** —— 相对串没有 scheme，直接 `URL(string:)` 交给
-/// `CovaArtworkCache.fetch` 就是出口判定为假 ⇒ 一次请求都不发、只剩占位（R16-1 同族）。
-/// 四条腿因此一律先裁决再交图。
+/// 线上事实（2026-09-25 只读核对）：`GET /api/tracks` 内嵌的 `artist.avatar` 是**站内相对**
+/// （20 行里 11 行相对 / 9 行没有），`GET /api/user-playlists` 的 `coverUrl`/`imageUrl` 是
+/// 站内相对 + 带查询串 —— 相对串没有 scheme，直接 `URL(string:)` 交给 `CovaArtworkCache.fetch`
+/// 就是出口判定为假 ⇒ 一次请求都不发、只剩占位（R16-1 同族）。四条腿因此一律先裁决再交图。
 enum HomeArtwork {
     static func cover(_ track: TrackDto) -> CovaArtworkResolution {
         CovaArtworkResolution(serverValue: track.cover)
     }
 
-    /// 继续聆听。两个来源共用这一条腿：本机账存的是 `item.coverURL?.value.absoluteString`
-    /// （绝对 + 可能带查询），服务端历史行的 `track.cover` 两种形态都给过
-    /// ⇒ **先裁决再交图**，不因"来源看着已经是绝对地址"而免检（R18-2 同族）。
+    /// 最近播放。两个来源共用这一条腿：本机账存的是绝对地址，服务端历史行的 `track.cover`
+    /// 两种形态都给过 ⇒ **先裁决再交图**，不因"来源看着已经是绝对地址"而免检（R18-2 同族）。
     static func recentCover(_ row: AppSession.RecentPlayRow) -> CovaArtworkResolution {
         CovaArtworkResolution(serverValue: row.coverURLString)
     }
@@ -771,10 +900,8 @@ enum HomeArtwork {
         CovaArtworkResolution(serverValues: [playlist.cover, playlist.coverUrl])
     }
 
-    /// §6 那一栏的头像腿。这一条**必须**先裁决再交图，理由比歌单那条还硬：
-    /// 2026-09-25 只读核对 `/api/tracks?page=1&pageSize=60` —— 内嵌 `artist.avatar` 有值的
-    /// 38 行里 **38 行都是站内相对路径**（一条绝对地址都没有），
-    /// 直接 `URL(string:)` 就是"一次请求都不发、只剩占位"（R18-2 同族）的正中形状。
+    /// AI 音乐人/艺人头像腿：**必须**先裁决 —— `/api/tracks` 内嵌 `artist.avatar` 有值的行
+    /// 全部是站内相对路径（2026-09-25 只读核对），直接 `URL(string:)` 正中"一次请求都不发"。
     static func artistAvatar(_ artist: ArtistDto) -> CovaArtworkResolution {
         CovaArtworkResolution(serverValue: artist.avatar)
     }

@@ -17,6 +17,11 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
     /// `lastMessage` 而**不是** `summary` —— 后者只写在契约文档里。
     /// 两个键都建模、不裁决谁更权威（见 `displaySummary`）：列表行今天靠这一个键。
     public let lastMessage: String?
+    /// 服务端**提议**的会话名（`listOwnedSessions` 实列，`find_my_song_sessions.proposedTitle`）。
+    /// 语义与 `title` 不同：`title` 是已落地的名字（默认「新会话」），`proposedTitle` 是
+    /// agent 提议、还没被用户确认的名字（确认后写进 `title` 并清掉本键）——
+    /// 所以在 `title` 还是缺省值时它可以拿来当显示名（C6，2026-10-01）。
+    public let proposedTitle: String?
     /// 08 §3.C 的 48pt 封面槽来源，**逐行可空**：同一账号 5 条会话（全是 `workflowMode:"one-step"`）
     /// 这里逐条是 `null` ⇒ 「没封面」是正常态而不是故障，占位分支必须留着，
     /// 也**不得**为它补一次详情请求（§数据源行 140 禁 N+1）。
@@ -43,6 +48,7 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
         case titleCn
         case summary
         case lastMessage
+        case proposedTitle
         case firstCoverUrl
         case workflowMode
         case status
@@ -78,6 +84,7 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
         titleCn = try container.decodeIfPresent(String.self, forKey: .titleCn)
         summary = try container.decodeIfPresent(String.self, forKey: .summary)
         lastMessage = (try? container.decodeIfPresent(String.self, forKey: .lastMessage)) ?? nil
+        proposedTitle = (try? container.decodeIfPresent(String.self, forKey: .proposedTitle)) ?? nil
         // 「值出现了但不是字符串」与「键不在」同等对待（同下面 `workflowState` 的口径）：
         // 后端哪天把封面换成 `{url:…}` 那种对象时，症状应该是「这一格没封面」，
         // 不是「整个 08 打不开」。
@@ -94,10 +101,40 @@ public struct StudioSessionDto: Codable, Equatable, Sendable, Identifiable {
     }
 
     /// design 08：标题取不到 ⇒ 「未命名会话」（这是 spec 指定的兜底文案，不是编造数据）。
+    ///
+    /// 兜底链（2026-10-01 C6）：
+    /// `titleCn` → `title` → `proposedTitle` → `lastMessage` 截断 → 「未命名会话」。
+    /// 两处**不原样透传**的修正，都是"服务端写的缺省值不能当成用户起的名"：
+    /// · `title == "新会话"` 是服务端建会话时的缺省值（`session.ts` 的 `'新会话'`），
+    ///   不是用户命名 ⇒ 当作没给，继续往下找；
+    /// · `lastMessage` 是"会话里最后一条非系统消息"（`session.ts:402` 实测口径），
+    ///   不是标题 ⇒ 只截取前 20 字当权宜标题，并在末尾补省略号表明被截。
+    /// 服务端若有确定性命名（首条用户消息/auto-title），那一栏应该由 `title` 承载 ——
+    /// 本端不再替它凑名，缺口登记在 DEVELOPMENT.md §7（会话标题）。
     public var displayTitle: String {
         if let titleCn, !titleCn.isEmpty { return titleCn }
-        if let title, !title.isEmpty { return title }
+        if let title, !title.isEmpty, title != "新会话" { return title }
+        if let proposedTitle {
+            let trimmed = proposedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        if let fallback = Self.messageFallback(lastMessage) { return fallback }
         return "未命名会话"
+    }
+
+    /// `lastMessage` → 权宜标题：换行压成空格、首尾裁白、前 20 字 + 「…」。
+    /// 为什么 20 字：08 的行标题位设计容纳约一行（约 12–14 个全角字），
+    /// 超出一点没关系（行尾截断），但取太短的"前 N 字"会丢掉上下文主干。
+    /// 空串/纯空白与缺失同一口径 ⇒ `nil`（不拿一行空白当标题）。
+    public static func messageFallback(_ message: String?) -> String? {
+        guard let message else { return nil }
+        let normalized = message
+            .components(separatedBy: .newlines)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        if normalized.count <= 20 { return normalized }
+        return String(normalized.prefix(20)) + "…"
     }
 
     /// 摘要行取不到 ⇒ **整行不渲染**（spec：省略该行，不放占位符）。

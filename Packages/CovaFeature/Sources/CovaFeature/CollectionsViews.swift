@@ -44,12 +44,12 @@ public struct FavoritesView: View {
                             title: "还没有收藏",
                             hint: "听到喜欢的歌点一下 ♡，就会出现在这里",
                             actionTitle: "去曲库挑歌",
-                            action: { session.tab = .library }
+                            action: { session.goToTabRoot(.library) }
                         )
                         // 12a §触控 要「空态两枚 CTA」，第二枚排在主 CTA **下面**。原先挂在
                         // `.overlay(alignment: .bottom)` 上，压在「去曲库挑歌」字样里 —— 是登录后的
                         // 截图实测抓到的重叠，不是猜的。
-                        Button("先看看歌单") { session.path.append(.plaza) }
+                        Button("先看看歌单") { session.navigate(to: .plaza) }
                             .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                             .buttonStyle(.plain)
                     }
@@ -249,12 +249,17 @@ public struct FavoritesView: View {
         switch item {
         case .library(let track):
             let artist = track.artistNameCn ?? track.artist.name
-            return "\(artist.isEmpty ? "未知艺人" : artist) · \(Int(track.audioDuration ?? track.duration))s"
+            let resolved = artist.isEmpty ? "未知艺人" : artist
+            guard let segment = TrackRowCopy.durationSegment(Int(track.audioDuration ?? track.duration)) else {
+                return resolved
+            }
+            return "\(resolved) · \(segment)"
         case .note(let note):
             // 笔记的 `duration` 服务端恒发 0（未分析）⇒ 不显「0s」，也不显 BPM/收藏数（根本不发）。
             let artist = Self.artist(of: note)
-            guard let duration = note.displayDuration else { return artist }
-            return "\(artist) · \(Int(duration))s"
+            guard let duration = note.displayDuration,
+                  let segment = TrackRowCopy.durationSegment(Int(duration)) else { return artist }
+            return "\(artist) · \(segment)"
         }
     }
 
@@ -382,7 +387,7 @@ public struct MyPlaylistsView: View {
                         title: "还没收藏歌单",
                         hint: "在歌单广场点书签，就会出现在这里",
                         actionTitle: "去歌单广场",
-                        action: { session.path.append(.plaza) }
+                        action: { session.navigate(to: .plaza) }
                     )
                 } else {
                     list
@@ -479,7 +484,7 @@ public struct MyPlaylistsView: View {
                 if editing {
                     selected.formSymmetricDifference([playlist.id])
                 } else {
-                    session.path.append(.playlist(playlist.id))
+                    session.navigate(to: .playlist(playlist.id))
                 }
             }
             .frame(minHeight: 88)

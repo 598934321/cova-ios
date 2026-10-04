@@ -110,6 +110,44 @@ final class PublicAPIRequestEncodingTests: XCTestCase {
         )
     }
 
+    /// §7 #55：`title` 携带时编码出该键（服务端 `renameSession` 成真名）；
+    /// `nil` 时键**不出现**（合成 Codable 自动略 nil ⇒ 不传比传空串干净）。
+    func testCreateSessionRequestEncodesTitleOnlyWhenPresent() throws {
+        let titled = CovaCreateSessionRequestDto(title: "给新店的开业歌单")
+        let titledJson = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(titled)) as? [String: Any])
+        XCTAssertEqual(titledJson["title"] as? String, "给新店的开业歌单")
+
+        let untitled = CovaCreateSessionRequestDto()
+        let untitledJson = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(untitled)) as? [String: Any])
+        XCTAssertNil(untitledJson["title"], "不带标题时这个键不该出现在线上")
+    }
+
+    // MARK: - `normalizedTitle`（prompt → 会话真名，§7 #55）
+
+    func testNormalizedTitleTakesFirstLineAndTrims() {
+        XCTAssertEqual(
+            CovaCreateSessionRequestDto.normalizedTitle("  给新店的开业歌单，轻快一点\n再要一版慢的  "),
+            "给新店的开业歌单，轻快一点")
+        XCTAssertEqual(
+            CovaCreateSessionRequestDto.normalizedTitle(" 海边黄昏的 Lo-Fi "),
+            "海边黄昏的 Lo-Fi")
+    }
+
+    func testNormalizedTitleReturnsNilForBlankInput() {
+        XCTAssertNil(CovaCreateSessionRequestDto.normalizedTitle(""))
+        XCTAssertNil(CovaCreateSessionRequestDto.normalizedTitle("   \n  "))
+        XCTAssertNil(CovaCreateSessionRequestDto.normalizedTitle("\n首行是空的但第二行有字"))
+    }
+
+    func testNormalizedTitleCapsAtThirtyCharacters() {
+        let long = String(repeating: "歌", count: 31)
+        XCTAssertEqual(CovaCreateSessionRequestDto.normalizedTitle(long)?.count, 30)
+        let exact = String(repeating: "词", count: 30)
+        XCTAssertEqual(CovaCreateSessionRequestDto.normalizedTitle(exact), exact)
+    }
+
     func testMediaRetentionRequestIsConstructibleAndEncodesFavorite() throws {
         let request = MediaRetentionRequestDto(favorite: true)
         try XCTAssertEncodedJSONEqual(

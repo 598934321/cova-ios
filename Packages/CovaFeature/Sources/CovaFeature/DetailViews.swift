@@ -74,7 +74,7 @@ public struct PlaylistDetailView: View {
                     title: "这个歌单暂时还没有曲目",
                     hint: "歌单可能刚更新，下拉看看",
                     actionTitle: "返回歌单广场",
-                    action: { session.path = [] }
+                    action: { session.pop() }
                 )
                 .padding(.vertical, CovaSpace.xxl)
             } else {
@@ -460,7 +460,7 @@ public struct TrackDetailSheet: View {
             Spacer()
             Menu {
                 Button("查看艺人") {
-                    if let artist = track?.artist { session.path.append(.artist(artist.id)) }
+                    if let artist = track?.artist { session.push(.artist(artist.id)) }
                 }
                 Button("复制链接") {
                     UIPasteboard.general.string = "https://covalink.cn/tracks/\(trackID)"
@@ -486,7 +486,7 @@ public struct TrackDetailSheet: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(track.titleCn ?? track.title)
                             .font(CovaType.title).foregroundStyle(CovaColor.fg)
-                        Button { session.path.append(.artist(track.artist.id)) } label: {
+                        Button { session.push(.artist(track.artist.id)) } label: {
                             Text(track.artistNameCn ?? track.artist.name)
                                 .font(CovaType.callout).foregroundStyle(CovaColor.secondary)
                         }
@@ -509,7 +509,8 @@ public struct TrackDetailSheet: View {
                 .padding(.horizontal, CovaSpace.pageGutter)
 
                 HStack(spacing: CovaSpace.md) {
-                    CovaButton("播放") {
+                    // hero CTA 档（gradient.brandButton）；「加入队列」保持描边次级。
+                    CovaButton("播放", style: .brand) {
                         Task { await session.play(tracks: [track], at: 0); dismiss() }
                     }
                     CovaButton("加入队列", style: .secondary) {
@@ -535,8 +536,11 @@ public struct TrackDetailSheet: View {
                         HStack(spacing: CovaSpace.sm) {
                             ForEach(labels, id: \.self) { label in
                                 CovaChip(label, isSelected: false) {
+                                    // 曲库是页签根屏、不在 `Route` 里 ⇒ 「去曲库按这个标签筛」
+                                    // = 收掉详情 sheet + 整栈回根切过去（标签进查询词，
+                                    // 03 那一屏自己接）。
                                     dismiss()
-                                    session.tab = .library
+                                    session.goToTabRoot(.library)
                                 }
                             }
                         }
@@ -598,7 +602,9 @@ public struct TrackDetailSheet: View {
                                     Text(item.titleCn ?? item.title)
                                         .font(CovaType.subhead).foregroundStyle(CovaColor.fg).lineLimit(1)
                                         .frame(width: 112)
-                                    Text("\(item.artist.nameCn ?? item.artist.name) · \(Int(item.duration))s")
+                                    Text(TrackRowCopy.subtitle(
+                                        artist: item.artist.nameCn ?? item.artist.name,
+                                        durationSeconds: Int(item.duration), bpm: nil))
                                         .font(CovaType.caption).foregroundStyle(CovaColor.muted).lineLimit(1)
                                         .frame(width: 112)
                                 }

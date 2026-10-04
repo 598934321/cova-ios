@@ -292,8 +292,10 @@ struct ChipFlowContainer: View {
 }
 
 /// 换行容器（第一方 `Layout`，零依赖）。行高取该行最高的一枚，间距 `spacing.sm`。
+/// `alignment`：03/23 的 chips 左对齐（默认）；01 §5 的引导标签「居中于切换器下方」用 `.center`。
 struct ChipFlowLayout: Layout {
     var spacing: CGFloat = CovaSpace.sm
+    var alignment: HorizontalAlignment = .leading
 
     struct Cache: Sendable {
         var sizes: [CGSize] = []
@@ -319,7 +321,14 @@ struct ChipFlowLayout: Layout {
         let rows = layoutRows(proposal: proposal, subviews: subviews, cache: &cache)
         var y = bounds.minY
         for row in rows {
+            // 居中档：每一行在整宽内居中（行宽 = 所有 chip 宽 + 行内间距）。
             var x = bounds.minX
+            if alignment == .center {
+                let rowWidth = row.indices.reduce(CGFloat(0)) { total, i in
+                    total + cache.sizes[i].width
+                } + CGFloat(max(0, row.indices.count - 1)) * spacing
+                x += max(0, (bounds.width - rowWidth) / 2)
+            }
             let rowHeight = row.height
             for index in row.indices {
                 let size = cache.sizes[index]

@@ -68,6 +68,9 @@ public struct OneStepStreamMachine: Sendable {
     public private(set) var phase: OneStepStreamPhase = .streaming
     public private(set) var degradedBy: OneStepDegradationTrigger?
     public private(set) var malformedEventCount = 0
+    /// 降级轮询的**连续**失败计数（09 §4.2「前 3 次静默，第 4 次起出重试钮」的唯一事实源）。
+    /// 一次 `pollReceived` 清零；重新降级（新一轮降级 = 新一轮轮询）也清零。
+    public private(set) var pollFailureCount = 0
 
     private var startedAt: TimeInterval
     private var lastActivityAt: TimeInterval
@@ -186,16 +189,20 @@ public struct OneStepStreamMachine: Sendable {
         lastActivityAt = now
         // 节拍从「本次轮询完成」起算：慢回包 / 时间跳跃后不会因 nextDeadline 已过期而背靠背立即补发（Minor-2）。
         lastPollAt = now
+        pollFailureCount = 0   // 读到了 ⇒ 连续失败清零（§4.2 的口径是"连续"）
         let fresh = cards.filter { emittedCardSignatures.insert(Self.signature(of: $0)).inserted }
         return fresh.isEmpty ? [] : [.emitPlanCards(fresh)]
     }
 
     /// 轮询失败：按 D6 终止条件，失败不结束会话，下一节拍重试（上层可随时取消）。
+    /// 计数只加不清零之外的逻辑：§4.2 的「第 4 次起出重试钮」按**连续**失败算，
+    /// 成功一次由 `pollReceived` 归零；新一轮降级（`degrade`）也从零起算。
     public mutating func pollFailed(at now: TimeInterval) -> [OneStepStreamAction] {
         guard phase == .polling else { return [] }
         awaitingPoll = false
         lastPollAt = now
         lastActivityAt = now
+        pollFailureCount += 1
         return []
     }
 
@@ -214,6 +221,7 @@ public struct OneStepStreamMachine: Sendable {
         degradedBy = trigger
         lastPollAt = now
         awaitingPoll = true
+        pollFailureCount = 0   // 新一轮降级 = 新一轮连续计数
         return [.terminateStreaming, .pollNow]
     }
 
@@ -369,6 +377,8 @@ public actor OneStepStreamCoordinator {
     }
     public func degradationTrigger() -> OneStepDegradationTrigger? { machine?.degradedBy }
     public func malformedEventCount() -> Int { machine?.malformedEventCount ?? 0 }
+    /// 降级轮询的连续失败数（09 §4.2「第 4 次起出重试钮」的读数口）。
+    public func pollFailureCount() -> Int { machine?.pollFailureCount ?? 0 }
 
     // MARK: - SSE
 

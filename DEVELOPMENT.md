@@ -1,4 +1,4 @@
-# Cova iOS 开发手册（对齐 web v2.40.1）
+# Cova iOS 开发手册（对齐 web v2.40.1；契约增量已核至 v2.65.0，2026-10-02）
 
 > 本手册是 iOS 端唯一开发手册，替代旧的 PLAN/PRD/NEEDS/api-contracts/decisions 等文档
 > （旧文档已于 2026-09-26 打 bundle 存档至 `/tmp/ios-app-manuals-archive-20260926.bundle` 后删除）。
@@ -17,15 +17,21 @@ Cova = 「会创作、可授权的音乐流媒体」：网易云式发现播放 
 
 iOS 端 v1.0 范围（已实现 → 本手册扩展的次序）：
 
-- **已实现（存量）**：抽屉导航 + 首页 feed；曲库多维筛选/搜索/分页；官方歌单与收藏；
+- **已实现（存量）**：原生四页签外壳（TabView + 每页签独立 NavigationStack，
+  2026-10-01 由抽屉结构改造，见 `design/screens/04-drawer.md`）+ 首页 feed；
+  曲库多维筛选/`.searchable` 搜索/分页；官方歌单与收藏；
   曲目收藏（含生成 note 双账分流）；邮箱密码登录（两步：建凭证 → `/me` 取权威身份）；
   AVPlayer 自研播放层（队列/循环三态/±15s/锁屏/后台播放）+ 播放上报；
   一步创作（会话/SSE/计划卡 12 态/双 Demo/候选收藏）。
 - **本手册新增（对齐 web v2.40.1）**：最近播放、高级创作台（studio/create 全组）、
   作品播放上报（work_listens）与作品直存下载、extras 交付快照、制作人模式入口、
   co 币流水页；远期新线（灵感商店/签到/自建歌单/每日推荐/歌单广场/分享歌单）。
-- **v1.0 不做**：任何购买/充值入口（D12 合规闸门，仅展示余额与流水）；账号删除待后端
-  端点（上架前必须）；远程推送（本地通知兜底）；iPad 专版布局。
+- **v1.0 不做**：远程推送（本地通知兜底）；iPad 专版布局。
+  **2026-10-01 已拍板（审核整改）**：App 内**允许**直接购买（StoreKit 2 +
+  `/api/iap/products|verify`，契约见 §4.8；服务端缺口登记 §7 #56），
+  App 内不做任何站外购买引导（D12 词表机械执行）；账号删除走 **App 内流程**
+  （15 §3.G），端点 `POST /api/auth/delete-account` **已上线**（web v2.65.0，
+  §7 #4 于 2026-10-02 闭合）。
 
 ---
 
@@ -75,7 +81,10 @@ iOS 端 v1.0 范围（已实现 → 本手册扩展的次序）：
    私有音频先 Bearer 下载到沙盒校验非空，再 `file://` 播放，Bearer URL 不进日志/持久化。
 7. 后端缺口登记制：缺字段/缺端点/契约不符记入 §7，**客户端不得自行改后端**。
 8. 设计闸门：UI 以对齐本手册 §3 与 `design/` 为准；大改版面先出规格再实现。
-9. App Store 合规（D12）：无购买/充值入口，仅展示余额；下载扣费 UI 入口待合规评审放行。
+9. App Store 合规（D12，2026-10-01 修订）：App 内购买只走 **StoreKit 2**，
+   服务端核销走 `/api/iap/verify`（§4.8）；**App 内不出现任何站外购买引导**
+   （「前往官网购买/充值」「App 内不售卖」等词由 `Scripts/d12-copy-check.sh` 禁词表
+   机械执行，法务链接与 mailto 白名单见该脚本常量区）；下载扣费 UI 入口仍待合规评审放行。
 
 **协作约定**：Build → Verify → Commit，每步留证据；纯文档 commit 不递增版本号，
 影响产物的 commit 递增 `project.yml` 两个版本字段（小 +0.0.1 / 大 +0.1）。
@@ -171,7 +180,8 @@ px→pt 一一对应；iOS 消费文件 `design/tokens.json` → `CovaUI`。
 | `GET /api/auth/me` | — | 三键 `{user, entitlements, nameChange}`；`user` 在此才含 `covaId/phone/avatar/isArtist/isPartner/partnerType`；**未登录 = 401 + `{user:null}`** |
 | `POST /api/auth/refresh` | `{refreshToken}` | 旋转：新 access+refresh 成对返回，先落 refresh 后落 access（D22③） |
 | `POST /api/auth/logout` | — | 撤销整个 session family |
-| 缺失 | `login/apple|sms|wechat|device`、账号删除 | 见 §7（NEEDS-4/5） |
+| `POST /api/auth/delete-account` | `{idempotencyKey}`（体不被读，键是客户端纪律） | v2.65.0 上线：2xx `{ok:true}` 即生效——身份字段清空匿名化、全部会话吊销；401 `请先登录`；**无冷静期/无撤销/不收密码**（15 §3.G） |
+| 缺失 | `login/apple|sms|wechat|device` | 见 §7（NEEDS-5） |
 
 ### 4.2 曲库 / 歌单 / 收藏（已接）
 
@@ -442,9 +452,33 @@ GET/PATCH/`start`、`lyrics/regenerate`、`versions`、`media/references/:id/ret
 ⇒ 客户端只能自己保证只送**本机已知属于本账号**的 `providerClipId`，并把"提交成功"和"做出来了"
 在 UI 上分成两件事（19 屏已经是这个形状）。
 
----
+### 4.8 App 内购买（StoreKit 2，2026-10-01 拍板接入）
 
-## 5. 开发阶段（每阶段可独立验收）
+**服务端契约（`web/src/app/api/iap/**` 逐行读过）**：
+
+| 端点 | 请求 | 响应 / 语义 |
+|---|---|---|
+| `GET /api/iap/products` | —（Bearer） | `{products[]}`：商品镜像，App 以 `productId` 与 `Product.products()` 的 ASC 商品对齐 |
+| `POST /api/iap/verify` | `{transactionId, productId, jwsTransaction}` | 核销并发放权益（幂等：`iap_transactions.transaction_id` UNIQUE，核销与发权益同事务）。`401` 未登录 / `400` 缺参 / **`402` 拒绝（非重试）** / **`503` 可重试** |
+
+**商品表**（`iap_products` 镜像，7 项）：订阅 4（`creator.monthly` ¥39、`pro.monthly` ¥99、
+`pro.yearly` ¥899、`enterprise.monthly` ¥599）+ co 包 3（1200/¥9.9、4000/¥29、10000/¥69）。
+**productId 必须与 App Store Connect 完全一致**——不一致则购买面只见空态。
+
+**客户端纪律**：
+
+- StoreKit 2：`Product.products` 拉取 → `purchase()` → 把 `jwsRepresentation` 交
+  `/api/iap/verify` → **verify 成功后才 `transaction.finish()`**；`Transaction.updates`
+  全生命周期监听（含 pending/ask-to-buy 回落）；「恢复购买」= `AppStore.sync()` +
+  逐个 `Transaction.latest(for:)` 走 verify。
+- 402 分流：服务端明确拒（如凭证无效）→ **立即 finish** 避免重试风暴，UI 告知并引导
+  联系客服；503/网络错 → **不 finish**，留待 `Transaction.updates`/下次启动重验。
+- 任何购买文案只出现在 13 会员屏的购买区（D12 词表按文件白名单管控，§6 A12）。
+- 上架形态依赖：美国区外链规则等以提交时政策为准；本端**不做**外链购买（拍板口径）。
+
+**服务端缺口**（详细需求在 §7 #56）：`verify` 的 production 分支恒拒（x5c 验签未接）、
+sandbox 在 `NODE_ENV=production` 下也拒；退款/撤销通知（ASSN）处理未见端点；
+`iap_products` 表字段与 ASC 的一致性需服务端确认。
 
 > 阶段间允许并行编码，验收按序。每阶段完成判据见 §6。
 
@@ -705,7 +739,7 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 
 | # | 主题 | 现状 | 阻塞 |
 |---|---|---|---|
-| 4 | ACCOUNT-DELETE 账号删除端点 | 待答：端点不存在 | **上架 P0**（App Store 强制） |
+| 4 | ACCOUNT-DELETE 账号删除端点 | **已闭合（2026-10-02，web v2.65.0 上线）**：实际落地为 `POST /api/auth/delete-account`——需登录、无请求体、2xx `{ok:true}` 即生效；身份字段清空（邮箱/手机号/微信/Apple/密码置空，昵称改「已注销用户」），`DELETE FROM sessions` + token 黑名单吊销全部会话；订单/授权/创作记录保留但匿名化。与 10-01 需求清单的差异（如实登记）：**没有**凭据复核位（不收密码）、**没有**冷静期与撤销端点、`pendingUntil` 不存在 ⇒ iOS 侧的密码框与受理态账已按实契约移除（15 §3.G 重写）；401 回落保留（凭证吊销 ⇒ 本地登出，但不说「已注销」）。幂等键仍随体携带（端点不读，守硬边界 5） | 无（上架 P0 阻塞解除） |
 | 5 | APPLE-SIGNIN / sms 登录 | 待答：无 `login/apple|sms` | P2（若提供第三方登录则 Apple 强制） |
 | 6 | `downloads/:id/file` Range | 待答：不支持 206 | M3 断点续传 |
 | 8 | `tracks/:id` 详情缺 variant 字段族 | 待答：列表有详情无；客户端按可选容忍 | 非阻塞 |
@@ -756,7 +790,9 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 | 53 | **（2026-09-27 已定位并改，0.2.81/99；设备复证等明天那一签）签到成功之后，11 的余额那一格不跟着变**。2026-09-27 设备腿：点「签到领 10 co」⇒ 那一行换成「今天已签到」（断言过、腿绿），而同一张图里余额仍是 **19315**，服务端流水首行已是 **「+10 每日签到 19325」** ⇒ 钱到了、屏上没跟上。代码在签成之后确实 `await session.loadMe()` 重读过，两个嫌疑：① 截图早于重读回来（时序，多等一秒就能看见）；② `loadMe` 的「同身份重复请求合并」把这一次重读吞了（那是 04/11 共读一份账时的既有设计）—— ② 若成立就不是时序，而是「签完永远要手动下拉才更新」 | 待办（端侧）：先把这两格分开测出来（签完等 3s 再拍一张；仍是旧值就是 ②），再决定是「签到这条腿自己写余额」（**回执里就带着 `balance`，服务端已经把新余额给出来了**）还是放宽那层合并。最省的大概是用回执的 balance 直接更新 | 不阻塞 §6 任何一条 A 判据（没有哪条要求余额实时），但 11 §3.C 的语义是「这一屏的余额是当前余额」，签完不更新就是这句话过期了 |
 | 54 | **`GET /api/home/materials` 给的是 web 首页的运营文案，iOS 首页不能直接吃**（本轮实测裁决，不是漏做）。只读探针：200，`{sections}` 七个板块键（hero/library/playlists/studio/membership/enterprise/**sales**），每块 `title` + `subtitleLines[]` + `backgroundConfig` + `componentConfig` + `assets[]`；今天 7 块的两个 config 与 assets 全空，文案是站点首页 2.0 的营销话术。问题不在数据而在**闸门**：D12 扫的是源码字面量，运行时下发的字符串一条也扫不到 ⇒ 把它铺上 iOS 首页等于把合规文案的决定权交给后台表格里的一行字；而 01 有自己的固定板块表（§3 今日推荐 / §4 场景精选 / §5 你的创作 / §6 AI 音乐人），两边不是一张表 | 待答（后端 + 产品）：iOS 要不要吃这份运营文案？若要吃，需要（a）iOS 侧的板块白名单、（b）走一遍 D12 口径的文案审核位、（c）`assets[].url` 的出口归属（第三方 CDN 还是同源代理，与 #49 同一族）。**在此之前客户端不接**：宁缺，也不把未审的话术放上屏 |
 | 52 | **（2026-09-27 已修，0.2.78/96）`GET /api/studio/agent-runs/{id}` 的恢复腿没有调用点**（§5 P1-5 的后半）。当时的事实：契约面已交付 —— `AgentRunDTOs.swift`（`{run}` 封套、`path(runID:)`、401/404 失败分档）+ `AgentRunDTOTests` **15 条**用例，但全仓 `grep agent-runs` 只命中这两份文件，**没有任何服务或视图调它** ⇒ 09 屏的 agent 流断掉之后只能靠 5s 计划卡轮询，`run.status` 这一层今天不显示。对账 web：`src/app/api/studio/agent-runs/[id]/route.ts` 在（`getOwnedAgentRun(id, user.id)`，404 `运行记录不存在`），而 **runId 拿得到** —— `src/lib/studio/agent-route.ts:778` 的 SSE 第一帧就是 `run_started`（`data.runId`），`plans/start` 的响应带 `runId`+`timeline`，`src/lib/find-my-song/session.ts:712` 的消息 metadata 也带 | 端侧待办 → **已修**：`AgentRunRecovery`（纯判据）+ `AgentRunService`（读腿，`path(runID:)` 判不安全即**不发**）+ `AISessionDetailView` 一条带归属令牌的恢复轮询腿（`run_started` 取号 → 流不活着时按 `run.status` 回读 → 终态即停；节拍与预算复用 `StudioCreatePollSchedule`，不发明第二套表）。终态词表按 `AgentRunTerminalVocabulary` 的要求由**接线层**注入，出处 `web/src/lib/agent/run.ts:7`（八态里只有 `completed`/`failed` 是终态）。九条判据用例 `AgentRunRecoveryTests`，FEATURE_MIN 242 → 251 | 非阻塞 A1–A15（09 屏的判据不含 agent 恢复）。**证据等级要写清**：这一格拿不到设备证人 —— 屏上要出现"断流后靠回读恢复"必须先让那条 SSE 断掉，模拟器侧没有办法按意愿切断 ⇒ 与 A10 非空档同类（代码 + 单测，屏上没有）。§5 原句里的 `currentStep` / `timeline[].sequence` 两件**今天没落**：09 §3.F 没有它们的格子，为用满契约去发明一处显示比少做更糟 |
-| 49 | **作品行的封面是第三方直链，且拒绝原因漏进了整行的 VoiceOver 标签**。2026-09-26 设备侧按钮清单实测：每一行的标签都是「`Harbour at Dawn：美术地址不可出站：cdn2.suno.ai 不是生产出口也不在许可名单的存储主机内（该次请求未发出）`、Harbour at Dawn、04:03」这样。两件事：① 作品的 `coverUrl` 是 **Suno 的 CDN 原链**（不像 `audioUrl` 那样被签成同源代理路径），D23 拒得对 ⇒ **作品封面在这一端一张都不出**；② 出口守卫那句**诊断文本被当成美术的替代文本拼进了行标签** ⇒ 读屏用户每听一行都要先听一遍 40 字的内部原因，这是把工程诊断当无障碍文案用 | 待答（后端）：作品的封面请一并走同源代理（与 `audioUrl` 同一做法，`playbackUrl` 那条另记在 #37）。待办（端侧）：拒绝原因只该出现在调试面，美术的替代文本最多是一句「封面不可用」——**这条改动会碰到 `ArtworkResolutionContractTests` 钉住的那条 message 串**，改的是"用在哪"而不是"这句话本身"，动它要连用例一起过一遍 | 非阻塞：封面不出不影响播放/直存/上报（那三条腿走的是 `audioUrl`）；但 20/19 的截图里作品行一律是占位图，读屏序列里每一行都带一句诊断 |
+| 49 | **作品行的封面是第三方直链，且拒绝原因漏进了整行的 VoiceOver 标签**。2026-09-26 设备侧按钮清单实测：每一行的标签都是「`Harbour at Dawn：美术地址不可出站：cdn2.suno.ai 不是生产出口也不在许可名单的存储主机内（该次请求未发出）`、Harbour at Dawn、04:03」这样。两件事：① 作品的 `coverUrl` 是 **Suno 的 CDN 原链**（不像 `audioUrl` 那样被签成同源代理路径），D23 拒得对 ⇒ **作品封面在这一端一张都不出**；② 出口守卫那句**诊断文本被当成美术的替代文本拼进了行标签** ⇒ 读屏用户每听一行都要先听一遍 40 字的内部原因，这是把工程诊断当无障碍文案用 | 待答（后端）：作品的封面请一并走同源代理（与 `audioUrl` 同一做法，`playbackUrl` 那条另记在 #37）。**端侧已于 2026-10-01 C2 收口**：拒绝原因回退为调试面，美术替代文本固定为「封面不可用」，列表行改用中性 `music.note` 占位（不再出现 ⚠️ 警告三角） | 非阻塞：封面不出不影响播放/直存/上报（那三条腿走的是 `audioUrl`）；20/19 的截图里作品行仍是占位图（中性形态） |
+| 55 | **会话标题全是「新会话」**：`GET /api/find-my-song/sessions` 的会话行没有服务端起的可读标题（`title`/`titleCn` 恒为占位值「新会话」）。端侧已按 2026-10-01 C6 接上**兜底链**——`titleCn` → `title`（恒为「新会话」时按没给处理）→ `proposedTitle`（若服务端日后下发）→ 首条消息前 20 字整形 → 「未命名会话」；但**真正该做的是服务端确定性命名**（首条用户消息摘要/截断，或建会话时生成），否则同一字段在两端的语义不一致 | 待答（后端）：① 会话请下发 `proposedTitle`（或等义字段）：首条用户消息截断即足够；② `title=="新会话"` 的占位值请换成空串或不下发（恒为占位串会让"用户没起过名"与"用户起了同名"不可分） | 非阻塞（端侧兜底已上线） |
+| 56 | **IAP 核销链路服务端缺口**（2026-10-01 拍板接入 StoreKit 2 后逐行读 `web/src/app/api/iap/**` 得出）：① `iap-verify` 的 **production 分支恒拒**——x5c → Apple 根证书链验签未接，fail-closed（正确姿势是 `@apple/app-store-server-library` 的 `SignedDataVerifier`）；② sandbox 模式在 `NODE_ENV=production` 下**也拒** ⇒ TestFlight/沙盒验收无路可走；③ **Apple 服务端通知（ASSN）无接收端点**：退款（`REFUND`）、撤销（`REVOKE`）、续订失败（`DID_FAIL_TO_RENEW`）等类型无人处理 ⇒ 会员/ co 权益的撤销侧是单边账；④ `iap_products` 表的 7 个 productId 需与 App Store Connect 商品配置**逐字一致**（见 §4.8），请服务端核对并提供该表的权威清单 | 待答 4 件（后端）：验签链、沙盒可达性、ASSN 端点、productId 权威清单。**verify 验签未上线前，内购链路只能走到「购买成功、核销被拒」——必须挡在灰度内测之内，不上架** | **上架 P0**（与 #4 同级）：verify 不接好 = 3.1.1 合规链断裂 |
 
 > 共 **23 条后端待答/待端点**（#4,5,6,8,9,10/12,11,13,14,15,16,17/23/28,18,19,20,21,22,24,25/33,26,27,29,30,31,32）
 > + **2 条端侧待办**（#34,#35）**+ 1 条端侧落点登记**（#36：作品直存清单落点与 12d 不同屏）
@@ -782,6 +818,36 @@ xcodebuild test -project Cova.xcodeproj -scheme CovaAcceptance \
 >   分类还在）、#52 `agent-runs/{id}` 的恢复腿**没有调用点**（§5 P1-5 后半条因此未闭合）。
 > 已关闭不录：NEEDS-1（登录契约误判）、2（source 用错值已改）、
 > 3（/me 三键已核）、7（推送 token，本地通知兜底）。
+>
+> **2026-10-01 增补**：#4 账号删除补全 App 侧完整流程需求（端点 + 凭据复核 + 冷静期 +
+> token 失效 + 本地清理清单，按 5.1.1(v)）；**#55 会话标题服务端命名**（`proposedTitle` 或
+> 首条消息截断）—— 端侧兜底链（titleCn → title → proposedTitle → 首条消息 20 字 →
+> 「未命名会话」）已上线，真名仍须服务端给（**2026-10-02 更新：`POST sessions` 的 `title`
+> 字段已接上，见下方同日增补**）；**#56 IAP 核销链四缺口**（x5c 验签 /
+> 生产下沙盒不可达 / ASSN 通知端点 / productId 权威清单）——iOS 侧已拍板接入
+> StoreKit 2（§4.8），verify 验签上线前内购停留在灰度内测。
+>
+> **2026-10-02 增补**：**#57 `workflowMode` 会话参数**。web 端首页序章与搜索下拉支持
+> `one-step / song-match / agent-v2` 三档工作流（`?mode=&prompt=&autoSend=`），
+> 而 iOS 侧 `POST /api/studio/agent` 请求体契约只有 `sessionId / message / deepThinking`
+> 三件——客户端**不发明** mode 键。待答（后端）：`POST /api/find-my-song/sessions` 或
+> agent 请求体请收 `workflowMode`（枚举对齐 web `WORKFLOW_MODE_IDS`），确认后 iOS 首页
+> 生成档/搜索档可加「一步模式 / 歌曲匹配」分档。本轮 0.3.1(102) 落地 Apple Music 参照
+> 改版：外壳五页签（+ `Tab(role:.search)`）、01 对话型首页（底置 CovaComposer）、
+> 25 搜索屏新增、03 搜索迁出、05 searchQuery——规格 `design/screens/` 已于同日确认。
+>
+> **2026-10-02 增补（web v2.65.0 对齐批次）**：
+> **#4 闭合**——`POST /api/auth/delete-account` 实契约接手（见上表行 4）；
+> **#55 部分闭合**——`POST /api/find-my-song/sessions` 实测收 `title`
+> （`sessions/route.ts:63` 给了就 `renameSession`）：iOS 首页生成档建会话时已把
+> 首条 prompt 落成 `title`（`normalizedTitle`：首行截 30，空 → 不带键）。
+> 列表兜底链（`proposedTitle` → `lastMessage` → 「未命名会话」）保留给存量会话与
+> 非生成入口；服务端自动命名（不写 title 也给真名）仍开放；
+> **#57 更正**——`POST /api/find-my-song/sessions` 本就收 `workflowMode`
+> （`WORKFLOW_MODE_IDS = one-step/song-match/agent-v2`，iOS 恒发 `one-step`），
+> 建会话那一半从来都不是缺口；仍待答的是**消息侧**：`POST /api/studio/agent`
+> 体不收 mode，`song-match`/`agent-v2` 会话的消息路由与 SSE 帧面是否与 one-step
+> 相同未核，接入前两档前须服务端确认。
 
 **iOS 侧技术债（接手必知）**：TD-41 禁 UI 白名单不拦反射/`dlopen`；
 TD-42 锁屏命令「已受理未完成」需真机冒烟；TD-43 MPRemoteCommandCenter 共享面无可隔离

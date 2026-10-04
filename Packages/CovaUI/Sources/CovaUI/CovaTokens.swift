@@ -25,7 +25,7 @@ public enum CovaColor {
     /// 品牌唯一主题色：日落橙。
     public static let accent = dynamic("#FF6B00", "#FF6B00")
     public static let accentHover = dynamic("#E66000", "#FF7A1A")
-    /// 浅橙衬底（选中背景 / tag 底）。
+    /// 浅橙衬底（tag 底 / 语义装饰；v2.65.0 起不再承担选中态——选中用 `selectedBg`）。
     public static let accentSoft = dynamic("#FFF1E6", "#3A1D05")
     /// accent 语境文字色（对比度 ≥4.5:1）。
     public static let accentText = dynamic("#C24E00", "#FFB173")
@@ -48,6 +48,34 @@ public enum CovaColor {
     public static let enterpriseBlue = dynamic("#006EDC", "#79BEFF")
     public static let enterpriseBlueSoft = dynamic("#EAF4FF", "#0A2540")
     public static let enterpriseBlueBorder = dynamic("#84BDF3", "#1D4ED8")
+    /// `color.tagScene` / `color.tagMood`：25 分类卡的左缘标识条色（03 §4 行内标签胶囊同源）。
+    public static let tagScene = dynamic("#0D9488", "#2DD4BF")
+    public static let tagMood = dynamic("#6366F1", "#818CF8")
+    /// 25 §5 的深浅合成色：分类卡/封面占位在 Light 用 `surface`、Dark 用 `elevated`
+    /// （「避免深底上更深的灰」——两格已在 tokens 里，这里只做那一档拼接，不新增色值）。
+    public static let cardSurface = dynamic("#F5F5F7", "#1A1A24")
+    /// `color.selected`：选中态文字色（web v2.65.0 `.cova-filter-current` 同值；
+    /// 橙色不承担选中填充，见 design/README「与 web 的统一设计语言」）。
+    public static let selected = dynamic("#1D1D1F", "#F2F0EC")
+    /// `color.selectedBg`：选中态衬底（web `rgb(0,0,0,.08)`/`rgb(255,255,255,.12)`；
+    /// #hex 带 alpha 逐值，不走 `opacity` 二次近似）。
+    public static let selectedBg = dynamicAlpha(0x000000, 0.08, 0xFFFFFF, 0.12)
+    /// `color.focusRing`：输入聚焦描边（web #8A8F98 中性灰，刻意不用橙）。
+    public static let focusRing = dynamic("#8A8F98", "#8A8F98")
+
+    /// `#RRGGBBAA` 逐值（含 alpha 的 token 用这支，避免 `opacity` 与底色叠加产生二次近似）。
+    static func dynamicAlpha(_ lightRGB: UInt64, _ lightA: CGFloat, _ darkRGB: UInt64, _ darkA: CGFloat) -> Color {
+        Color(uiColor: UIColor { trait in
+            let v = trait.userInterfaceStyle == .dark ? darkRGB : lightRGB
+            let a = trait.userInterfaceStyle == .dark ? darkA : lightA
+            return UIColor(
+                red: CGFloat((v >> 16) & 0xFF) / 255,
+                green: CGFloat((v >> 8) & 0xFF) / 255,
+                blue: CGFloat(v & 0xFF) / 255,
+                alpha: a
+            )
+        })
+    }
 }
 
 /// 渐变（`tokens.json` 的 `gradient.*`，双主题同值 ⇒ 不走 `dynamic` 双值）。
@@ -91,6 +119,8 @@ public enum CovaSpace {
 
 public enum CovaRadius {
     public static let control: CGFloat = 12
+    /// `radius.cover`：封面/曲目卡圆角（web `track-card` 16px + inset hairline 同档）。
+    public static let cover: CGFloat = 16
     public static let card: CGFloat = 18
     public static let hero: CGFloat = 28
     public static let capsule: CGFloat = 9999
@@ -108,6 +138,10 @@ public enum CovaRadius {
 /// 侧修饰符，`Font` 上没有对应能力；原先那个 `tracking:` 形参是个从不读取的死参数（本次删掉），
 /// 所以观感与既有验收截图一致 —— 字距保真留给 G2 逐屏验收按屏补，不在这里谎称已做。
 public enum CovaType {
+    /// `type.display`（28/700，2026-10-02 入档）：**只给 01 问候区**（token 描述明写
+    /// 「不进列表/表单屏」）。默认档 28pt ⇒ Apple `.title`；tracking −0.01 由调用侧的
+    /// `.tracking(-0.28)` 表达（见 `HomeView` 问候区注释）。
+    public static let display = Font.system(.title).weight(.bold)
     // 字阶：D24 第一刀下移一档，第二刀按用户验收定的**紧凑档**（参照网易云/QQ 音乐）再收一档：原 largeTitle 34 / title 28 在 402pt 宽的手机上会把
     // 一屏挤成两三块，且与 headline 17 之间没有过渡 ⇒ 整屏没有"小"的层次，读起来是堆叠。
     // 下移用**更小的文本样式**实现而不是 `Font.system(size:)`：固定 point 不跟随 Dynamic Type
@@ -129,6 +163,32 @@ public enum CovaType {
     /// 全局 tabular-nums：时间/余额/进度一律等宽数字。
     public static func digits(_ text: String) -> Text {
         Text(text).font(mono).monospacedDigit()
+    }
+}
+
+/// 动效（`tokens.json` 的 `motion.*`）。`motion.curve` = cubic-bezier(0.32,0.72,0.24,1)；
+/// 时长档按 token 毫秒转秒。Reduce Motion 的替代态由各调用点执行（token `motion.reduceMotion`）。
+public enum CovaMotion {
+    public static let instant = Animation.timingCurve(0.32, 0.72, 0.24, 1, duration: 0.20)
+    public static let fast = Animation.timingCurve(0.32, 0.72, 0.24, 1, duration: 0.24)
+    public static let normal = Animation.timingCurve(0.32, 0.72, 0.24, 1, duration: 0.30)
+    public static let slow = Animation.timingCurve(0.32, 0.72, 0.24, 1, duration: 0.36)
+    /// 01 §9 feed 分区的错峰步长（40ms，屏级裁决，不入 token）。
+    public static let feedStaggerStep = 0.04
+}
+
+/// 阴影（`tokens.json` 的 `elevation.*`）。CSS `blur 18` → SwiftUI `radius` 取半 = 9。
+public enum CovaElevation {
+    /// `elevation.primaryButtonShadow`：`0 6pt 18pt rgba(230,96,0,0.22)`，双色同值。
+    /// `#E66000` = `rgba(230,96,0)` 的逐字值，不是 `accentHover` 的别名（深色那支不同）。
+    public static let primaryButtonShadowColor =
+        CovaColor.dynamic("#E66000", "#E66000").opacity(0.22)
+}
+
+public extension View {
+    /// `elevation.primaryButtonShadow`：发送/主行动钮那一档（01 §4 发送钮）。
+    func covaPrimaryButtonShadow() -> some View {
+        shadow(color: CovaElevation.primaryButtonShadowColor, radius: 9, x: 0, y: 6)
     }
 }
 

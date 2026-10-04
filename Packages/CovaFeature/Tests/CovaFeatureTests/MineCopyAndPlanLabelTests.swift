@@ -49,12 +49,15 @@ final class MineCopyAndPlanLabelTests: XCTestCase {
     }
 
     func testCovaIdAndVersionRowsHaveNoPlaceholderShape() {
-        // §6 逐字：「covaId，CV 8 F 2 K 3 A，可复制」——mono 呈现、朗读可读化。
-        XCTAssertEqual(MineCopy.covaIdRowSpoken("CV-8F2K3A"), "covaId，CV 8 F 2 K 3 A，可复制")
+        // §6 逐字：「Cova 号，CV 8 F 2 K 3 A，可复制」——标签说人话，不念字段名
+        // （2026-10-01 C3：上一版把 `covaId` 这个英文字段名直接带上屏、带上读屏）。
+        XCTAssertEqual(MineCopy.covaIdRowSpoken("CV-8F2K3A"), "Cova 号，CV 8 F 2 K 3 A，可复制")
         XCTAssertEqual(MineCopy.covaIdSpoken("CV-8F2K3A"), "CV 8 F 2 K 3 A")
         // 没有字母前缀可保的形状 ⇒ 全部逐字符（spec 只钉了带连字符那一种，不假装认识别的）。
         XCTAssertEqual(MineCopy.covaIdSpoken("CV8F2K3A"), "C V 8 F 2 K 3 A")
         XCTAssertEqual(MineCopy.covaIdSpoken(""), "")
+        // 屏上不再出现字段名本身（行标签与读屏同一口径）。
+        XCTAssertFalse(MineCopy.covaIdRowSpoken("CV-8F2K3A").contains("covaId"))
         // §3.H / §7：两枚版本键任一取不到 ⇒ 整行不渲染（不印「版本 —」）。
         XCTAssertEqual(MineCopy.versionValue(short: "0.2.69", build: "80"), "0.2.69 (80)")
         XCTAssertEqual(MineCopy.versionSpoken(short: "0.2.69", build: "80"), "版本 0.2.69，第 80 版")
@@ -70,8 +73,9 @@ final class MineCopyAndPlanLabelTests: XCTestCase {
         XCTAssertEqual(MineCopy.balanceSpoken(nil), "余额，-- co，仅展示")
         XCTAssertEqual(MineCopy.planSpoken(.creator), "当前套餐，创作版")
         XCTAssertEqual(MineCopy.planSpoken(.enterprise), "当前套餐，企业版")
-        XCTAssertEqual(MineCopy.commerceSpoken("会员权益"), "会员权益，前往官网了解")
-        XCTAssertEqual(MineCopy.commerceSpoken("企业服务"), "企业服务，前往官网了解")
+        // 2026-10-01 D12 修订：商业组是站内导航，读法不再带「前往官网了解」。
+        XCTAssertEqual(MineCopy.commerceSpoken("会员权益"), "会员权益")
+        XCTAssertEqual(MineCopy.commerceSpoken("企业服务"), "企业服务")
     }
 
     /// §9 验收第 7 条：版本行显示的正是 `project.yml` 的两枚键 —— 装配真给了键，

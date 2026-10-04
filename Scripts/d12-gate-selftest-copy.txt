@@ -21,3 +21,9 @@ CASE plist_copy
 	<string>Cova 购买 [d12selftest:plist_copy]</string>
 CASE carrier_strings
 "__d12_selftest" = "用于展示 充值 [d12selftest:carrier_strings]";
+CASE purchase_outside
+private let __d12SelftestPurchOutside = "恢复购买 [d12selftest:purchase_outside]"
+CASE purchase_inside
+private let __d12SelftestPurchInside = "恢复购买 [d12selftest:purchase_inside]"
+CASE global_in_whitelist
+private let __d12SelftestGlobal = "详情请前往官网 [d12selftest:global_in_whitelist]"

@@ -44,6 +44,61 @@ final class StudioSessionDTOTests: XCTestCase {
         XCTAssertEqual(decoded.sessions[0].displayTitle, "Nightly Focus")
     }
 
+    /// C6（2026-10-01）：`title == "新会话"` 是**服务端的缺省值**，不是用户起的名 ⇒
+    /// 当作没给，继续走 `proposedTitle` → `lastMessage` → 「未命名会话」这条兜底链。
+    func testTitleFallbackTreatsServerDefaultAsMissing() throws {
+        // 服务端给「新会话」且给了提议名 ⇒ 用提议名（agent 提了但用户还没确认的标题）。
+        let proposed = Data(
+            #"{"sessions":[{"id":"s-6","title":"新会话","proposedTitle":"给咖啡店的爵士歌单"}]}"#
+                .utf8
+        )
+        let page = try JSONDecoder().decode(StudioSessionListDto.self, from: proposed)
+        XCTAssertEqual(page.sessions[0].displayTitle, "给咖啡店的爵士歌单")
+
+        // 缺省值 + 没有提议名 ⇒ 用最后一条消息（截到 20 字 + 「…」；
+        // 这串消息前 20 个字落在「…的片」）。
+        let lastMsg = Data(
+            #"{"sessions":[{"id":"s-7","title":"新会话","lastMessage":"想给 vlog 做一首轻快一点带人声的片头曲，大概十五秒就好"}]}"#
+                .utf8
+        )
+        let page2 = try JSONDecoder().decode(StudioSessionListDto.self, from: lastMsg)
+        XCTAssertEqual(page2.sessions[0].displayTitle, "想给 vlog 做一首轻快一点带人声的片…")
+
+        // 用户真的把会话改名成「新会话」的情况与缺省值无法区分 ⇒ 同样不算"起过名"，
+        // 继续往下兜底（这是刻意的：三个"新会话"排成一排什么都不能区分）。
+        let allDefault = Data(
+            #"{"sessions":[{"id":"s-8","title":"新会话","proposedTitle":null,"lastMessage":"  "}]}"#
+                .utf8
+        )
+        let page3 = try JSONDecoder().decode(StudioSessionListDto.self, from: allDefault)
+        XCTAssertEqual(page3.sessions[0].displayTitle, "未命名会话")
+
+        // 真的起过名 ⇒ 缺省值规则不触发，原样用。
+        let named = Data(
+            #"{"sessions":[{"id":"s-9","title":"夜跑歌单","lastMessage":"任意"}]}"#.utf8
+        )
+        let page4 = try JSONDecoder().decode(StudioSessionListDto.self, from: named)
+        XCTAssertEqual(page4.sessions[0].displayTitle, "夜跑歌单")
+    }
+
+    /// 权宜标题的整形规则：换行压成空格、裁白、超长截断，空串不给。
+    func testMessageFallbackTruncatesAndNormalizes() {
+        XCTAssertEqual(
+            StudioSessionDto.messageFallback("第一行\n第二行"),
+            "第一行 第二行"
+        )
+        XCTAssertEqual(StudioSessionDto.messageFallback("  短句  "), "短句")
+        XCTAssertNil(StudioSessionDto.messageFallback(nil))
+        XCTAssertNil(StudioSessionDto.messageFallback("   \n  "))
+        // 恰好 20 字不截断，21 字才加省略号。
+        let twenty = String(repeating: "字", count: 20)
+        XCTAssertEqual(StudioSessionDto.messageFallback(twenty), twenty)
+        XCTAssertEqual(
+            StudioSessionDto.messageFallback(twenty + "一"),
+            twenty + "…"
+        )
+    }
+
     /// **真实账号实测形态**（2026-09-24）：`{session:{sessionId, messages:[{role, content,
     /// timestamp, attachments}], generationJobs:[]}}` —— 内容套在 `session` 里，会话号叫
     /// `sessionId` 而不是 `id`，消息正文叫 `content` 而不是 `text`，且消息**没有 id 键**。

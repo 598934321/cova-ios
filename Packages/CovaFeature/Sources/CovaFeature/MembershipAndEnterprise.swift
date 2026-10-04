@@ -2,26 +2,39 @@ import CovaCore
 import CovaUI
 import SwiftUI
 
-// MARK: - 13 会员（只读展示；D12：App 内不售卖）
+// MARK: - 13 会员（权益 + App 内购买；D12 2026-10-01 修订）
 
-/// 会员权益（design 13）。这一屏的**全部风险都在"说了不该说的话"**上，所以：
-/// · B 卡只读、**卡内不放任何按钮**、整卡不可点；
+/// 会员（design 13）。**本屏是 D12 文件白名单里唯一允许出现购买词的地方** —
+/// 全仓其它文件的字面量由 `Scripts/d12-copy-check.sh` 机械扫红。
+/// · B 卡只读、卡内不放任何按钮、整卡不可点；
 /// · 未登录 ⇒ B 卡整卡不渲染（也不出现「登录后查看」这种引导卡）；
-/// · 额度数字（30/200/800）**没有端点来源** ⇒ 渲染「—」+「额度以官网为准」，不编数；
-/// · 脚注 F 必须逐字存在（缺失按 Critical 计，`Scripts/d12-copy-check.sh` 按字面量扫本文件）；
-/// · 全屏文案（含 VoiceOver 标签）**禁止**出现：购买 / 充值 / 支付 / 立即开通 / 升级 /
-///   订阅管理 / 付款 / 价格 / ¥ / 元/月 / 限时 / 优惠 / 恢复购买；
-/// · `me` 取不到时**静默**（本屏按 spec 无骨架、无 Toast、无整屏错误态），
-///   并且**当前列不高亮** —— 猜一个档位比不画更坏。
+/// · G 购买区：镜像（`GET /api/iap/products`）↔ ASC（`Product.products`）按 productId
+///   对齐，**未对齐的行不渲染购买钮**；价格以 StoreKit `displayPrice` 为准；
+/// · 核销纪律（§4.8）：verify 200 才 finish；402/400 → finish + 拒话术；
+///   401/503/网络 → 不 finish，凭证留 Apple 侧；
+/// · F 合规区三件逐字存在（恢复购买 + 两条法务链接 + 同意句，缺失即门禁红）；
+/// · `me` 取不到时**静默**（B 卡/高亮不渲染，本屏无骨架的区照旧）。
 public struct MembershipView: View {
     @Environment(AppSession.self) private var session
     /// 13 §Dynamic Type：AX 档下权益对照表换形态（表 → 逐套餐纵向卡片）。
     @Environment(\.covaAXLayout) private var axLayout
+    @Environment(\.openURL) private var openURL
+
+    /// G 购买区三态：取数中 / 就绪 / 取不到（整块不渲染）。
+    private enum IapPhase: Equatable { case loading, ready, unavailable }
+    /// 对齐后的可买面（镜像行序）+ 本地价字典。
+    @State private var iap: (rows: [IapProductDto], prices: [String: String])?
+    @State private var iapPhase: IapPhase = .loading
+    /// 在途购买的 productID（钮换进度环、防连点）。
+    @State private var purchasing: Set<String> = []
+    @State private var restoreBusy = false
 
     public init() {}
 
     /// 对比表的内容是**本地静态常量**（spec 明令：无端点）。这里只列「能力有没有」，
-    /// 不列额度数字与任何金额；额度那一行统一给「额度以官网为准」。
+    /// 不列额度数字与任何金额。
+    /// 「每月额度」那一行**整行不渲染**（2026-10-01 C4）：四个格子全是「—」等于
+    /// 印了一行"我们知道有额度但什么都没有"——没有数据就该没有这一行，而不是留一排破折号。
     /// `internal`（不是 private）：用例要钉「每行的值数 == 列数」——对不齐时表不会崩，
     /// 只会把「支持」印到错的套餐头上，那正是这张表最贵的错。
     static let rows: [(label: String, values: [String])] = [
@@ -29,7 +42,6 @@ public struct MembershipView: View {
         ("AI 生成（Cova AI）", ["支持", "支持", "支持", "定制"]),
         ("下载与扣费", ["不支持", "支持", "支持", "定制"]),
         ("企业项目申请", ["不支持", "不支持", "支持", "定制"]),
-        ("每月额度", ["—", "—", "—", "—"]),
     ]
 
     /// 列序 = `CovaPlan` 四档（13 §7 硬要求「与枚举严格同集，不增不减」）。
@@ -60,9 +72,10 @@ public struct MembershipView: View {
                 if let entitlements {
                     myPlanCard(entitlements)
                 }
+                purchaseSection
                 comparison
                 notes
-                footer
+                compliance
             }
             .padding(.vertical, CovaSpace.lg)
         }
@@ -71,6 +84,171 @@ public struct MembershipView: View {
         .navigationBarTitleDisplayMode(.inline)
         // 与 11/04 同一本 `/me` 账：`loadMe` 自己合并同身份的在途请求，游客直接早退。
         .task { await session.loadMe() }
+        .task { await loadIap() }
+    }
+
+    // MARK: G 购买区（镜像 ↔ ASC 对齐后渲染；§4.8 纪律全在 `IAPStore`）
+
+    /// 拉镜像 → 按 productId 对齐 ASC → 出可买面。**任一腿失败 ⇒ 整区不渲染**
+    /// （画一排买不了的卡比没有卡更坏）。游客也取（介绍性内容公开可读；购买钮
+    /// 弹登录而不是发起购买）。
+    private func loadIap() async {
+        do {
+            let mirror = try await session.iapStore.products()
+            let (alignment, prices) = try await session.iapStore.alignedStorefront(mirror: mirror)
+            // 服务端排序即展示序：订阅四档在前、co 包在后（镜像原序）。
+            iap = (alignment.purchasable, prices)
+            iapPhase = .ready
+        } catch {
+            iap = nil
+            iapPhase = .unavailable
+        }
+    }
+
+    /// 该档对当前登录用户是不是「已拥有」（当前套餐档位的订阅卡不重复画购买钮）。
+    /// 档位 = `IapProductDto.plan`（`creator/pro/enterprise`）↔ `CovaPlan`；
+    /// `enterprise.monthly` 的 plan 是 enterprise ⇒ 企业用户已持有。
+    static func alreadyOwned(_ product: IapProductDto, plan: CovaPlan?) -> Bool {
+        guard product.type == .subscription, let plan else { return false }
+        return product.plan == plan.rawValue
+    }
+
+    /// 行展示名：镜像 `displayName` 优先；缺了回落到「档位中文 + 周期/包量」的自拼
+    /// （服务端没给名字不能印 productId——那串是给机器的）。
+    static func displayTitle(_ product: IapProductDto) -> String {
+        if let name = product.displayName, !name.isEmpty { return name }
+        switch product.type {
+        case .subscription:
+            let plan = CovaPlan(rawValue: product.plan ?? "")
+            return (plan?.userLabel ?? "") + periodSuffix(product.productId)
+        case .credits:
+            return product.credits.map { "\($0) co" } ?? "co 包"
+        }
+    }
+
+    /// productId 后缀 → 周期词（`*.monthly` → 每月；`*.yearly` → 每年；其它 → 一次性）。
+    static func periodSuffix(_ productID: String) -> String {
+        if productID.hasSuffix(".monthly") { return " · 每月" }
+        if productID.hasSuffix(".yearly") { return " · 每年" }
+        return " · 一次性"
+    }
+
+    /// 价格源唯一：StoreKit `displayPrice`。镜像 `priceDisplay` 只在 ASC 缺商品时兜底
+    /// —— 但那种行**没有购买钮**，价只是个说明文字。
+    static func displayPrice(
+        _ product: IapProductDto, prices: [String: String]
+    ) -> String? {
+        prices[product.productId] ?? product.priceDisplay
+    }
+
+    @ViewBuilder
+    private var purchaseSection: some View {
+        switch iapPhase {
+        case .loading:
+            CovaSectionHeader("订阅与 co 包")
+            CovaSkeleton(rows: 3)
+        case .ready:
+            if let iap {
+                CovaSectionHeader("订阅与 co 包")
+                VStack(spacing: CovaSpace.sm) {
+                    ForEach(iap.rows) { product in
+                        productCard(product, prices: iap.prices)
+                    }
+                }
+                .padding(.horizontal, CovaSpace.pageGutter)
+            }
+        case .unavailable:
+            EmptyView()   // §4：任一腿失败 ⇒ 整区不渲染（不画买不了的卡）
+        }
+    }
+
+    private func productCard(
+        _ product: IapProductDto, prices: [String: String]
+    ) -> some View {
+        let owned = Self.alreadyOwned(product, plan: session.me?.entitlements.plan)
+        return CovaCard {
+            HStack(spacing: CovaSpace.md) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Self.displayTitle(product))
+                        .font(CovaType.headline).foregroundStyle(CovaColor.fg)
+                    if let price = Self.displayPrice(product, prices: prices) {
+                        Text(price).font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                    }
+                }
+                Spacer(minLength: CovaSpace.sm)
+                if owned {
+                    Text("当前套餐")
+                        .font(CovaType.caption).foregroundStyle(CovaColor.selected)
+                } else {
+                    CovaButton(
+                        "购买",
+                        isLoading: purchasing.contains(product.productId)
+                    ) { buy(product) }
+                    .frame(maxWidth: 96)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// 购买入口：**游客先登录**（核销要 userId，弹登录不发起购买）。
+    private func buy(_ product: IapProductDto) {
+        guard session.requireLoginForCollections() else { return }
+        guard !purchasing.contains(product.productId) else { return }
+        purchasing.insert(product.productId)
+        Task {
+            let outcome = await session.iapStore.purchase(productID: product.productId)
+            purchasing.remove(product.productId)
+            if let message = outcome.userMessage {
+                session.showToast(
+                    message,
+                    isError: outcome == .refused || outcome == .failed || outcome == .unauthenticated)
+            }
+        }
+    }
+
+    /// 「恢复购买」= `AppStore.sync()` + 逐商品 `latest(for:)` 重验（`IAPStore.restore`）。
+    private func restorePurchases() {
+        guard session.requireLoginForCollections() else { return }
+        guard !restoreBusy else { return }
+        restoreBusy = true
+        Task {
+            let ids = (iap?.rows ?? []).map(\.productId)
+            switch await session.iapStore.restore(productIDs: ids) {
+            case .nothingToRestore:
+                session.showToast("没有可恢复的购买记录")
+            case .allFulfilled(let count):
+                session.showToast(count > 0 ? "已到账" : "没有可恢复的购买记录")
+            case .hasUnresolved:
+                session.showToast("部分购买权益稍后到账，也可联系客服", isError: true)
+            }
+            restoreBusy = false
+        }
+    }
+
+    // MARK: F 合规区（D12 门禁逐字钉死：三件缺一不可）
+
+    private var compliance: some View {
+        VStack(alignment: .leading, spacing: CovaSpace.sm) {
+            Button("恢复购买") { restorePurchases() }
+                .font(CovaType.callout).foregroundStyle(CovaColor.accent)
+                .disabled(restoreBusy)
+            Text("购买即代表同意《服务条款》与《隐私政策》")
+                .font(CovaType.caption).foregroundStyle(CovaColor.muted)
+            HStack(spacing: CovaSpace.md) {
+                Button("隐私政策") {
+                    if let url = URL(string: "https://covalink.cn/privacy") { openURL(url) }
+                }
+                Button("服务条款") {
+                    if let url = URL(string: "https://covalink.cn/terms") { openURL(url) }
+                }
+            }
+            .font(CovaType.caption)
+            .foregroundStyle(CovaColor.accent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, CovaSpace.pageGutter)
+        .padding(.top, CovaSpace.lg)
     }
 
     /// 只读卡：**内部没有任何按钮**，也不可点。
@@ -150,8 +328,8 @@ public struct MembershipView: View {
                 }
                 .padding(.horizontal, CovaSpace.pageGutter)
             }
-            Text("额度以官网为准").font(CovaType.caption).foregroundStyle(CovaColor.muted)
-                .frame(maxWidth: .infinity, alignment: .center)
+            // 「额度以官网为准」的脚注曾是「每月额度」行四格「—」的说明；
+            // 那一行 2026-10-01 C4 起整行不渲染（没有数据就不印），脚注随之拆除。
         }
     }
 
@@ -161,8 +339,9 @@ public struct MembershipView: View {
         return Self.columns.firstIndex(of: current)
     }
 
-    /// §3.C：表头 = 套餐名 `type.callout` / `color.memberGold`；当前列另加 2pt `color.accent`
-    /// 顶边 + 列底 `color.accentSoft` + 「当前套餐」徽标（§8 允许措辞里就这三个词）。
+    /// §3.C：表头 = 套餐名 `type.callout` / `color.memberGold`；当前列另加 2pt `color.fg`
+    /// 顶边 + 列底 `color.selectedBg` + 「当前套餐」徽标（§8 允许措辞里就这三个词）。
+    /// 2026-10-03 去橙化（web v2.65.0 同口径）：当前项 = 中性高亮，不走 accent 系。
     private func headerCell(_ name: String, isCurrent: Bool) -> some View {
         VStack(spacing: CovaSpace.xs) {
             Text(name)
@@ -174,15 +353,15 @@ public struct MembershipView: View {
             // —— 而 §4 要求那一帧的过渡是「一帧到位」，不是布局抖动。
             Text(isCurrent ? "当前套餐" : " ")
                 .font(CovaType.caption)
-                .foregroundStyle(CovaColor.accentText)
+                .foregroundStyle(CovaColor.selected)
                 .fixedSize(horizontal: true, vertical: false)
         }
         .frame(width: Self.cellWidth)
         .padding(.top, isCurrent ? Self.currentEdgeWidth : 0)
-        .background(isCurrent ? CovaColor.accentSoft : Color.clear)
+        .background(isCurrent ? CovaColor.selectedBg : Color.clear)
         .overlay(alignment: .top) {
             if isCurrent {
-                Rectangle().fill(CovaColor.accent).frame(height: Self.currentEdgeWidth)
+                Rectangle().fill(CovaColor.fg).frame(height: Self.currentEdgeWidth)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -194,7 +373,7 @@ public struct MembershipView: View {
             .font(CovaType.caption)
             .foregroundStyle(Self.cellColor(value))
             .frame(width: Self.cellWidth)
-            .background(isCurrent ? CovaColor.accentSoft : Color.clear)
+            .background(isCurrent ? CovaColor.selectedBg : Color.clear)
     }
 
     /// AX 档的替代形态：每套餐一张卡，卡内是「权益名 : 值」的纵向列表（13 §Dynamic Type）。
@@ -212,7 +391,7 @@ public struct MembershipView: View {
                                 .foregroundStyle(CovaColor.memberGold)
                             if plan == current {
                                 Text("当前套餐")
-                                    .font(CovaType.caption).foregroundStyle(CovaColor.accentText)
+                                    .font(CovaType.caption).foregroundStyle(CovaColor.selected)
                             }
                         }
                         ForEach(Self.rows, id: \.label) { row in
@@ -240,13 +419,13 @@ public struct MembershipView: View {
             Text("定制合作与批量授权走企业服务，App 内不办理。")
                 .font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                 .padding(.horizontal, CovaSpace.pageGutter)
-            // E 区：**文字按钮**（无底色、无渐变、不用主按钮样式）。
+            // E 区：**文字按钮**（无底色、无渐变、不用主按钮样式）→ 站内 push 14。
             Button {
-                session.path.append(.enterprise)
+                session.push(.enterprise)
             } label: {
                 HStack(spacing: CovaSpace.xs) {
-                    Text("前往官网了解")
-                    Image(systemName: "arrow.up.right.square")
+                    Text("了解企业服务")
+                    Image(systemName: "arrow.right")
                 }
                 .font(CovaType.callout)
                 .foregroundStyle(CovaColor.accent)
@@ -254,18 +433,6 @@ public struct MembershipView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, CovaSpace.pageGutter)
         }
-    }
-
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: CovaSpace.xs) {
-            // F 合规脚注：**逐字**，缺失按 Critical 计。
-            Text("套餐说明以官网为准，App 内不售卖。")
-            Text("下载与扣费入口目前未在 App 内开放，请在官网了解与使用。")
-        }
-        .font(CovaType.caption).foregroundStyle(CovaColor.muted)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, CovaSpace.pageGutter)
-        .padding(.top, CovaSpace.lg)
     }
 
     /// 颜色只表达「有没有」；「不支持」用 muted 而不是 error（spec 明令 ✕ 不用错误色）。

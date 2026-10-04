@@ -56,7 +56,7 @@ struct StudioCreateView: View {
         // 与"这一次刚做出两首"是两件事。
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("全部作品") { session.path.append(.worksList(jobID: nil)) }
+                Button("全部作品") { session.push(.worksList(jobID: nil)) }
                     .font(CovaType.subhead)
                     .foregroundStyle(CovaColor.accentText)
                     .accessibilityIdentifier("cova.works.open")
@@ -290,9 +290,10 @@ struct StudioCreateView: View {
                     .foregroundStyle(atLimit ? CovaColor.warning : CovaColor.muted)
                     .accessibilityLabel("\(session.studioCreatePrompt.count)，共 \(StudioCreateGenerateRequestDto.promptMaximumLength) 字")
             }
+            // 19 §3.C：主 CTA 是 hero 档（gradient.brandButton）—— 全屏唯一渐变位。
             CovaButton(
                 state.phase == .idle ? "开始生成" : "再做一首",
-                style: .primary,
+                style: .brand,
                 isLoading: state.phase == .submitting
             ) {
                 if state.phase == .idle {
@@ -313,7 +314,8 @@ struct StudioCreateView: View {
         .overlay(
             RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous)
                 .strokeBorder(
-                    promptFocused ? CovaColor.accent : CovaColor.line,
+                    // 19 §3.B（2026-10-03）：focus 描边 = focusRing 中性灰（web 焦点环同值），不用橙。
+                    promptFocused ? CovaColor.focusRing : CovaColor.line,
                     lineWidth: 1
                 )
         )

@@ -116,19 +116,31 @@ final class TrackNullBpmEnergyDTOTests: XCTestCase {
     }
 
     /// 拼接只连**存在**的片段：少一段就少一个分隔符，不留悬挂的 ` · `。
+    /// 时长走 `m:ss`（`durationSegment`），不再输出 `183s` 这种读不出来的形状。
     func testRowSubtitleJoinsOnlyPresentSegments() {
         XCTAssertEqual(
             TrackRowCopy.subtitle(artist: "艾丽丝·莫罗", durationSeconds: 183, bpm: 96),
-            "艾丽丝·莫罗 · 183s · BPM 96"
+            "艾丽丝·莫罗 · 3:03 · BPM 96"
         )
         XCTAssertEqual(
             TrackRowCopy.subtitle(artist: "艾丽丝·莫罗", durationSeconds: 183, bpm: nil),
-            "艾丽丝·莫罗 · 183s"
+            "艾丽丝·莫罗 · 3:03"
         )
         XCTAssertEqual(
             TrackRowCopy.subtitle(artist: "艾丽丝·莫罗", durationSeconds: nil, bpm: nil),
             "艾丽丝·莫罗"
         )
+    }
+
+    /// 时长段的边界形：0 秒是合法的 `0:00`；整分钟不丢秒位；负值整段不拼。
+    func testDurationSegmentFormatsMinutesAndSeconds() {
+        XCTAssertEqual(TrackRowCopy.durationSegment(0), "0:00")
+        XCTAssertEqual(TrackRowCopy.durationSegment(9), "0:09")
+        XCTAssertEqual(TrackRowCopy.durationSegment(60), "1:00")
+        XCTAssertEqual(TrackRowCopy.durationSegment(138), "2:18")
+        XCTAssertEqual(TrackRowCopy.durationSegment(3600), "60:00")
+        XCTAssertNil(TrackRowCopy.durationSegment(nil))
+        XCTAssertNil(TrackRowCopy.durationSegment(-1), "负值不是时长，不编一个")
     }
 
     /// 三屏（03 / 06 / 16）行副文案的**实际调用形状**：把解出来的 `nil` 交进去，
@@ -140,7 +152,11 @@ final class TrackNullBpmEnergyDTOTests: XCTestCase {
             let text = TrackRowCopy.subtitle(
                 artist: artist, durationSeconds: Int(track.duration), bpm: track.bpm
             )
-            XCTAssertEqual(text, "\(artist) · \(Int(track.duration))s", track.id)
+            let duration = Int(track.duration)
+            XCTAssertEqual(
+                text, "\(artist) · \(duration / 60):\(String(format: "%02d", duration % 60))",
+                track.id
+            )
             XCTAssertFalse(text.contains("BPM"), track.id)
             XCTAssertFalse(text.contains("nil"), track.id)
             XCTAssertFalse(text.hasSuffix("·"), track.id)

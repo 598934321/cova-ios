@@ -359,7 +359,8 @@ public struct OneStepPlanStartRequestDto: Encodable, Equatable, Sendable {
     }
 }
 
-/// `POST /api/find-my-song/sessions` 请求体（契约：`{workflowMode:'one-step', skipWelcome:true}`）。
+/// `POST /api/find-my-song/sessions` 请求体（契约：`{workflowMode:'one-step', skipWelcome:true}`，
+/// `title` 为可选项 —— `web/.../sessions/route.ts:63`：给了就 `renameSession` 落成真名）。
 ///
 /// v1.0 锁定一步模式（PRD 4.4），故默认值即契约形态。
 public struct CovaCreateSessionRequestDto: Codable, Equatable, Sendable {
@@ -368,18 +369,36 @@ public struct CovaCreateSessionRequestDto: Codable, Equatable, Sendable {
 
     public let workflowMode: String
     public let skipWelcome: Bool
+    /// 会话真名（§7 #55，2026-10-02 接上）：首页生成档把首条 prompt 落成它，
+    /// 08 列表就不再停在「新会话」。nil → 键不出现（合成 Codable 自动略 nil）。
+    public let title: String?
 
     public init(
         workflowMode: String = CovaCreateSessionRequestDto.oneStepWorkflowMode,
-        skipWelcome: Bool = true
+        skipWelcome: Bool = true,
+        title: String? = nil
     ) {
         self.workflowMode = workflowMode
         self.skipWelcome = skipWelcome
+        self.title = title
+    }
+
+    /// prompt → 会话名的规范化（判据层，用例直钉）：
+    /// 取**首行**去首尾空白 → 空串即 nil（空标题不该出站，服务端拿到空串也拒收真名）→
+    /// 上限 30 个字符截断（与 08 行 `displayTitle` 的兜底链是同一条文案面，
+    /// 长 prompt 不该整段糊上标题栏）。不发明词：原样截取，不改写、不总结。
+    public static func normalizedTitle(_ raw: String) -> String? {
+        let firstLine = raw
+            .components(separatedBy: .newlines).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !firstLine.isEmpty else { return nil }
+        return String(firstLine.prefix(30))
     }
 
     enum CodingKeys: String, CodingKey {
         case workflowMode
         case skipWelcome
+        case title
     }
 }
 

@@ -62,7 +62,7 @@ public struct ArtistHomeView: View {
                 title: "找不到这位音乐人",
                 hint: "TA 可能还没有公开曲目。",
                 actionTitle: "回首页",
-                action: { session.path = []; session.tab = .home }
+                action: { session.goToTabRoot(.home) }
             )
         case .emptyButKnown(let persona):
             VStack(spacing: CovaSpace.lg) {
@@ -72,7 +72,7 @@ public struct ArtistHomeView: View {
                     title: "这位音乐人还没有公开曲目",
                     hint: "先去曲库听听别的",
                     actionTitle: "去曲库",
-                    action: { session.path = []; session.tab = .library }
+                    action: { session.goToTabRoot(.library) }
                 )
             }
         case .ready:
@@ -157,7 +157,8 @@ public struct ArtistHomeView: View {
     /// F 主操作行。
     private var actionBar: some View {
         HStack(spacing: CovaSpace.md) {
-            CovaButton("播放全部") {
+            // 16 §3.E：「播放全部」是 hero CTA 档（gradient.brandButton + 橙投影）。
+            CovaButton("播放全部", style: .brand) {
                 Task { await playAll() }
             }
             // 右侧**不放「关注」**：没有关注端点，放一个点了没反应的按钮比不放更糟。

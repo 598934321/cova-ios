@@ -25,36 +25,38 @@ public struct RecentTrack: Codable, Identifiable, Equatable, Sendable {
 @Observable
 public final class AppSession {
     public enum AuthPhase: Equatable { case restoring, guest, signedIn(AuthUser), failed(String) }
-    public enum Tab: String, CaseIterable, Identifiable { case home, library, mine
+    /// 04 §2 的五个页签（**固定顺序**，不可重排）。`title`/`symbol` 只被 `CovaRootView`
+    /// 的 `Tab` 声明消费，页签栏本身是系统件，不再有自绘 caption。
+    /// `.search` 是系统的 `Tab(role:.search)`：标题/图标由系统提供，这两个映射对它只是兜底。
+    public enum Tab: String, CaseIterable, Identifiable { case home, library, studio, mine, search
         public var id: String { rawValue }
         public var title: String {
             switch self {
             case .home: return "首页"
             case .library: return "曲库"
+            case .studio: return "创作"
             case .mine: return "我的"
+            case .search: return "搜索"
             }
         }
+        /// 04 §2 图标列（**不**用 `.fill` 变体：选中态由系统 tint + isSelected trait 承担），
+        /// 「创作」不用 gradient.ai（那一格随抽屉一起没了，§5 对照表）。
         public var symbol: String {
             switch self {
-            case .home: return "house.fill"
+            case .home: return "house"
             case .library: return "music.note.list"
-            case .mine: return "person.fill"
+            case .studio: return "sparkles"
+            case .mine: return "person"
+            case .search: return "magnifyingglass"
             }
         }
     }
 
     public private(set) var authPhase: AuthPhase = .restoring
-    public var tab: Tab = .home
-    /// 04 抽屉的开关。**只有两处置真**：顶栏字标钮（`openDrawer(from:)`）与走查键
-    /// `COVA_PREVIEW_DRAWER`（`CovaRootView`）—— 后者没有触发者，所以它打开的抽屉不归还焦点。
-    public var drawerOpen = false
-    /// 04 §1 入口① 的位置：抽屉是**从哪一枚顶栏字标钮**打开的。
-    /// 04 §6 后半句「关闭时归还给触发它的 logo 按钮」只有真的存在触发者才谈得上，
-    /// 所以这一本账必须记在会话层（触发钮在 01/03 的 toolbar 里，抽屉在根视图的 overlay 里，
-    /// 两者不在同一棵视图树上，关闭那一刻谁该接焦点没法由抽屉自己推断）。
-    public enum DrawerOpener: String, Equatable, Sendable { case home, library }
-    /// 最近一次由字标钮打开抽屉的那一枚；走查键打开的恒为 nil（于是关闭时不假装归还）。
-    public private(set) var drawerOpener: DrawerOpener?
+    /// 当前选中的页签 = `TabView` 的 selection。**页签选中态不再从"栈顶是谁"反推**（04 §1）：
+    /// 四棵栈各自活着，这一格是唯一事实源。写它只经 `selectTab` / `navigate` / `goToTabRoot`，
+    /// 外部直接赋值会绕过「点当前页签回根」那一条（04 §2 末）。
+    public private(set) var selection: Tab = .home
     public var playerSheetOpen = false
     public var loginPresented = false
     public var toast: (message: String, isError: Bool)?
@@ -139,10 +141,15 @@ public final class AppSession {
     public let auth: CovaAuthSession
     public let client: CovaAPIClient
     public let player: CovaPlayer
+    /// §4.8 IAP 编排（StoreKit 2 接缝 + `/api/iap/verify` 核销分流）。
+    /// `private(set) var` 而非 `let`：核销回调要捕获 weak self ⇒ 必须在
+    /// 「所有存储属性初始化完之后」才能装上去，init 里是装不上的。
+    public private(set) var iapStore: IAPStore
+    private var iapUpdatesTask: Task<Void, Never>?
     private var snapshotTask: Task<Void, Never>?
 
     public init(previewTab: Tab = .home) {
-        tab = previewTab
+        selection = previewTab
         themeMode = CovaThemeMode(
             rawValue: UserDefaults.standard.string(forKey: Self.themeDefaultsKey) ?? ""
         ) ?? .system
@@ -151,6 +158,14 @@ public final class AppSession {
         self.client = CovaAPIClient(transport: CovaDependencies.makeTransport(), credentials: auth)
         self.player = CovaDependencies.makePlayer(auth: auth)
         self.workDownloads = CovaDependencies.makeWorkDownloads(auth: auth)
+        self.iapStore = IAPStore(
+            storefront: StoreKit2Storefront(),
+            service: IAPService(client: client)
+        )
+        iapStore.onFulfilled = { [weak self] _ in
+            // 核销成功 ⇒ 权益账归 `/me` 管（单事实源），store 只发"该刷了"的信号。
+            Task { await self?.loadMe(force: true) }
+        }
     }
 
     public func bootstrap() async {
@@ -161,6 +176,7 @@ public final class AppSession {
                 authPhase = .signedIn(user)
                 await bindPlayerSession()
                 bindRecents(owner: user.id)
+                bindLibrarySearchHistory(owner: user.id)
                 await refreshCollections()
                 await loadMe()
                 // A1：恢复会话这一支也必须取服务端历史。过去只有 `signIn` 里调了它 ⇒
@@ -175,6 +191,31 @@ public final class AppSession {
             authPhase = .guest   // 无已存会话 = 游客态，不是错误
         }
         startSnapshotPolling()
+        startIapUpdates()
+        // §4.8：上次留在 Apple 侧的未完成交易在登录态下重验一遍（不 finish 的那些就靠这里）。
+        if case .signedIn = authPhase { _ = await iapStore.settleUnfinished() }
+    }
+
+    /// `Transaction.updates` 常驻监听：购买被拒/pending 之外的成功交易都喂给核销链；
+    /// 这是「verify 503/网络 → 不 finish」那一档的唯一后续腿。游客态不核销
+    /// （verify 必 401 → finish = 把可恢复的账提前结案；登录后 `settleUnfinished` 会补）。
+    private func startIapUpdates() {
+        iapUpdatesTask?.cancel()
+        iapUpdatesTask = Task { [weak self] in
+            guard let self else { return }
+            for await result in self.iapStore.updates {
+                guard case .success(let transaction) = result else { continue }
+                guard case .signedIn = self.authPhase else { continue }
+                switch await self.iapStore.settle(transaction) {
+                case .fulfilled:
+                    self.showToast("已到账")
+                case .refused:
+                    self.showToast("核销被拒，请联系客服", isError: true)
+                default:
+                    break   // pendingVerification/unauthenticated：静默，Apple 侧留着
+                }
+            }
+        }
     }
 
     /// 登录：解码失败不伪装成「密码错误」，也**不点名 NEEDS-1**（那条已撤销，D21⑤）
@@ -188,6 +229,7 @@ public final class AppSession {
             resetLiveStudioJobs()
             await bindPlayerSession()
             bindRecents(owner: user.id)
+            bindLibrarySearchHistory(owner: user.id)
             await refreshCollections()
             // 04 §7：登录成功**强制刷新** `/me`（余额/身份在登录后才有意义）。
             await loadMe(force: true)
@@ -207,14 +249,13 @@ public final class AppSession {
     }
 
     /// 点通知进来：只信 `sessionId`；缺失/不合法 ⇒ 回落首页，**不**猜一条会话路由。
+    /// 04 §3 归属表最后一行：`aiSession` 深链落**创作**页签栈（不是首页）。
     public func handleNotificationTap(userInfo: [AnyHashable: Any]) {
-        path = []
         guard let sessionID = StudioNotificationPlanner.route(from: userInfo) else {
-            tab = .home
+            goToTabRoot(.home)
             return
         }
-        tab = .home
-        path.append(.aiSession(sessionID))
+        navigate(to: .aiSession(sessionID))
     }
 
     public func signOut() async {
@@ -232,11 +273,13 @@ public final class AppSession {
         favoriteIDs = []
         savedPlaylistIDs = []
         clearRecents()
+        clearLibrarySearchHistory()
         resetLiveStudioJobs()
         // A1/A3/A6 的三本新账同属「这台设备替谁在跑」：换号一律作废（D8 owner 隔离）。
         resetRecentHistory()
         resetStudioCreate()
         await resetWorkDownloads(owner: leavingOwner)
+        resetShellNavigation()
         showToast("已登出：队列与私有音频缓存已清理")
     }
 
@@ -252,18 +295,24 @@ public final class AppSession {
         resetMe()   // 游客态不发 `me`（04 §7），也不许留着上一个身份的余额
         resetLiveStudioJobs()   // 同一族隔离：游客的 08 列表上没有"这台设备在跑"的账
         resetRecentHistory()   // 服务端历史同理：游客没有可读的历史，也不许看到上一个人的
+        bindRecents(owner: nil)   // 本机两本 owner 账同理：换绑到游客名下落不了盘，也断了上个身份的桶
+        bindLibrarySearchHistory(owner: nil)
     }
 
     // MARK: 导航与收藏态（design 04/06/07/12a/12b）
 
-    /// 抽屉与各列表页共用的路由值。**只带 ID**，页面自己按 ID 取数 ——
+    /// 页签栈与各详情页共用的路由值。**只带 ID**，页面自己按 ID 取数 ——
     /// 把整个 DTO 塞进路由会让「深链直入」与「下拉刷新后重取」两套事实源打架。
     public enum Route: Hashable {
         case playlist(String)
         case favorites
         case myPlaylists
+        /// 12c「我的创作」列表（11 资产组入口；创作页签的根屏是 08 会话列表，不是它）。
+        case myCreations
         case plaza
         case settings
+        /// 08 会话列表 = **创作页签的根屏**（04 §3 归属表）：`navigate` 到它 ⇒
+        /// 创作栈回根即可，**不**在栈里再叠一层同屏。
         case aiSessions
         case aiSession(String)
         case studioCreate
@@ -280,8 +329,110 @@ public final class AppSession {
         /// 分享出去的用户歌单（§5 P3）：目的地由卡片的 `href` 里的 token 决定，
         /// **不是** `playlist(id)` 的变体 —— 那一支的 id 是用户歌单 id，打官方详情只会 404。
         case sharedPlaylist(String)
+        /// 03 曲库列表件的**栈内复用**形态（04 §3：当前栈 push，不切页签）——
+        /// 25 分类卡 / 01 搜索档目标=曲库 / 01 场景卡都从这条进；`nil` = 无预填的纯列表。
+        case library(LibraryPreset?)
+        /// 01 搜索档目标=歌单的发送：05 的 `searchQuery` 形态（05 §1，纯客户端过滤）。
+        case plazaSearch(String)
+
+        /// 04 §3 的路由归属表（这份表的唯一来源）：返回值 = 路由该进**哪一棵栈**；
+        /// `nil` = 留在当前栈不动页签（`.artist`：01↔03↔25 各有入口；`.library`：
+        /// 25 分类卡/01 搜索档在发起栈内 push，03 §7 同一裁决）。
+        /// 需要登录的屏仍由调用点的 `requireLoginForCollections()` 把门 —— 归属只管栈，
+        /// 门槛语义不因页签化改变（04 §3 末行）。
+        public var owningTab: Tab? {
+            switch self {
+            case .playlist, .sharedPlaylist, .plaza, .plazaSearch:
+                return .home
+            case .favorites, .myPlaylists, .myCreations, .creditsLedger,
+                 .membership, .enterprise, .settings:
+                return .mine
+            case .aiSessions, .aiSession, .studioCreate, .worksList:
+                return .studio
+            case .artist, .library:
+                return nil
+            }
+        }
+
+        /// 这条路由是不是某个页签的**根屏本身**（今天只有 `.aiSessions` = 创作页签根屏，
+        /// 04 §3）：是 ⇒ `navigate` 到它只回根，不在栈里再叠一层同屏。
+        public var isTabRoot: Bool { self == .aiSessions }
     }
-    public var path: [Route] = []
+
+    /// 每页签一棵独立的 `NavigationStack` 路径（04 §1）：缺键 = 该页签在根。
+    /// **只写通道** = `push` / `navigate` / `pop` / `popToRoot` / `goToTabRoot` / `selectTab`
+    /// / `resetShellNavigation` —— 直接写这本账会绕开归属表与「点当前页签回根」两条规则。
+    public private(set) var paths: [Tab: [Route]] = [:]
+
+    /// 当前页签那棵栈的 `NavigationStack(path:)` 绑定（根视图给四栈各取一份）。
+    public func pathBinding(for tab: Tab) -> Binding<[Route]> {
+        Binding(
+            get: { self.paths[tab] ?? [] },
+            set: { self.paths[tab] = $0 }
+        )
+    }
+
+    /// 屏内 push：默认进**当前**页签的栈（04 §3 第一行）。
+    /// 写错归属的调用点在这里自动改走 `navigate` —— 一条路由的归属只有一个答案，
+    /// 不该让"写错栈"成为可能（原共享栈时代 `path.append(.aiSessions)` 就把 08 叠到过首页上）。
+    public func push(_ route: Route) {
+        if let owner = route.owningTab, owner != selection {
+            navigate(to: route)
+            return
+        }
+        paths[selection, default: []].append(route)
+    }
+
+    /// 跨页签跳转 = 目的栈先回根 → 切 selection → push（04 §3 的顺序钉死：
+    /// 先清旧栈再切，路由不叠在目的页签的既有屏上）。`.aiSessions` 是创作页签的根屏，
+    /// 到它就是「回根」：跨栈时这段已含在「目的栈先回根」里，**同栈**也要自己把栈弹空
+    /// （12c→08 那条腿），不是什么都不做。
+    public func navigate(to route: Route) {
+        let owner = route.owningTab ?? selection
+        if owner != selection {
+            paths[owner] = []
+            selection = owner
+        }
+        if route.isTabRoot { paths[owner] = [] }
+        else { paths[owner, default: []].append(route) }
+    }
+
+    /// 回上一屏（当前栈弹一层）。
+    public func pop() {
+        paths[selection]?.removeLast()
+    }
+
+    /// 当前页签栈回根。
+    public func popToRoot() {
+        paths[selection] = []
+    }
+
+    /// 不带路由的换页签（「去曲库挑歌」这类空态 CTA）：目的栈先回根，再切过去。
+    public func goToTabRoot(_ tab: Tab) {
+        if selection == tab { popToRoot() }
+        else {
+            paths[tab] = []
+            selection = tab
+        }
+    }
+
+    /// 页签点击语义（04 §2 末）：点**已选中**的页签 → 该栈回根（在根则不动作，
+    /// 滚动到顶交系统的 ScrollView 行为）；点别的页签只切，**不清**那棵栈
+    /// （§8 误触保护：切换不清另一页签的栈）。
+    public func selectTab(_ tab: Tab) {
+        if tab == selection { popToRoot() }
+        else { selection = tab }
+    }
+
+    /// 登出/他端吊销的外壳回落（04 §6）：四棵栈全部回根 + selection 回首页，
+    /// 创作/我的两棵栈跟着游客态落到 17-S6 引导。
+    ///
+    /// 单独成函数而不是埋在 `signOut` 里：这是纯导航事实，要能被单元用例直接钉住 —
+    /// `signOut` 本体混着通知撤销、Keychain 与播放器清理那些系统侧动作，用例够不着它。
+    public func resetShellNavigation() {
+        paths = [:]
+        selection = .home
+    }
 
     /// 主题（design 15 的「外观」段）。**只有用户真的选过才落盘** ——
     /// 没选过时 UserDefaults 里没有键，下次启动仍是「跟随系统」。
@@ -306,14 +457,13 @@ public final class AppSession {
     /// 随待说内容一起带过去的「深度思考」开关（01 输入卡 → 09 首发）。
     public var pendingDeepThinking = false
 
-    /// 03 §7 / 01 §6 的跨屏预填：从 01 的 AI 音乐人栏点进曲库时，曲库要按 `artistId` 筛。
+    /// 03 §7 的预填载荷（`library(preset)` 路由参数 / `pendingLibraryPreset` 通道共用这一个形状）。
     ///
-    /// 它是**一次性载荷**，不是路由参数，也不是曲库的常驻状态：
-    /// · 不放进 `Route` —— 曲库是 Tab 根屏，`.library` 不在 `path` 里，而且路由值会进 URL/深链，
-    ///   一个预填筛选跟着导航栈活第三次就不对了；
-    /// · 由 03 在**取数之前**读一次并立刻置 nil（`consumeLibraryPreset()`）——
-    ///   留着它，用户手动清掉筛选后一滚回来又被预填一遍，那是屏上凭空多出来的一条因果。
-    public struct LibraryPreset: Equatable, Sendable {
+    /// 两条腿的分工：同栈 push 走 `Route.library(preset)`（值随路由走，一层一份）；
+    /// 跨页签递屏走 `pendingLibraryPreset` **一次性载荷** —— 由 03 在**取数之前**读一次并
+    /// 立刻置 nil（`consumeLibraryPreset()`）：留着它，用户手动清掉筛选后一滚回来又被
+    /// 预填一遍，那是屏上凭空多出来的一条因果。
+    public struct LibraryPreset: Hashable, Sendable {
         /// `LibraryFilterSelection.queryItems(artistID:)` 那一条腿的参数。
         public var artistID: String?
         /// 上面那个号在屏上怎么念（03 §1 的已选 chips 要能**看见**这个筛选、也要能**撤掉**它；
@@ -322,16 +472,29 @@ public final class AppSession {
         public var artistLabel: String?
         /// 跨维度预置值（`LibraryFilterSelection.merge(_:)` 的入参形态：维度名 → 值）。
         public var dimensions: [String: [String]]
+        /// 带入的检索词（03 §3 回显行「搜索：{query} ✕」；25 结果态复用件 / 01 搜索档）。
+        public var search: String?
+        /// 导航标题覆盖（03 §7：音乐人名 / 分类词条名替换「曲库」；空 = 用 `artistLabel`，
+        /// 再没有 = 「曲库」）。
+        public var title: String?
 
         public init(
-            artistID: String? = nil, artistLabel: String? = nil, dimensions: [String: [String]] = [:]
+            artistID: String? = nil, artistLabel: String? = nil,
+            dimensions: [String: [String]] = [:], search: String? = nil, title: String? = nil
         ) {
             self.artistID = artistID
             self.artistLabel = artistLabel
             self.dimensions = dimensions
+            self.search = search
+            self.title = title
         }
     }
     public var pendingLibraryPreset: LibraryPreset?
+
+    /// 01 §3「选中态会话内记忆」：切出首页页签再回来保持上次档位；冷启动回默认「生成」。
+    /// 与搜索档目标档并放这里（同一条会话内记忆），类型在 `HomeComposer.swift`。
+    var homeComposerMode = HomeComposerMode.generate
+    var homeSearchTarget = HomeSearchTarget.library
 
     /// 取走预填载荷：**读到就销**，第二次调用必然是 `nil`。
     public func consumeLibraryPreset() -> LibraryPreset? {
@@ -344,10 +507,16 @@ public final class AppSession {
     public private(set) var studioCoordinator: OneStepStreamCoordinator?
 
     /// 流式阶段与降级原因（09 的降级条要说真话，所以它得能读到状态机的事实）。
+    /// `pollFailures` = 降级轮询的**连续**失败数（09 §4.2「前 3 次静默，第 4 次起出重试钮」
+    /// 的唯一读数口）。
     public func studioStreamState() async
-        -> (phase: OneStepStreamPhase?, trigger: OneStepDegradationTrigger?) {
-        guard let studioCoordinator else { return (nil, nil) }
-        return (await studioCoordinator.currentPhase(), await studioCoordinator.degradationTrigger())
+        -> (phase: OneStepStreamPhase?, trigger: OneStepDegradationTrigger?, pollFailures: Int) {
+        guard let studioCoordinator else { return (nil, nil, 0) }
+        return (
+            await studioCoordinator.currentPhase(),
+            await studioCoordinator.degradationTrigger(),
+            await studioCoordinator.pollFailureCount()
+        )
     }
 
     // MARK: 08 §3.C 的「本机在途 job」账（09 写、08 读）
@@ -517,19 +686,11 @@ public final class AppSession {
         }
     }
 
-    /// 路由/抽屉入口的统一出口：游客点需要登录的入口 → 弹登录，而不是静默禁用。
+    /// 需要登录的入口的统一出口：游客点 → 弹登录（17-S6），而不是静默禁用。
     public func requireLoginForCollections() -> Bool {
         if case .signedIn = authPhase { return true }
         loginPresented = true
         return false
-    }
-
-    /// 04 §1 入口①：顶栏字标钮开抽屉。记下是谁开的，关闭时才知道该把 VoiceOver 焦点还给谁。
-    /// 关闭不在此处（04 §1「关闭 = 回到打开前的屏」，且关闭点分散在遮罩/✕/选中项/先逛逛四处），
-    /// 归还由 `DrawerTrigger` 自己观察 `drawerOpen` 的那次回落完成。
-    public func openDrawer(from opener: DrawerOpener) {
-        drawerOpener = opener
-        drawerOpen = true
     }
 
     // MARK: 播放意图（UI 唯一入口）
@@ -651,6 +812,64 @@ public final class AppSession {
         }
         recents = []
         lastHeardItemID = nil
+    }
+
+    // MARK: 曲库搜索历史（03 §3：`.searchable` 建议区 = 本地账，最多 10 条，可清空）
+
+    /// 与「继续聆听」同一本 owner 绑定口径（D9：离线记录按账号清除）——只存搜索词文本。
+    public private(set) var librarySearchHistory: [String] = []
+    private var librarySearchHistoryOwner: String?
+
+    private static let librarySearchHistoryKeyPrefix = "cova.librarySearchHistory."
+    private static let librarySearchHistoryLimit = 10
+
+    /// 换到某个身份名下（与 `bindRecents(owner:)` 同一批调用点，同一份 owner 事实）。
+    public func bindLibrarySearchHistory(owner: String?) {
+        if let librarySearchHistoryOwner, librarySearchHistoryOwner != owner {
+            UserDefaults.standard.removeObject(
+                forKey: Self.librarySearchHistoryKeyPrefix + librarySearchHistoryOwner)
+        }
+        librarySearchHistoryOwner = owner
+        guard let owner else {
+            librarySearchHistory = []
+            return
+        }
+        librarySearchHistory =
+            UserDefaults.standard.stringArray(forKey: Self.librarySearchHistoryKeyPrefix + owner) ?? []
+    }
+
+    /// 记下一条已提交的搜索词：去空白、去重（最新的在前）、超过 10 条砍掉最旧的。
+    public func recordLibrarySearch(_ raw: String) {
+        let term = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return }
+        var next = librarySearchHistory
+        next.removeAll { $0 == term }
+        next.insert(term, at: 0)
+        if next.count > Self.librarySearchHistoryLimit {
+            next.removeLast(next.count - Self.librarySearchHistoryLimit)
+        }
+        librarySearchHistory = next
+        guard let owner = librarySearchHistoryOwner else { return }   // 游客不落盘
+        UserDefaults.standard.set(next, forKey: Self.librarySearchHistoryKeyPrefix + owner)
+    }
+
+    /// 单删一条（25 §3.C「可单删/清空」）：去空白后命中才改账；游客不落盘、内存照删
+    /// （与 `recordLibrarySearch` 同一份 owner 口径）。
+    public func removeLibrarySearchTerm(_ raw: String) {
+        let term = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard librarySearchHistory.contains(term) else { return }
+        let next = librarySearchHistory.filter { $0 != term }
+        librarySearchHistory = next
+        guard let owner = librarySearchHistoryOwner else { return }
+        UserDefaults.standard.set(next, forKey: Self.librarySearchHistoryKeyPrefix + owner)
+    }
+
+    /// 「清空」按钮与登出/换号共用这一条：当前身份名下的那一份整个作废。
+    public func clearLibrarySearchHistory() {
+        if let owner = librarySearchHistoryOwner {
+            UserDefaults.standard.removeObject(forKey: Self.librarySearchHistoryKeyPrefix + owner)
+        }
+        librarySearchHistory = []
     }
 
     // MARK: 最近播放（A1：登录态以 `GET /api/play-history` 为准，游客/离线回落本地账）
@@ -783,6 +1002,8 @@ public final class AppSession {
     public var playlistDiscovery: PlaylistDiscoveryService { PlaylistDiscoveryService(client: client) }
     /// §5 P3 每日签到（读状态 + 领取；幂等在服务端那一侧）。
     public var checkinService: CheckinService { CheckinService(client: client) }
+    /// §7 #4 删号（App 内流程；端点未上线 ⇒ 404/501 如实呈现）。
+    public var accountService: AccountService { AccountService(client: client) }
 
     // MARK: - 19 屏 P1-2 的三格（翻唱 / 续写 / 重制）
 

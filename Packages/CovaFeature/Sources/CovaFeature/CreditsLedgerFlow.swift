@@ -502,24 +502,13 @@ extension AppSession {
     /// 「任务」钮的落点。**只在 `linkedJobID != nil` 时被调用**（视图那一侧的
     /// `showsJobLink` 已经把 null 挡在渲染之前，这里再挡一次空串，两层都不猜号）。
     ///
-    /// ⚠️ **与 22 §1 互链条的一处偏差（已登记在交付说明，等 §7 收口）**：
-    /// 规格要的是 20「我的作品」的**任务定位形态**（`?job=`，其数据源
-    /// `GET /api/studio/create/works?id=` 契约 §4.4 明写"纯 jobId 返回该 job 全部行"）。
-    /// 20 那一侧的腿**已经备好了**（`AppSession.loadWorksList(anchoredTo:force:)` 与
-    /// `WorksListState.anchoredJobID`，其持有者在注释里明写「22 的『任务』钮属 §5 P2-3 那一批，
-    /// 入口一到位就能用」），但今天从本屏**接不上**，缺的是导航载荷这一格：
-    /// · `AppSession.Route.worksList` 没有关联值 ⇒ `jobID` 无从带过去，而 `AppSession.swift`
-    ///   与 `CovaRootView.swift` 都由协调者持有，不属本任务的可改面；
-    /// · 先 `setJobAnchor(...)` 再入栈也不行：20 的 `.task` 恒调 `loadWorksList()`
-    ///   （`anchoredTo: nil`），锚点会在它那一发里被抹回常规形态 —— 两屏各写一半只会得到
-    ///   "锚点闪一下就没了"那种最难复现的缺陷。
-    /// ⇒ 今天落**离它最近的已存在目的地**：20 的常规定位形态（同屏、含搜索可缩小范围）。
-    /// 收口方式二选一（都要由持有那两块的工程侧动）：给 `Route.worksList` 加可选 jobId，
-    /// 或让 20 的 `.task` 改读 `session.worksList.anchoredJobID`。
-    /// 刻意**不**为这一跳新造一个"作品详情"屏（规格里不存在它，硬边界 8：不自造屏）。
+    /// 落点 = 20「我的作品」的**任务定位形态**（22 §1 互链条）：
+    /// `Route.worksList(jobID:)` 把锚点作为路由载荷带过去，`WorksListView.task` 调
+    /// `loadWorksList(anchoredTo:)` 读它 —— 早前那段"载荷带不过去"的偏差说明已作废。
+    /// 跨页签（22 属「我的」栈、20 属「创作」栈，04 §3）⇒ 走 `navigate`：创作栈先回根再推。
     public func openCreditsLedgerJob(_ jobID: String) {
         guard CreditsLedgerRow.jobIDIsUsable(jobID) else { return }
-        path.append(.worksList(jobID: jobID))
+        navigate(to: .worksList(jobID: jobID))
     }
 }
 

@@ -8,15 +8,16 @@
 ## 1. 屏与上下文
 
 - **层级**：**全屏 present**（`elevation.zOrder` dialog 层以下、覆盖内容层），不入导航栈。
-  由受限入口以 modal 呈现；从 04 未登录卡片「登录」进入时同样为全屏 present。
-- **入口**：① 17-S6 游客登录引导 sheet 的「邮箱登录」；② 04 底部卡片「登录」主钮；
-  ③ 03/06/07 的收藏/加入队列等受限动作；④ 401 且 single-flight refresh 失败后的全局回落；
-  ⑤ 15 设置登出后的再登录。
+  由受限入口以 modal 呈现。
+- **入口**：① 17-S6 游客登录引导 sheet 的「邮箱登录」（创作/我的页签游客态，04 §6）；
+  ② 03/06/07 的收藏/加入队列等受限动作；③ 401 且 single-flight refresh 失败后的全局回落；
+  ④ 15 设置登出后的再登录。
 - **返回/关闭**：左上「✕」（**仅当本屏是以 modal 方式从可浏览上下文唤起时存在**；
-  由 ④⑤ 强制唤起时无 ✕，只能登录或走「游客浏览」）。下滑手势允许（等价 ✕）。
+  由 ③④ 强制唤起时无 ✕，只能登录或走「游客浏览」）。下滑手势允许（等价 ✕）。
 - **互链**：成功 → 回到来处屏并**重放被拦截的那一次动作意图**（登录 intent CAS 防竞态，D5）；
   「游客浏览」→ 关闭本屏回落处；隐私/条款外链 → Safari。
-- **与 04 的关系**：登录成功后不自动打开抽屉，只更新 04 底部卡片为已登录态。
+- **与外壳的关系**：登录成功后停留在当前页签（不跳转），游客态页签内容区就地换为已登录形态
+  （04 §6；原「更新 04 底部卡片」已随抽屉移除）。
 
 ## 2. 布局（393×852）
 
@@ -55,7 +56,8 @@
 - **D/F 输入胶囊**：高 50（TG-07）、圆角 `radius.capsule`、底 `color.surface`、
   内水平边距 `spacing.lg`；占位 `type.body` / `color.muted`；输入文本 `type.body` / `color.fg`
   - 默认描边：1pt `color.lineSubtle`（TG-04）
-  - **focus**：描边 1pt `color.accent`（inventory 钉死 focus accent 描边）+ 底 `color.elevated`
+  - **focus**：描边 1pt `color.focusRing`（web 同款中性灰焦点环；2026-10-03 起替代
+    `color.accent`，见 design/README「与 web 的统一设计语言」）+ 底 `color.elevated`
   - 错误态描边：1pt `color.error`
   - 密码字段为安全输入（不透出明文），右侧可见切换 👁 图标按钮 ≥44pt 热区（TG-03）
 - **G 行内错误位**：`type.subhead` / `color.error`，左侧 `exclamationmark.triangle` 符号（TG-18），
@@ -99,8 +101,8 @@
 
 ## 5. 深浅双主题差异
 
-- 底 `color.canvas`、输入底 `color.surface`、focus 抬升为 `color.elevated` + `color.accent` 描边：
-  全部双 mode token
+- 底 `color.canvas`、输入底 `color.surface`、focus 抬升为 `color.elevated` + `color.focusRing`
+  描边：全部双 mode token
 - 深色下主按钮渐变与白字同值（`gradient.brandButton` 定义即保证对比度达标）
 - 错误色 `color.error` 双主题同值；`color.accentText` 在 Dark 下为亮橙（tokens 双值），
   K 行链接无需另选色

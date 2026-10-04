@@ -54,7 +54,7 @@
 - **B 描述卡**：`color.elevated` + 1pt `color.line` + `radius.card`，内边距 `spacing.lg`；
   多行输入最少 4 行高、最多 8 行后内部滚动；占位文字 `type.body` / `color.muted`
   「说场景、说情绪、说人声…（例如：夏夜城市里的合成器流行，女声，中速）」；
-  聚焦时 1pt `color.accent` 描边（同 10 §3 输入态）；
+  聚焦时 1pt `color.focusRing` 描边（中性灰焦点环，web 同款；10 §3 输入态同步改用）；
   计数右下 `type.mono` / `type.caption`：`<utf8 字数>/2000`，
   **达上限转 `color.warning`**，超出由输入端截断（不允许提交超长串去换服务端 400）。
 - **C 主 CTA**：胶囊高 50、`gradient.brandButton` 底、白字 `type.headline`；

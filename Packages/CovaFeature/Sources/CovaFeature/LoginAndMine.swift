@@ -29,8 +29,16 @@ public struct LoginView: View {
                     .autocapitalization(.none)
                 field("密码", text: $password, secure: true)
                     .textContentType(.password)
-                CovaButton("登录", isLoading: busy) { Task { await signIn() } }
-                CovaButton("先随便看看", style: .secondary) { Task { await session.continueAsGuest() } }
+                // 10 §3.H：登录是 hero CTA 档（gradient.brandButton），不走中性玻璃。
+                CovaButton("登录", style: .brand, isLoading: busy) { Task { await signIn() } }
+                // 10 §4「先随便看看」：游客入口也在这张 sheet 里 ⇒ 点了同样要收 sheet，
+                // 不然用户「进去了」却还被登录页盖着。
+                CovaButton("先随便看看", style: .secondary) {
+                    Task {
+                        await session.continueAsGuest()
+                        session.loginPresented = false
+                    }
+                }
             }
             .padding(.horizontal, CovaSpace.pageGutter)
             if case .failed(let message) = session.authPhase {
@@ -65,6 +73,8 @@ public struct LoginView: View {
         defer { busy = false }
         await session.signIn(email: email, password: password)
         password = ""
+        // 登录成功这张 sheet 就没有存在的理由了（失败留在原地，错误文案仍在屏上）。
+        if case .signedIn = session.authPhase { session.loginPresented = false }
     }
 }
 
@@ -161,9 +171,10 @@ public enum MineCopy {
         return (info?["CFBundleShortVersionString"] as? String, info?["CFBundleVersion"] as? String)
     }
 
-    /// §6：「covaId，CV 8 F 2 K 3 A，可复制」的**读法串**（整行一条）。
+    /// §6：「Cova 号，CV 8 F 2 K 3 A，可复制」的**读法串**（整行一条）。
+    /// 标签说人话，不说字段名（2026-10-01 C3：字段名只活在代码里，不上屏不进读屏）。
     public static func covaIdRowSpoken(_ raw: String) -> String {
-        "covaId，\(covaIdSpoken(raw))，可复制"
+        "Cova 号，\(covaIdSpoken(raw))，可复制"
     }
 
     /// 可读化本体：分隔符一律断开；**首段若是纯字母前缀（`CV`）整段保留**，其后逐字符断开。
@@ -182,9 +193,10 @@ public enum MineCopy {
         return parts.joined(separator: " ")
     }
 
-    /// §6：F 商业组的行读成「会员权益，前往官网了解」（§3.F 的右值就是这句话）。
+    /// §6：商业组两行是普通站内导航（13/14 都在 App 内），读法 = 行标签本身。
+    /// （2026-10-01 D12 修订：不再有「前往官网了解」的右值——那行字暗示交易在站外。）
     public static func commerceSpoken(_ title: String) -> String {
-        "\(title)，前往官网了解"
+        title
     }
 
     private static func filled(_ raw: String?) -> String? {
@@ -228,14 +240,16 @@ private enum MineMetrics {
     static let hairline: CGFloat = 1
 }
 
-/// 「我的」（design 11）：B 用户卡 / C 余额与套餐卡 / D-E 资产入口 / F 商业组 / G 设置 / H 关于。
-///
-/// **D12（11 §验收第 1 条）**：全屏无充值/购买/升级字样与按钮，余额只读，C 卡整卡**不可点**；
-/// 余额 0 与余额 128 的布局完全同构（没有任何催促文案）。
-/// **「我的」计数行整项不构造**（§7 v1.0 裁决：无聚合计数端点）——不是显 `--`，是右值不存在。
+/// 「我的」（design 11）：**页签根屏**（04 §2），容器 = `List` + `.insetGrouped`
+/// （11 §2：组圆角/行分隔/底色交系统件，不再自绘 elevated+line 卡边）。
+/// 组序 = 账号 → 余额与套餐 → 签到（C2，独立组）→ 我的资产 → 商业 → 其他。
+/// 登出行**不在这里**（登出归 15 设置）；游客态本屏不渲染（04 §6 根区 = 17-S6 引导，
+/// 由外壳接管）。**D12**：全屏无充值/购买/升级字样，余额只读、整组不可点；
+/// 资产计数行右侧值整项不构造（§7 v1.0：无聚合计数端点）。
 public struct MineView: View {
     @Environment(AppSession.self) private var session
-    /// 11 §6 Dynamic Type：C 卡的套餐徽标在 AX 档换到「余额」标签上方。
+    /// 11 §6 Dynamic Type：组 2 的套餐徽标在 AX 档换到「余额」标签上方；
+    /// 组 1 邮箱在 AX 档并入 Cova 号行。
     @Environment(\.covaAXLayout) private var axLayout
     /// §5 P3 每日签到：这一格的状态由**服务端两格真值**拼出来（`DailyCheckinRule`），
     /// 读不懂就是 `.unknown` ⇒ 整枚不出现，不摆一枚点了不会给任何东西的钮。
@@ -259,83 +273,121 @@ public struct MineView: View {
     private var user: AuthUser? { session.meUser }
 
     public var body: some View {
-        ScrollView {
-            // D24 紧凑：主栈 24→16（列表行本身已由 `CovaListRow` 收到约 48pt 行高）。
-            VStack(alignment: .leading, spacing: CovaSpace.lg) {
-                identity
-                balanceCard
-                checkinRow
-                assets
-                commerce
-                others
+        Group {
+            if case .signedIn = session.authPhase {
+                if session.meState == .outOfSync, session.me == nil {
+                    // §4 错误腿：无缓存且失败 → 整屏 17-S3「账号信息没取到」+「重试」
+                    // （组 1/2 的全部内容都出自 `/me`，没有缓存就没有可展示的组）。
+                    meErrorFallback
+                } else {
+                    listBody
+                }
             }
-            .padding(.vertical, CovaSpace.xl)
+            // 游客/.failed/.restoring ⇒ 什么都不渲染：04 §6 的引导形态由外壳（GuestGuideView）
+            // 接管，本屏不出现 B/C/D/E/F 任何一组。
         }
-        .covaPage()
         .navigationTitle("我的")
-        .navigationBarTitleDisplayMode(.inline)
-        // `/me` 的账本在 `AppSession`（04 抽屉 G 区与本页读**同一份**）：
-        // 这里只按认证阶段变化触发一次，`loadMe` 自己会合并同身份的重复请求。
+        .toolbarTitleDisplayMode(.large)
+        // `/me` 的账本在 `AppSession`（11 §7）：这里只按认证阶段变化触发一次，
+        // `loadMe` 自己会合并同身份的重复请求。
         .task(id: authPhaseKey) {
             await session.loadMe()
             await loadCheckin()
         }
     }
 
-    // MARK: B 用户卡（§3.B：**无卡底**，直接铺在 canvas 上，免得与 C 卡双层抬升）
-
-    @ViewBuilder
-    private var identity: some View {
-        switch session.authPhase {
-        case .signedIn:
-            VStack(alignment: .leading, spacing: CovaSpace.md) {
-                HStack(alignment: .center, spacing: CovaSpace.md) {
-                    avatar
-                    VStack(alignment: .leading, spacing: CovaSpace.xs) {
-                        Text(user?.name ?? "")
-                            .font(CovaType.largeTitle).foregroundStyle(CovaColor.fg)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: CovaSpace.sm)
-                }
-                // §7 NEEDS-1：`covaId` 缺 → **整行不渲染**（不显 `--`、不用 `user.id` 冒充）。
-                if let covaId = user?.covaId, covaId.isEmpty == false {
-                    covaIdRow(covaId)
-                }
-                // §3.B 邮箱：独立一行，中段截断保留域名（`middle` 由 lineLimit+truncationMode 给）。
-                if let email = user?.email, email.isEmpty == false {
-                    Text(email)
-                        .font(CovaType.subhead).foregroundStyle(CovaColor.muted)
-                        .lineLimit(1).truncationMode(.middle)
-                }
-                // `/me` 的失败**必须可见**（原先 `try?` 把 401 与真出错一起吞成 nil）：
-                // 有旧值时 §4 走 C 卡的行内「未同步」，无旧值时才在这里说「没取到」+重试。
-                if session.meState == .outOfSync, entitlements == nil {
-                    HStack(spacing: CovaSpace.sm) {
-                        Text("账号信息没取到")
-                            .font(CovaType.subhead).foregroundStyle(CovaColor.error)
-                        Button("重试") { Task { await session.loadMe(force: true) } }
-                            .font(CovaType.subhead).foregroundStyle(CovaColor.accentText)
-                            .buttonStyle(.plain)
-                            .frame(minHeight: MineMetrics.touchMin)
-                    }
-                }
-                CovaButton("登出", style: .secondary) { Task { await session.signOut() } }
-            }
-            .padding(.horizontal, CovaSpace.pageGutter)
-        default:
-            CovaCard {
-                VStack(spacing: CovaSpace.md) {
-                    Text("未登录").font(CovaType.headline).foregroundStyle(CovaColor.fg)
-                    Text("登录后可收藏与播放完整曲目。").font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
-                    CovaButton("去登录") { session.loginPresented = true }
-                }
-            }
-            .padding(.horizontal, CovaSpace.pageGutter)
+    /// §7：下拉刷新 = 重取 `me`（force）+ 重读签到两格真值。
+    private var listBody: some View {
+        List {
+            accountSection
+            balanceSection
+            checkinSection
+            assetsSection
+            commerceSection
+            othersSection
+        }
+        .listStyle(.insetGrouped)
+        // §5：组底色/分隔线由系统 insetGrouped 承担；页面底仍走 `color.canvas`
+        // （List 默认的 systemGroupedBackground 会盖住页面色 ⇒ 让背景透出 canvas）。
+        .scrollContentBackground(.hidden)
+        .covaPage()
+        .refreshable {
+            await session.loadMe(force: true)
+            await loadCheckin()
         }
     }
 
-    /// §3.B：契约无 `avatar` 字段 ⇒ v1.0 恒为首字母占位（surface 底 + accentText 字，04 §3.G 同档 44pt）。
+    private var meErrorFallback: some View {
+        VStack(spacing: CovaSpace.md) {
+            Spacer()
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(CovaColor.error.opacity(0.8))
+                .accessibilityHidden(true)
+            Text("账号信息没取到").font(CovaType.headline).foregroundStyle(CovaColor.fg)
+            CovaButton("重试", style: .secondary) {
+                Task { await session.loadMe(force: true) }
+            }
+            .frame(maxWidth: 180)
+            Spacer()
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .covaPage()
+    }
+
+    // MARK: 组 1 账号（§3.B：单行——头像 + 名字 + Cova 号 + 邮箱，无 header）
+
+    /// §3.B/§6：行内件 = 头像 44 + 名字 + Cova 号 + 邮箱。整行**不是**按钮 ——
+    /// §6 的朗读顺序要四停（头像「用户头像」→ 名字 → Cova 号「…可复制」→ 邮箱），
+    /// 行级 Button 会把它们压成一停。「复制 Cova 号」挂在 Cova 号那一行件上：
+    /// 点按 / 长按菜单 / VoiceOver 自定义动作三条路同一动作（§6）。
+    /// **组不设 header**：A 大标题已承担层级，组标题只为多行组服务。
+    @ViewBuilder
+    private var accountSection: some View {
+        Section {
+            HStack(alignment: .center, spacing: CovaSpace.md) {
+                avatar
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(user?.name ?? "")
+                        .font(CovaType.headline).foregroundStyle(CovaColor.fg)
+                        .lineLimit(1)
+                    // §7 NEEDS-1：`covaId` 缺 → 行内件不渲染（不显 `--`、不用 `user.id` 冒充）。
+                    if let covaId {
+                        Button {
+                            UIPasteboard.general.string = covaId
+                        } label: {
+                            // §3.B：前缀「Cova 号」caption/muted，值 mono/secondary；
+                            // 标签说人话不说字段名（2026-10-01 C3）。§8：不截断，超长 2 行。
+                            Text("Cova 号 \(Text(covaId).font(CovaType.mono).foregroundStyle(CovaColor.secondary))")
+                                .font(CovaType.caption).foregroundStyle(CovaColor.muted)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, minHeight: MineMetrics.touchMin, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(MineCopy.covaIdRowSpoken(covaId))
+                        // 长按菜单与 §6 的自定义动作并存：三条路（点按 / 长按 / VoiceOver 动作）都是复制。
+                        .contextMenu {
+                            Button("复制 Cova 号") { UIPasteboard.general.string = covaId }
+                        }
+                        .accessibilityAction(named: "复制 Cova 号") {
+                            UIPasteboard.general.string = covaId
+                        }
+                    }
+                    // §6 AX 档：邮箱并入本行（与 Cova 号同一行内栈），非 AX 档也在行内第三行。
+                    if let email = user?.email, !email.isEmpty {
+                        Text(email)
+                            .font(CovaType.subhead).foregroundStyle(CovaColor.muted)
+                            .lineLimit(axLayout ? 2 : 1).truncationMode(.middle)
+                    }
+                }
+                Spacer(minLength: CovaSpace.sm)
+            }
+        }
+    }
+
+    /// §3.B：契约无 `avatar` 字段 ⇒ 恒为首字母占位（surface 底 + accentText 字，TG-05 档 44pt）。
     private var avatar: some View {
         let initial = String((user?.name ?? "").prefix(1))
         return ZStack {
@@ -349,32 +401,17 @@ public struct MineView: View {
         .accessibilityLabel("用户头像")
     }
 
-    /// §6：双击复制 + 自定义动作「复制 covaId」；给了复制动作 ⇒ 热区 ≥44（§6 末条）。
-    private func covaIdRow(_ covaId: String) -> some View {
-        Button {
-            UIPasteboard.general.string = covaId
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: CovaSpace.xs) {
-                // §3.B：前缀「covaId」是 caption/muted 的**标签**，值才是 mono/secondary。
-                Text("covaId").font(CovaType.caption).foregroundStyle(CovaColor.muted)
-                Text(covaId).font(CovaType.mono).foregroundStyle(CovaColor.secondary)
-            }
-            .frame(maxWidth: .infinity, minHeight: MineMetrics.touchMin, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(MineCopy.covaIdRowSpoken(covaId))
-        .accessibilityAddTraits(.isButton)
-        // §6 的自定义动作与系统双击激活并存（客服/配对场景要的是"念得出的一条动作"）。
-        .accessibilityAction(named: "复制 covaId") { UIPasteboard.general.string = covaId }
+    private var covaId: String? {
+        guard let id = user?.covaId, !id.isEmpty else { return nil }
+        return id
     }
 
-    // MARK: C 余额与套餐卡（§3.C，**整卡不可点**：D12 的有意设计）
+    // MARK: 组 2 余额与套餐（§3.C，D12：整组只读、不可点、无按钮）
 
     @ViewBuilder
-    private var balanceCard: some View {
-        if case .signedIn = session.authPhase {
-            VStack(alignment: .leading, spacing: CovaSpace.sm) {
+    private var balanceSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: CovaSpace.xs) {
                 if axLayout {
                     // §6 AX 档：徽标换到「余额」标签**上方**。
                     if let plan = entitlements?.plan { planBadge(plan) }
@@ -392,25 +429,15 @@ public struct MineView: View {
                     Text(expiry).font(CovaType.caption).foregroundStyle(CovaColor.muted)
                 }
             }
-            .padding(CovaSpace.xl)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous)
-                    .fill(CovaColor.elevated)
-            )
-            // TG-04：1pt `color.line` 边；阴影不加（页面内卡片，非浮动件）。
-            .overlay(
-                RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous)
-                    .strokeBorder(CovaColor.line, lineWidth: MineMetrics.hairline)
-            )
-            .padding(.horizontal, CovaSpace.pageGutter)
+            // 整组不可点（D12）：行是纯展示，不挂任何动作。
+            .accessibilityElement(children: .contain)
         }
     }
 
     private var balanceLabel: some View {
         HStack(alignment: .firstTextBaseline, spacing: CovaSpace.sm) {
             Text("余额").font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
-            // §4：`me` 最近一次失败但手里还有旧值 → 右上一次性「未同步」（不弹 Toast、不整屏）。
+            // §4：`me` 最近一次失败但手里还有旧值 → 行内一次性「未同步」（不弹 Toast、不整屏）。
             if session.meState == .outOfSync, entitlements != nil {
                 Text("未同步").font(CovaType.caption).foregroundStyle(CovaColor.muted)
             }
@@ -423,7 +450,7 @@ public struct MineView: View {
                 .font(CovaType.largeTitle)
                 .foregroundStyle(CovaColor.fg)
                 // §6/§验收第 6 条：AX 档下数值**不放大**（`type.largeTitle` 保持设计档），
-                // 标签与有效期行照常放大 —— 放大后 `--`/三位数会把卡撑破，那是假的稳。
+                // 标签与有效期行照常放大 —— 放大后 `--`/三位数会把行撑破，那是假的稳。
                 .dynamicTypeSize(DynamicTypeSize.large)
                 .monospacedDigit()
             Text("co").font(CovaType.callout).foregroundStyle(CovaColor.muted)
@@ -444,15 +471,15 @@ public struct MineView: View {
             .accessibilityLabel(MineCopy.planSpoken(plan))
     }
 
-    // MARK: C2 每日签到（§5 P3）
+    // MARK: C2 每日签到（§5 P3）：组 2 之下、组 3 之上的**独立组**
 
     /// 缺席的三种情况合并成一格：没读到、读不懂、额度被配成 0
     /// （`DailyCheckinRule.board` 都折成 `.unknown`）。
     /// 已签过的那一态是**一行说明**，不是一枚点下去什么也不会发生的钮。
     @ViewBuilder
-    private var checkinRow: some View {
+    private var checkinSection: some View {
         if let title = DailyCheckinRule.actionTitle(checkin) {
-            VStack(alignment: .leading, spacing: CovaSpace.xs) {
+            Section {
                 if checkin == .done {
                     HStack(spacing: CovaSpace.sm) {
                         Image(systemName: "checkmark.circle")
@@ -462,23 +489,32 @@ public struct MineView: View {
                     }
                     .accessibilityElement(children: .combine)
                 } else {
-                    CovaLinkRow(title: title, symbol: "giftcard") {
-                        if checkinBusy {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 13)).foregroundStyle(CovaColor.muted)
-                        }
-                    } action: {
+                    Button {
                         Task { await checkIn() }
+                    } label: {
+                        HStack(spacing: CovaSpace.md) {
+                            Image(systemName: "giftcard")
+                                .font(CovaType.callout).foregroundStyle(CovaColor.secondary)
+                                .accessibilityHidden(true)
+                            Text(title).font(CovaType.headline).foregroundStyle(CovaColor.fg)
+                            Spacer(minLength: CovaSpace.sm)
+                            if checkinBusy {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "chevron.right")
+                                    .font(CovaType.subhead).foregroundStyle(CovaColor.muted)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, minHeight: MineMetrics.touchMin, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .disabled(checkinBusy)
                 }
                 if let note = checkinNote {
                     Text(note).font(CovaType.caption).foregroundStyle(CovaColor.error)
                 }
             }
-            .padding(.horizontal, CovaSpace.pageGutter)
         }
     }
 
@@ -502,87 +538,60 @@ public struct MineView: View {
             // 编一句"额度已发完"就是替后端写文案。
             checkinNote = receipt.succeeded ? nil : "这次没签到，可以再来一次"
             // 余额是另一本账，签完必须重读。这里**要 force**：`loadMe` 对「同身份 + 已 synced」的读
-            // 直接 return（`AppSession.swift:97`），不 force 就是签完了屏上还是旧余额（§7 #53 的成因）。
+            // 直接 return，不 force 就是签完了屏上还是旧余额（§7 #53 的成因）。
             if receipt.succeeded { await session.loadMe(force: true) }
         } catch {
             checkinNote = "这次没签到，可以再来一次"
         }
     }
 
-    // MARK: D + E 我的资产（§7 v1.0：**计数行右侧值整项不构造**）
+    // MARK: 组 3 我的资产（§3.D 原生 inset 行；§7 v1.0：右侧计数整项不构造）
 
-    private var assets: some View {
-        VStack(alignment: .leading, spacing: CovaSpace.md) {
-            sectionTitle("我的资产")
-            VStack(spacing: 0) {
-                CovaLinkRow(title: "收藏", symbol: "heart") { chevron } action: { open(.favorites) }
-                CovaRowDivider()
-                CovaLinkRow(title: "我的歌单", symbol: "list.bullet") { chevron } action: { open(.myPlaylists) }
-                CovaRowDivider()
-                CovaLinkRow(title: "我的创作", symbol: "sparkles") { chevron } action: { open(.aiSessions) }
-                CovaRowDivider()
-                // 22「co 变动明细」：C 余额卡按 11 §验收第 1 条**整卡不可点**，所以流水的入口
-                // 只能落在资产组这一排里。文案只用「co / 变动 / 明细」——「积分」是 A15 明令的
-                // 漂移词；这一行只读，不带任何充值/购买语义（D12 那一条闸仍然只管库曲下载）。
-                CovaLinkRow(title: "co 变动明细", symbol: "list.bullet.rectangle") { chevron } action: {
-                    open(.creditsLedger)
-                }
-                // 11 §1/§3.E/§7：「已下载」行在 D12 合规放行前**整项不渲染**（与 04 §3.D 同一条裁决，
-                // 不是置灰/禁用）：放行前给它一个入口，等于向用户承诺一个不存在的页面。
-                // §7 v1.0 同样裁决：三行右侧的**资产计数整项不构造**（无聚合计数端点，
-                // 不显 `--`、不显 0）—— 视图树里就没有那个元素。
-            }
+    private var assetsSection: some View {
+        Section("我的资产") {
+            navRow(title: "收藏", symbol: "heart") { session.push(.favorites) }
+            navRow(title: "我的歌单", symbol: "list.bullet") { session.push(.myPlaylists) }
+            // 12c「我的创作」= 我的栈内 push（04 §3 归属表）；
+            // 它自己的「查看全部创作」才跨栈去 08。
+            navRow(title: "我的创作", symbol: "sparkles") { session.push(.myCreations) }
+            // 22「co 变动明细」：组 2 整组不可点（D12），流水入口落在资产组这一排。
+            // 文案只用「co / 变动 / 明细」——「积分」是 A15 明令的漂移词。
+            navRow(title: "co 变动明细", symbol: "list.bullet.rectangle") { session.push(.creditsLedger) }
+            // 11 §3.D/§7：「已下载」行在 D12 合规放行前**整项不渲染**（不是置灰/禁用）；
+            // §7 v1.0：各行右侧**资产计数整项不构造**（无聚合计数端点，不显 `--`/0）。
         }
     }
 
-    // MARK: F 商业组
+    // MARK: 组 4 商业（§3.E：memberGold / enterpriseBlue 色行，右值普通 chevron）
 
-    private var commerce: some View {
-        VStack(alignment: .leading, spacing: CovaSpace.md) {
-            sectionTitle("商业")
-            // §3.F：同 E 行几何，但符号与标签用 memberGold / enterpriseBlue；右值 = 「前往官网了解」+ 外链符号。
-            VStack(spacing: 0) {
-                CovaLinkRow(
-                    title: "会员权益", symbol: "star.fill",
-                    symbolColor: CovaColor.memberGold, titleColor: CovaColor.memberGold,
-                    accessibilityLabel: MineCopy.commerceSpoken("会员权益")
-                ) {
-                    commerceTrailing
-                } action: {
-                    // §1 互链：会员 → 13、企业服务 → 14（外跳动作在 13/14 自己身上，本屏不发）。
-                    session.path.append(.membership)
-                }
-                CovaRowDivider()
-                CovaLinkRow(
-                    title: "企业服务", symbol: "building.2",
-                    symbolColor: CovaColor.enterpriseBlue, titleColor: CovaColor.enterpriseBlue,
-                    accessibilityLabel: MineCopy.commerceSpoken("企业服务")
-                ) {
-                    commerceTrailing
-                } action: {
-                    session.path.append(.enterprise)
-                }
-            }
+    private var commerceSection: some View {
+        Section("商业") {
+            // §1 互链：会员 → 13、企业服务 → 14（外跳动作在 13/14 自己身上，本屏不发）。
+            navRow(
+                title: "会员权益", symbol: "star.fill",
+                symbolColor: CovaColor.memberGold, titleColor: CovaColor.memberGold,
+                accessibilityLabel: MineCopy.commerceSpoken("会员权益"),
+                trailing: { commerceTrailing }
+            ) { session.push(.membership) }
+            navRow(
+                title: "企业服务", symbol: "building.2",
+                symbolColor: CovaColor.enterpriseBlue, titleColor: CovaColor.enterpriseBlue,
+                accessibilityLabel: MineCopy.commerceSpoken("企业服务"),
+                trailing: { commerceTrailing }
+            ) { session.push(.enterprise) }
         }
     }
 
-    // MARK: G 设置入口 / H 关于行
+    // MARK: 组 5 其他（F 设置入口 → 15；G 关于行只读）
 
-    private var others: some View {
-        VStack(alignment: .leading, spacing: CovaSpace.md) {
-            sectionTitle("其他")
-            VStack(spacing: 0) {
-                CovaLinkRow(title: "设置", symbol: "gearshape", accessibilityLabel: "设置") {
-                    chevron
-                } action: {
-                    session.path.append(.settings)
-                }
-                aboutRow
-            }
+    private var othersSection: some View {
+        Section("其他") {
+            navRow(title: "设置", symbol: "gearshape") { session.push(.settings) }
+            aboutRow
         }
     }
 
-    /// §3.H + §6 末项：版本行**只读**（无 chevron、不可点），显示值正是 `project.yml` 的两枚键。
+    /// §3.G + §6 末项：版本行**只读**（无 chevron、不可点），显示值正是 `project.yml` 的两枚键。
     @ViewBuilder
     private var aboutRow: some View {
         if let version = MineCopy.versionValue(
@@ -596,9 +605,6 @@ public struct MineView: View {
                 Spacer(minLength: CovaSpace.sm)
                 Text(version).font(CovaType.subhead).foregroundStyle(CovaColor.muted)
             }
-            .padding(.horizontal, CovaSpace.pageGutter)
-            .padding(.vertical, CovaSpace.md)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(
                 MineCopy.versionSpoken(
@@ -606,7 +612,47 @@ public struct MineView: View {
         }
     }
 
-    // MARK: 行零件（§3.E 的通用几何）
+    // MARK: 行零件（§3.D 的原生 inset 行几何）
+
+    /// insetGrouped 里的一行导航项：符号 + 标签 + chevron（§3.D）。
+    /// 用 `Button` 而不用 `NavigationLink`：行内件字体/颜色按 spec 自定（headline/fg），
+    /// 且商业组要带自定义右值 —— 统一一种构造，不再为「原生 disclosure」单开一份行几何。
+    private func navRow<Trailing: View>(
+        title: String,
+        symbol: String,
+        symbolColor: Color = CovaColor.secondary,
+        titleColor: Color = CovaColor.fg,
+        accessibilityLabel: String? = nil,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() },
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: CovaSpace.md) {
+                Image(systemName: symbol)
+                    .font(CovaType.callout).foregroundStyle(symbolColor)
+                    .accessibilityHidden(true)
+                Text(title)
+                    .font(CovaType.headline).foregroundStyle(titleColor)
+                    // §8/§6：值不许截断（截断即失效）—— 换行消化。
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: CovaSpace.sm)
+                trailing()
+            }
+            .frame(maxWidth: .infinity, minHeight: MineMetrics.touchMin, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel ?? title)
+    }
+
+    private func navRow(
+        title: String,
+        symbol: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        navRow(title: title, symbol: symbol, trailing: { chevron }, action: action)
+    }
 
     private var chevron: some View {
         Image(systemName: "chevron.right")
@@ -615,24 +661,9 @@ public struct MineView: View {
     }
 
     private var commerceTrailing: some View {
-        HStack(spacing: CovaSpace.xs) {
-            Text("前往官网了解").font(CovaType.caption).foregroundStyle(CovaColor.muted)
-            Image(systemName: "arrow.up.right.square")
-                .font(CovaType.subhead).foregroundStyle(CovaColor.muted)
-        }
-        .accessibilityHidden(true)   // 这句话已经在行的 accessibilityLabel 里了
-    }
-
-    private func sectionTitle(_ title: String) -> some View {
-        // §3.D/F 分组标题：caption / muted，左右 pageGutter，下间距 md（由调用侧的 spacing 给）。
-        Text(title)
-            .font(CovaType.caption).foregroundStyle(CovaColor.muted)
-            .padding(.horizontal, CovaSpace.pageGutter)
-    }
-
-    /// 需要登录的资产入口：游客点 → 弹登录（与 04 抽屉 `.gated` 同一出口，不静默禁用）。
-    private func open(_ route: AppSession.Route) {
-        if session.requireLoginForCollections() { session.path.append(route) }
+        // 2026-10-01 D12 修订：13/14 都是站内屏，右值回归普通 chevron —
+        // 「前往官网」+外链符会暗示这笔交易在站外完成。
+        chevron
     }
 }
 

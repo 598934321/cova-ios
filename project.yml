@@ -186,8 +186,36 @@ targets:
         # → 0.2.69/80 R18-2（第 18 轮 Major）：十条美术腿改经 `CovaArtworkResolution`（D23 唯一
         #     裁决面）—— 站内相对封面/头像补成生产 origin 且查询串逐字节保留，出口拒绝点名 host；
         #     并新建 CovaFeature 最小测试目标（`CovaFeatureTests`，23 条，只钉媒体腿，无 UI 快照）
-        CFBundleShortVersionString: "0.2.81"
-        CFBundleVersion: "99"
+        # → 0.2.82/100 2026-10-01（C 项批次）：C1 时长 m:ss、C2 中性封面占位 + 行 ⋯ 收敛、
+        #     C3 Cova 号可读化、C4 会员额度空行整行不渲染、C5 Toast 落下缘、C6 会话标题兜底链；
+        #     B 项外壳规格先行（04 重写为原生 TabView，待确认后实现）。
+        # → 0.3.0/101 G2 首批：04 外壳落地（TabView 五栈位 + tabViewBottomAccessory）等。
+        # → 0.3.1/102 G2 Apple Music 参照轮（2026-10-02）：01 全量重写（问候 + 双态底置
+        #     CovaComposer + A–F feed）、03 移除 .searchable 改接 library(preset) 回显行、
+        #     05 searchQuery 回显 + 本地过滤、新增 25 搜索页签（Tab(role:.search) 系统位）。
+        # → 0.3.1/103 web v2.65.0 对齐：删号收敛为 POST /api/auth/delete-account 两步式
+        #     （无密码复核/无冷静期，按实契约如实分流）、生成档建会话落 title（#55 部分闭合）。
+        # → 0.3.2/104 web v2.65 设计语言统一（2026-10-03）：选中态去橙化（selected/
+        #     selectedBg 新 token + 7 屏回写）、按钮族转中性液态玻璃（primary）+
+        #     gradient.brandButton 只留 hero CTA、focusRing 中性灰、zOrder 结清旧账、
+        #     radius.cover 16（spec 先行，design/README「与 web 的统一设计语言」）。
+        # → 0.3.3/105 09 卡面口径落地（2026-10-03）：计划卡独立容器（elevated+line+
+        #     gradient.ai 顶条，不再借 CovaCard）/ 胶囊状态徽标 / 50pt 胶囊主钮 +
+        #     primaryButtonShadow / 费用行 mono+accentText / 「修改要求」accentText；
+        #     候选卡组改 50/50 横排大卡（1:1 封面或 CovaPixelCover + 40pt 玻璃播放钮）
+        #     与终态条同卡框（色按 §5 表）、♡/重试/选这版收入卡内操作条、
+        #     「选一版继续制作」转 CovaButton.primary 中性玻璃；AX 档纵向堆叠。
+        # → 0.3.4/106 09 对抗性审查→实现一轮（2026-10-04）：§3.A 动态会话标题 + ⋯只读信息
+        #     sheet；§3.B 降级条规格（accentSoft+warning 描边+慢旋）+ 轮询连败第4次起重试钮
+        #     （状态机 pollFailureCount）+ capReached 长任务话术；§3.C 气泡 fg+尾角；
+        #     §3.D sparkles gradient.ai；§3.E thinking 逐条展开 + OneStepThinkingCopy
+        #     （web progress-status.ts 同构表）；§3.F RunLineCopy 映射表 + completed 3s 淡出；
+        #     §9 计划卡 12 态（canStart/canRevise/analyzing 骨架/patching/starting 菊花/
+        #     manualRecovery/archived 50%/零余额 error）；§3.J composer 玻璃卡同族；
+        #     §4.1 三段骨架+空会话引导；§7 容器标签+「1 条新回复」浮钮；§10 消息窗口化
+        #     +计划卡折叠+analysisZh 4 行+并发 start 单在途+「计划已在别处更新」。
+        CFBundleShortVersionString: "0.3.4"
+        CFBundleVersion: "106"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

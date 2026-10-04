@@ -5,6 +5,8 @@ import SwiftUI
 
 /// MiniPlayer（design 02 的常驻条）：封面 + 标题 + 播放/暂停 + 下一首；点击展开全屏。
 /// **状态全部读快照**：不自己维护播放状态（单一事实源 = 协调器）。
+/// 落位 = 04 §1 的 `tabViewBottomAccessory`：系统的胶囊壳自带玻璃底与内边距 ⇒
+/// 这里**不再**自绘 `.covaGlass` 与外圈 `pageGutter`（画出来会叠成双层壳）。
 public struct MiniPlayerView: View {
     @Environment(AppSession.self) private var session
 
@@ -39,13 +41,8 @@ public struct MiniPlayerView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("下一首")
                 }
-                .padding(.horizontal, CovaSpace.md)
-                .padding(.vertical, CovaSpace.sm)
-                .covaGlass(elevated: true)
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, CovaSpace.pageGutter)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
@@ -497,7 +494,7 @@ private struct WaveformProgress: View {
     }
 }
 
-/// 02 屏反复出现的几何值（对齐 `CovaRootView` 的 `DrawerMetrics` 做法：token 缺口先集中成
+/// 02 屏反复出现的几何值（对齐 `CovaRootView` 的 `ShellMetrics` 做法：token 缺口先集中成
 /// 命名常量，不散落字面量）。touchMin = AGENTS/inventory 通用 ≥44pt 触控底线。
 enum PlayerMetrics {
     static let touchMin: CGFloat = 44

@@ -319,7 +319,7 @@ public struct CreditsLedgerView: View {
                 .foregroundStyle(CovaColor.secondary)
                 .multilineTextAlignment(.center)
             GradientCTA(CreditsLedgerCopy.emptyAction) {
-                session.path.append(.studioCreate)
+                session.navigate(to: .studioCreate)
             }
             .padding(.top, CovaSpace.md)
         }
@@ -385,7 +385,7 @@ struct RowActionModifier: ViewModifier {
     }
 }
 
-/// 本屏的几何档（TG 未入库 ⇒ 收在一处，不散落裸字面量。同 `MineMetrics` / `DrawerMetrics`）。
+/// 本屏的几何档（TG 未入库 ⇒ 收在一处，不散落裸字面量。同 `MineMetrics` / `ShellMetrics`）。
 enum CreditsLedgerMetrics {
     /// TG-19 列表行最小高。
     static let rowMinHeight: CGFloat = 52

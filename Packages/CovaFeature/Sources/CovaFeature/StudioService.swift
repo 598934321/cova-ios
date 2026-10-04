@@ -25,10 +25,13 @@ public struct StudioService: Sendable {
         try await client.get("/api/find-my-song/sessions/\(id)")
     }
 
-    /// 建会话（契约固定 `{workflowMode:'one-step', skipWelcome:true}`）。
-    public func createSession() async throws -> String {
+    /// 建会话（契约固定 `{workflowMode:'one-step', skipWelcome:true}`；`title` 可选——
+    /// §7 #55：服务端收了就 `renameSession` 成真名，08 列表不再停在「新会话」）。
+    /// 标题规范化在 `CovaCreateSessionRequestDto.normalizedTitle`（首行截 30，空 → nil）。
+    public func createSession(title: String? = nil) async throws -> String {
         let response: StudioCreateSessionResponseDto = try await client.post(
-            "/api/find-my-song/sessions", body: CovaCreateSessionRequestDto()
+            "/api/find-my-song/sessions",
+            body: CovaCreateSessionRequestDto(title: title)
         )
         return response.sessionId
     }

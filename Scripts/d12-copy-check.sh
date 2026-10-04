@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# D12 合规文案门禁（v1.0 不含任何购买/充值入口，仅展示余额）
+# D12 合规文案门禁（2026-10-01 修订：App 内购买已上线，判据改双层词表）
 #
 # 为什么要有这个脚本：design 13 §8 / 14 / 17 把「禁止出现的字样」写成了一张表，并规定
-# **命中数必须为 0**（13 的脚注缺失按 Critical 计）。这种规则靠人自觉必然漂移，
+# **命中数必须为 0**（13 的合规件缺失按 Critical 计）。这种规则靠人自觉必然漂移，
 # 所以和「播放器层无 UI」一样机制化：命中即红，且自带**负例自检**。
+#
+# 词表两层（修订后口径）：
+#   BANNED          —— 全局禁词：把交易**导去官网/站外**的话术。App 内购买已上线，
+#                     「去官网买」在任何一个文件里都是违规，白名单不赦免。
+#   BANNED_PURCHASE —— 购买词层：只允许出现在 `PURCHASE_ALLOWED_FILES` 登记的
+#                     文件里（购买 UI 与购买话术的唯一合法住所）。其余文件
+#                     出现购买词 = 绕开核销链另起购买面，红。
+# 两层之外另有一组**必备字面量**（REQUIRED_*）：13 §F 的合规三件（恢复购买 +
+# 两条法务链接锚）必须以**字符串字面量**形式躺在 REQUIRED_FILE 里，缺失即红。
 #
 # ===========================================================================
 # 本判据的口径（第 17 轮 R17-1 之后重写。它只声明自己真做到的事。）
@@ -58,6 +67,9 @@
 #
 # 跑法：`bash Scripts/d12-copy-check.sh`（本机 bash 3.2 + BSD 工具链，不用 GNU 扩展）。
 set -euo pipefail
+# 判据按字节工作（awk 的 substr/index 逐字节扫 UTF-8 字节流），钉死 C locale：
+# 没有它，运行环境的 locale 不同会让同一份文案扫出不同结果。
+export LC_ALL=C
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 TAB="$(printf '\t')"
@@ -67,11 +79,24 @@ PEND="$WORK/pending"
 mkdir -p "$WORK/bak" "$PEND"
 SELFTEST_COPY="Scripts/d12-gate-selftest-copy.txt"
 
-BANNED="购买 充值 支付 立即开通 升级 订阅管理 付款 价格 元/月 限时 优惠 恢复购买 报价 下单 立即签约 免费试用申请 ¥"
-# 13 §F：逐字脚注，缺失 = Critical
+# 词表用 | 分隔（词里含空格不能用空白分词；awk -v 又不能带真换行）。改词表前先想两层归属：
+# 「站外导流话术」进 BANNED（全局，连白名单文件也不许写）；
+# 「购买动作/价格话术」进 BANNED_PURCHASE（只允许在白名单文件里）。
+BANNED='前往官网|官网了解|官网核对|官网完成|App 内不售卖|未在 App 内|需在官网|请前往|App 内不开放'
+
+BANNED_PURCHASE='购买|订阅|恢复购买|价格|¥|元/月|支付|充值|付款|立即开通|下单|优惠|限时|免费试用|报价|立即签约'
+
+# 购买词白名单：只有这些文件的字面量可以命中 BANNED_PURCHASE。
+# 登记的判据是「这文件就是购买面/购买话术本身」：加新文件 = 声明一个新的
+# 购买文案住所，改这里前先确认它真的该是。
+PURCHASE_ALLOWED_FILES='Packages/CovaFeature/Sources/CovaFeature/MembershipAndEnterprise.swift|Packages/CovaFeature/Sources/CovaFeature/IAPService.swift'
+
+# 13 §F（修订）：合规三件 —— 「恢复购买」入口 + 两条法务链接锚 ——
+# 必须以字符串字面量逐字存在于 REQUIRED_FILE，缺失 = Critical。
 REQUIRED_FILE="Packages/CovaFeature/Sources/CovaFeature/MembershipAndEnterprise.swift"
-REQUIRED="套餐说明以官网为准，App 内不售卖。
-下载与扣费入口目前未在 App 内开放，请在官网了解与使用。"
+REQUIRED='恢复购买
+隐私政策
+服务条款'
 
 # ---------------------------------------------------------------- awk 程序 --
 cat > "$WORK/yml.awk" <<'AWK_YML'
@@ -370,12 +395,28 @@ FNR == 1 { incmt = 0; hdr = 1 }
 AWK_PLIST
 
 cat > "$WORK/match.awk" <<'AWK_MATCH'
-# 输入 LIT/ESC/UNCLOSED/BADP 记录（TSV）⇒ 输出 HIT 记录，并原样透传形态问题记录。
-BEGIN { FS = "\t"; OFS = "\t"; n = split(banned, bw, " ") }
+# 输入 LIT/ESC/UNCLOSED/BADP 记录（TSV）⇒ 输出违规记录，并原样透传形态问题记录。
+# 词表两层（见文件头）：
+#   banned  —— 全局禁词（站外导流话术），任何文件命中都违规；
+#   purch   —— 购买词层，只在 allowed 名单之外命中才违规。
+# 名单比对按**相对路径全等**（lit.tsv 里记的就是相对路径）。
+# 违规记录：VIOL<TAB>层(global|purchase)<TAB>词<TAB>文件<TAB>行<TAB>字面量
+BEGIN {
+  FS = "\t"; OFS = "\t"
+  n  = split(banned, bw, /[|]/)
+  np = split(purch, pw, /[|]/)
+  na = split(allowed, aw, /[|]/)
+  for (j = 1; j <= na; j++) if (aw[j] != "") allow[aw[j]] = 1
+}
 $1 == "LIT" {
-  txt = $4
+  txt = $4; f = $2
   for (j = 1; j <= n; j++)
-    if (bw[j] != "" && index(txt, bw[j]) > 0) print "HIT", bw[j], $2, $3, txt
+    if (bw[j] != "" && index(txt, bw[j]) > 0)
+      print "VIOL", "global", bw[j], f, $3, txt
+  if (!(f in allow))
+    for (j = 1; j <= np; j++)
+      if (pw[j] != "" && index(txt, pw[j]) > 0)
+        print "VIOL", "purchase", pw[j], f, $3, txt
   next
 }
 $1 == "ESC" || $1 == "UNCLOSED" || $1 == "BADP" { print }
@@ -605,12 +646,21 @@ scan_literals() {
   if [ -s "$WORK/keys" ]; then
     awk '{ printf "LIT\tproject.yml(INFOPLIST_KEY_)\t%s\t%s\n", NR, $0 }' "$WORK/keys" >> "$WORK/lit.tsv"
   fi
-  awk -F'\t' -v banned="$BANNED" -f "$WORK/match.awk" < "$WORK/lit.tsv" > "$WORK/viol.tsv"
-  while IFS="$TAB" read -r kind f2 f3 f4 f5; do
+  awk -F'\t' -v banned="$BANNED" -v purch="$BANNED_PURCHASE" \
+      -v allowed="$PURCHASE_ALLOWED_FILES" -f "$WORK/match.awk" \
+      < "$WORK/lit.tsv" > "$WORK/viol.tsv"
+  while IFS="$TAB" read -r kind f2 f3 f4 f5 f6; do
     case "$kind" in
-      HIT)
-        vline "❌ D12 禁词命中：「$f2」出现在 $f3:$f4"
-        info "   字面量：$f5"
+      VIOL)
+        case "$f2" in
+          global)
+            vline "❌ D12 全局禁词命中：「$f3」出现在 $f4:$f5（站外导流话术在哪个文件都不许写）"
+            ;;
+          *)
+            vline "❌ D12 购买词命中：「$f3」出现在 $f4:$f5（购买话术只许在 PURCHASE_ALLOWED_FILES 登记的文件里）"
+            ;;
+        esac
+        info "   字面量：$f6"
         ;;
       ESC)
         vline "❌ D12：$f2:$f3 的字面量里出现 \\u{…} 码点转义 —— 禁词可以按码点写进来，本脚本不解码 ⇒ 按红处理"
@@ -657,14 +707,14 @@ check_surface_alive() {
   done < "$WORK/excl"
 }
 
-# 逐字脚注必须以**字面量**形式存在（design 13 §F，缺失 = Critical）
+# 合规三件必须以**字面量**形式存在（design 13 §F 修订，缺失 = Critical）
 check_footnotes() {
   local t
   while IFS= read -r t; do
     [ -n "$t" ] || continue
     if ! awk -F'\t' -v want="$t" -v f="$REQUIRED_FILE" \
         '$1 == "LIT" && $2 == f && index($4, want) > 0 { found = 1 } END { exit(found ? 0 : 1) }' "$WORK/lit.tsv"; then
-      vline "❌ D12 合规脚注缺失、或已不在字符串字面量里（design 13 §F，缺失按 Critical）：$t"
+      vline "❌ D12 必备购买文案缺失、或已不在字符串字面量里（design 13 §F，缺失按 Critical）：$t"
       info "   应在：$REQUIRED_FILE"
     fi
   done <<EOF
@@ -881,13 +931,49 @@ act_yml_unknown() {
 }
 undo_yml_unknown() { restore_subst project.yml ''; }
 
+# 双层词表的四段负例：包内非白名单文件植购买词（须抓）、白名单文件植购买词
+# （须放行）、白名单文件植**全局**词（白名单不赦免，须抓）、删掉 REQUIRED 里
+# 一条必备字面量（缺失 = Critical，须抓）。
+act_purchase_outside() { snippet_of purchase_outside "$WORK/s"; plant_append "$PKG_FILE" "$WORK/s"; }
+undo_purchase_outside() { unplant_append "$PKG_FILE" "$WORK/s"; }
+
+act_purchase_inside() { snippet_of purchase_inside "$WORK/s"; plant_append "$REQUIRED_FILE" "$WORK/s"; }
+undo_purchase_inside() { unplant_append "$REQUIRED_FILE" "$WORK/s"; }
+
+act_global_in_whitelist() { snippet_of global_in_whitelist "$WORK/s"; plant_append "$REQUIRED_FILE" "$WORK/s"; }
+undo_global_in_whitelist() { unplant_append "$REQUIRED_FILE" "$WORK/s"; }
+
+act_required_missing() {
+  REQUIRED_LINE="$(grep -nF 'Button("恢复购买")' "$REQUIRED_FILE" | head -1 | cut -d: -f1)"
+  if [ -z "$REQUIRED_LINE" ]; then
+    printf '   ❌ %s 里找不到 Button("恢复购买") 那一行 ⇒ 自检植入点漂移\n' "$REQUIRED_FILE" >&2
+    return 1
+  fi
+  mutate_nth_line "$REQUIRED_FILE" "$REQUIRED_LINE" \
+    '            Button("[d12selftest:required_missing]") { restorePurchases() }'
+}
+undo_required_missing() { restore_subst "$REQUIRED_FILE" '[d12selftest:required_missing]'; }
+
 # ------------------------------------------------------------------ 开跑 --
 run_gate
 APP_ROOT="$(awk '!/^Packages\// { print; exit }' "$WORK/roots")"
 [ -n "$APP_ROOT" ] || APP_ROOT="$(head -1 "$WORK/roots")"
 PKG_ROOT="$(awk '/^Packages\// { print; exit }' "$WORK/roots")"
 APP_FILE="$( { find "$APP_ROOT" -name '*.swift' -type f 2>/dev/null || true; } | sort | head -1)"
-PKG_FILE="$( { find "$PKG_ROOT" -name '*.swift' -type f 2>/dev/null || true; } | sort | head -1)"
+# 包内负例的植入点必须是**非白名单**文件（否则"白名单外出现购买词"测不出来）。
+# 包根一个个翻，取第一个不在 PURCHASE_ALLOWED_FILES 里的 .swift。
+PKG_FILE=''
+while IFS= read -r pkg_root_candidate; do
+  case "$pkg_root_candidate" in Packages/*) ;; *) continue ;; esac
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "|$PURCHASE_ALLOWED_FILES|" in
+      *"|$f|"*) continue ;;                     # 白名单文件不能当"白名单外"的植入点
+    esac
+    PKG_FILE="$f"; break
+  done < <( { find "$pkg_root_candidate" -name '*.swift' -type f 2>/dev/null || true; } | sort )
+  [ -n "$PKG_FILE" ] && break
+done < "$WORK/roots"
 PLIST_FILE="$(head -1 "$WORK/plists")"
 # app target 的 sources 声明在 project.yml 里的行号/原文（自检要改的就是这一行）
 APP_ROOT_LINE="$(awk -F'\t' -v r="$APP_ROOT" '$1 == "SRC" && $4 == r { print $2; exit }' "$WORK/yml.tsv")"
@@ -911,18 +997,23 @@ BASE="$(count_viol "$REP")"
 printf '\nD12 自检（沿真实违规路径植入；诱饵文本见 %s）：\n' "$SELFTEST_COPY"
 CASES_RUN=0
 for spec in \
-  "app_target_literal|d12selftest:app_line|act_app_line|undo_app_line" \
-  "package_literal|d12selftest:package_line|act_pkg_line|undo_pkg_line" \
-  "block_literal_三引号|d12selftest:block_literal|act_pkg_block|undo_pkg_block" \
-  "info_plist_显示名|d12selftest:plist_copy|act_plist_copy|undo_plist_copy" \
-  "未解析载体_strings|__d12_selftest.strings|act_carrier|undo_carrier" \
-  "yml_裸标量条目|d12selftest:app_line|act_yml_bare|undo_yml_bare" \
-  "yml_行尾注释|d12selftest:app_line|act_yml_comment|undo_yml_comment" \
-  "yml_不认识的写法|无法识别|act_yml_unknown|undo_yml_unknown"; do
+  "app_target_literal|d12selftest:app_line|caught|act_app_line|undo_app_line" \
+  "package_literal|d12selftest:package_line|caught|act_pkg_line|undo_pkg_line" \
+  "block_literal_三引号|d12selftest:block_literal|caught|act_pkg_block|undo_pkg_block" \
+  "info_plist_显示名|d12selftest:plist_copy|caught|act_plist_copy|undo_plist_copy" \
+  "未解析载体_strings|__d12_selftest.strings|caught|act_carrier|undo_carrier" \
+  "yml_裸标量条目|d12selftest:app_line|caught|act_yml_bare|undo_yml_bare" \
+  "yml_行尾注释|d12selftest:app_line|caught|act_yml_comment|undo_yml_comment" \
+  "yml_不认识的写法|无法识别|caught|act_yml_unknown|undo_yml_unknown" \
+  "购买词_白名单外|d12selftest:purchase_outside|caught|act_purchase_outside|undo_purchase_outside" \
+  "购买词_白名单内|d12selftest:purchase_inside|clean|act_purchase_inside|undo_purchase_inside" \
+  "全局词_白名单内|d12selftest:global_in_whitelist|caught|act_global_in_whitelist|undo_global_in_whitelist" \
+  "必备字面量_缺失|必备购买文案缺失|caught|act_required_missing|undo_required_missing"; do
   name="$(printf '%s' "$spec" | cut -d'|' -f1)"
   marker="$(printf '%s' "$spec" | cut -d'|' -f2)"
-  act="$(printf '%s' "$spec" | cut -d'|' -f3)"
-  undo="$(printf '%s' "$spec" | cut -d'|' -f4)"
+  expect="$(printf '%s' "$spec" | cut -d'|' -f3)"
+  act="$(printf '%s' "$spec" | cut -d'|' -f4)"
+  undo="$(printf '%s' "$spec" | cut -d'|' -f5)"
   CUR_MARKER="$marker"                # 反向复原后靠它确认「诱饵真的不在文件里」
   CASES_RUN=$((CASES_RUN + 1))
   if ! "$act"; then
@@ -932,7 +1023,16 @@ for spec in \
   fi
   run_gate
   n="$(count_viol "$REP")"
-  if grep -qF -- "$marker" "$REP" && [ "$n" -gt "$BASE" ]; then
+  if [ "$expect" = clean ]; then
+    # 放行断言：报告里不许出现这段诱饵的记号，违规数也不许涨
+    if ! grep -qF -- "$marker" "$REP" && [ "$n" -eq "$BASE" ]; then
+      printf '  %-22s ⇒ 按预期放行（违规 %s = 基线 %s，记号 %s 未出现）\n' "$name" "$n" "$BASE" "$marker"
+    else
+      printf '  %-22s ⇒ ❌ 判据失效：白名单内的购买词不该红（违规 %s，基线 %s）\n' "$name" "$n" "$BASE"
+      { grep -F -- "$marker" "$REP" || true; } | head -3 | sed 's/^/      /'
+      SELFTEST_BROKEN=1
+    fi
+  elif grep -qF -- "$marker" "$REP" && [ "$n" -gt "$BASE" ]; then
     printf '  %-22s ⇒ 抓到（违规 %s → %s，记号 %s）\n' "$name" "$BASE" "$n" "$marker"
   else
     where="$( { grep -qF -- "$marker" "$REP" && printf '在报告里'; } || printf '不在报告里'; )"
@@ -970,4 +1070,4 @@ if [ "$BASE" -gt 0 ]; then
   printf 'D12 文案门禁未通过（%s 条违规）\n' "$BASE"
   exit 1
 fi
-printf '✅ D12 文案门禁通过：禁词命中 0；扫描面覆盖全仓 .swift；载体面无未解析文件；逐字脚注在册\n'
+printf '✅ D12 文案门禁通过：两层禁词命中 0；扫描面覆盖全仓 .swift；载体面无未解析文件；必备购买字面量在册\n'

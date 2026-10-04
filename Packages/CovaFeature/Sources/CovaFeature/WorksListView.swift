@@ -322,7 +322,7 @@ public struct WorksListView: View {
     /// · 状态徽标 / 失败原文 / 占位说明都写在**行下方**（`CovaListRow` 没有"标题后插一枚胶囊"的槽位，
     ///   而本仓的 `纯音乐` 徽标从 19 起就是文本位 —— 与 §3.E「主标题后追加」的**位置**有出入，
     ///   值与读法一致，已按"代码赢机理、规格赢呈现"登记在交付说明里）；
-    /// · 行内动作是**四枚**（▶ / ↓ / ♡ / ⋯，§3.E + TG-45），占位行**一枚都不渲染**；
+    /// · 行内动作收敛为**一枚 ⋯**（2026-10-01 C2 修，§3.E + TG-45），占位行**一枚都不渲染**；
     /// · 行点击 = ▶（§3.E 末条）。
     private func worksRow(_ row: WorksListRowDto, index: Int) -> some View {
         let title = row.displayTitle ?? WorksListCopy.untitled
@@ -335,8 +335,10 @@ public struct WorksListView: View {
                     resolution: CovaArtworkResolution(serverValue: row.coverUrl), title: title
                 )
             ) {
-                // AX 档下四枚钮整排挪到第二行（§6），这一格腾出来 ⇒ 不缩任何一枚的热区。
-                if allowsActions, !axLayout { actionButtons(row) }
+                // 行内只留一枚 ⋯（2026-10-01 C2 修）：四枚 44pt 钮把标题压到约 7 个字，
+                // ♡/↓/播放全部收进 ⋯ 菜单，标题才能稳定读到约 12 个字。
+                // AX 档下这枚 ⋯ 整排挪到第二行（§6），这一格腾出来。
+                if allowsActions, !axLayout { moreButton(row) }
             } action: {
                 // 行点击 = ▶。占位行/失败行没有可播的音频 ⇒ 什么都不做
                 // （"点了没反应"必须能由屏上那一行「这首还在做」解释，而不是靠一句 Toast）。
@@ -347,29 +349,67 @@ public struct WorksListView: View {
             .accessibilityIdentifier("cova.works.row.\(index)")
 
             if allowsActions, axLayout {
-                actionButtons(row)
+                HStack { Spacer(minLength: 0); moreButton(row) }
                     .padding(.horizontal, CovaSpace.pageGutter)
             }
             underRowExtras(row)
         }
     }
 
-    /// 行内四枚动作（每枚 ≥44pt，TG-03/TG-45）。
-    private func actionButtons(_ row: WorksListRowDto) -> some View {
-        HStack(spacing: CovaSpace.sm) {
-            rowButton(
-                symbol: "play.circle",
-                tint: CovaColor.accent,
-                label: WorksListCopy.play,
-                busy: false
-            ) {
-                guard row.isPlayable else { return }
-                Task { await session.playWorksRow(id: row.id) }
+    /// 状态徽标：文案**一律**取 `GenerationJobStatus.userLabel`（A15 术语唯一源），
+    /// 屏上不得出现 `queued/processing/succeeded` 这类英文态名（17 §10 禁令）。
+    /// `succeeded` 且可播 ⇒ **不渲染**（成功是默认预期，给它徽标等于把其他态抬成焦点）。
+    private func statusBadge(for row: WorksListRowDto) -> String? {
+        guard let status = row.status else { return nil }
+        if status == .succeeded, row.isPlayable { return nil }
+        return status.userLabel
+    }
+
+    /// 副标题 = 时长（`type.mono`）+（纯音乐时）「纯音乐」。
+    /// `duration == null` ⇒ 时长位**整段不渲染**，不显 `--`（§7：这里本就没有数值）。
+    private func subtitle(for row: WorksListRowDto) -> String? {
+        var parts: [String] = []
+        if let duration = row.displayDuration { parts.append(PlayerTime.elapsed(duration)) }
+        if row.instrumental == true { parts.append(WorksListCopy.instrumental) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    // MARK: - 行内唯一按钮（⋯ ≥44pt，TG-03/TG-45；其余动作在行 ⋯ 菜单里）
+
+    private func rowButton(
+        symbol: String, tint: Color, label: String, busy: Bool, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            ZStack {
+                Image(systemName: symbol)
+                    .font(CovaType.title)
+                    .foregroundStyle(tint)
+                    .opacity(busy ? 0.35 : 1)
+                    .accessibilityHidden(true)
+                if busy {
+                    ProgressView().controlSize(.mini)
+                }
             }
-            saveButton(row)
-            favoriteButton(row)
-            moreButton(row)
+            .frame(width: Metrics.touch, height: Metrics.touch)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    /// 行尾 ⋯ = **clip 级**动作的唯一落点（§3.E）：播放 / 喜欢 / 保存到本机 /
+    /// 不喜欢 / 做成笔记 / 歌词 / 补充制作。这里**不存在**重命名/删除/分享 ——
+    /// 那三项是 job 级的，靠"物理上放不到一行上"表达作用域。
+    private func moreButton(_ row: WorksListRowDto) -> some View {
+        rowButton(
+            symbol: "ellipsis",
+            tint: CovaColor.secondary,
+            label: WorksListCopy.moreActions,
+            busy: false
+        ) {
+            menu = .row(rowID: row.id)
+        }
+        .accessibilityIdentifier("cova.works.rowMenu.\(row.id)")
     }
 
     /// 行下方那一区：徽标胶囊（可枚）+ 一句说明（最多一条）。
@@ -405,96 +445,6 @@ public struct WorksListView: View {
         }
         if row.isPendingPlaceholder { return (WorksListCopy.stillGenerating, false) }
         return nil
-    }
-
-    /// 状态徽标：文案**一律**取 `GenerationJobStatus.userLabel`（A15 术语唯一源），
-    /// 屏上不得出现 `queued/processing/succeeded` 这类英文态名（17 §10 禁令）。
-    /// `succeeded` 且可播 ⇒ **不渲染**（成功是默认预期，给它徽标等于把其他态抬成焦点）。
-    private func statusBadge(for row: WorksListRowDto) -> String? {
-        guard let status = row.status else { return nil }
-        if status == .succeeded, row.isPlayable { return nil }
-        return status.userLabel
-    }
-
-    /// 副标题 = 时长（`type.mono`）+（纯音乐时）「纯音乐」。
-    /// `duration == null` ⇒ 时长位**整段不渲染**，不显 `--`（§7：这里本就没有数值）。
-    private func subtitle(for row: WorksListRowDto) -> String? {
-        var parts: [String] = []
-        if let duration = row.displayDuration { parts.append(PlayerTime.elapsed(duration)) }
-        if row.instrumental == true { parts.append(WorksListCopy.instrumental) }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    // MARK: 行内四枚按钮（≥44pt，TG-03/TG-45）
-
-    private func rowButton(
-        symbol: String, tint: Color, label: String, busy: Bool, action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            ZStack {
-                Image(systemName: symbol)
-                    .font(CovaType.title)
-                    .foregroundStyle(tint)
-                    .opacity(busy ? 0.35 : 1)
-                    .accessibilityHidden(true)
-                if busy {
-                    ProgressView().controlSize(.mini)
-                }
-            }
-            .frame(width: Metrics.touch, height: Metrics.touch)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-    }
-
-    /// ↓ = 直存到本机（**不 checkout、不扣费**，A6）；已存 ⇒ `checkmark.circle` + 再点二次确认删除。
-    /// 验收腿的两枚标签：「保存到本机」/「删除本机文件」（`CovaAcceptanceTests` 按这两个字定位）。
-    private func saveButton(_ row: WorksListRowDto) -> some View {
-        let saved = session.savedWorkIDs.contains(row.id)
-        return rowButton(
-            symbol: saved ? "checkmark.circle" : "arrow.down.circle",
-            tint: saved ? CovaColor.success : CovaColor.muted,
-            label: saved ? WorksListCopy.removeSaved : WorksListCopy.save,
-            busy: false
-        ) {
-            guard row.isPlayable else { return }
-            if saved {
-                pendingLocalDelete = row
-            } else {
-                Task { await session.saveWorksRow(id: row.id) }
-            }
-        }
-    }
-
-    /// ♡：乐观更新 + 失败回落（在会话层），选中 `color.accent`。
-    /// `signalConflict` 的行**两个标记都不亮**（§3.E），并另说一句"没读准"（`underRowLine`）。
-    private func favoriteButton(_ row: WorksListRowDto) -> some View {
-        let on = state.favoriteIsOn(row)
-        return rowButton(
-            symbol: on ? "heart.fill" : "heart",
-            tint: on ? CovaColor.accent : CovaColor.muted,
-            label: WorksListCopy.favorite,
-            busy: state.hasWriteInFlight(key: row.id)
-        ) {
-            Task { await session.toggleWorksFavorite(id: row.id) }
-        }
-        // §6：选中态并进同一个元素，不另起一停。
-        .accessibilityAddTraits(on ? .isSelected : [])
-    }
-
-    /// 行尾 ⋯ = **clip 级**五项（§3.E）：不喜欢 / 做成笔记 / 歌词 / 补充制作。
-    /// 这里**不存在**重命名/删除/分享 —— 那三项是 job 级的，靠"物理上放不到一行上"表达作用域。
-    private func moreButton(_ row: WorksListRowDto) -> some View {
-        rowButton(
-            symbol: "ellipsis",
-            tint: CovaColor.secondary,
-            label: WorksListCopy.moreActions,
-            busy: false
-        ) {
-            menu = .row(rowID: row.id)
-        }
-        .accessibilityIdentifier("cova.works.rowMenu.\(row.id)")
     }
 
     // MARK: - F 尾部状态行
@@ -600,7 +550,7 @@ public struct WorksListView: View {
                 hint: WorksListCopy.emptyHint,
                 actionTitle:WorksListCopy.emptyCTA
             ) {
-                session.path.append(.studioCreate)
+                session.push(.studioCreate)
             }
         }
     }
@@ -670,28 +620,57 @@ public struct WorksListView: View {
             }
         case .row(let rowID):
             if let row = state.row(id: rowID) {
-                Button(state.dislikeIsOn(row) ? "\(WorksListCopy.dislike)（已选）" : WorksListCopy.dislike) {
-                    Task { await session.toggleWorksDislike(id: rowID) }
-                }
-                Button(
-                    state.materializedNoteRowIDs.contains(rowID)
-                        ? WorksListCopy.noteDone : WorksListCopy.note
-                ) {
-                    Task { await session.materializeWorksNote(id: rowID) }
-                }
-                // 纯音乐且没有词 ⇒ 「歌词」项**不渲染**（07 §3.H 同判据）。
-                if !(row.instrumental == true && WorksListQuery.textIfPresent(row.lyrics) == nil) {
-                    Button(WorksListCopy.lyrics) {
-                        sheet = .lyrics(rowID: rowID)
-                        Task { await session.loadWorksLyrics(id: rowID) }
+                // 行内收敛为 ⋯ 之后（2026-10-01 C2），「播放 / 保存 / 喜欢」全收进这里；
+                // 项集与顺序由 `WorksRowMenuItem.items` 判（可测），这里只做呈现与分发。
+                // 「播放」留一项是为了 VoiceOver：整行点击的语义只有菜单里这枚是显式念出来的。
+                let items = WorksRowMenuItem.items(
+                    for: row,
+                    favoriteOn: state.favoriteIsOn(row),
+                    dislikeOn: state.dislikeIsOn(row),
+                    saved: session.savedWorkIDs.contains(rowID),
+                    noteDone: state.materializedNoteRowIDs.contains(rowID)
+                )
+                ForEach(items, id: \.self) { item in
+                    switch item {
+                    case .play:
+                        Button(WorksListCopy.play) {
+                            Task { await session.playWorksRow(id: rowID) }
+                        }
+                    case .save(let saved):
+                        Button(saved ? WorksListCopy.removeSaved : WorksListCopy.save) {
+                            if saved {
+                                // 连续两个 confirmationDialog 要先让菜单关完再弹确认框，
+                                // 同一个 frame 里切换 `menu`/`pendingLocalDelete` 会吃掉其中一个。
+                                Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 300_000_000)
+                                    pendingLocalDelete = row
+                                }
+                            } else {
+                                Task { await session.saveWorksRow(id: rowID) }
+                            }
+                        }
+                    case .favorite(let on):
+                        Button(on ? "\(WorksListCopy.favorite)（已选）" : WorksListCopy.favorite) {
+                            Task { await session.toggleWorksFavorite(id: rowID) }
+                        }
+                    case .dislike(let on):
+                        Button(on ? "\(WorksListCopy.dislike)（已选）" : WorksListCopy.dislike) {
+                            Task { await session.toggleWorksDislike(id: rowID) }
+                        }
+                    case .note(let done):
+                        Button(done ? WorksListCopy.noteDone : WorksListCopy.note) {
+                            Task { await session.materializeWorksNote(id: rowID) }
+                        }
+                    case .lyrics:
+                        Button(WorksListCopy.lyrics) {
+                            sheet = .lyrics(rowID: rowID)
+                            Task { await session.loadWorksLyrics(id: rowID) }
+                        }
+                    case .extras:
+                        // 21 面板（作品路径）。`cova.works.extras` 是验收腿锚点，不许改名。
+                        Button("补充制作") { sheet = .extras(rowID: rowID) }
+                            .accessibilityIdentifier("cova.works.extras")
                     }
-                }
-                // 21 面板的**生产入口**（作品路径）。没有这一格，extras 就只能靠走查键到达 ——
-                // 那等于"有一张截图但没有这一屏"。只有正身候选行才给：作品路径**只认伪 id**，
-                // 裸 jobId 服务端 404（§4.7），而占位行连音频都还没有。
-                if row.isRealCandidateRow, row.status == .succeeded {
-                    Button("补充制作") { sheet = .extras(rowID: rowID) }
-                        .accessibilityIdentifier("cova.works.extras")
                 }
             }
         case nil:
@@ -751,7 +730,7 @@ public struct WorksListView: View {
                         Text(sort.sheetTitle).font(CovaType.body).foregroundStyle(CovaColor.fg)
                         Spacer()
                         if state.sort == sort {
-                            Image(systemName: "checkmark").foregroundStyle(CovaColor.accent)
+                            Image(systemName: "checkmark").foregroundStyle(CovaColor.selected)
                         }
                     }
                     .frame(minHeight: Metrics.touch)
@@ -954,6 +933,51 @@ private struct RenamePanel: View {
 private enum WorksMenu: Equatable {
     case group(anchor: String, count: Int)
     case row(rowID: String)
+}
+
+// MARK: - 行 ⋯ 菜单项判据（2026-10-01 C2：行内只留 ⋯，其余动作收进菜单）
+
+/// 行 ⋯ 菜单的**有序项集**。判据收成一个纯函数而不是散在 `menuActions` 的 `if` 里：
+/// 这里的规则（不可播没有播放/保存、占位行整个没有菜单、纯音乐没词不给歌词项）
+/// 每一条都要能在单测里钉死 —— CovaFeature 没有 UI 测试目标（TD-48），
+/// 「菜单里有什么」是这一屏唯一能被机械执行的行级契约。
+enum WorksRowMenuItem: Equatable, Hashable {
+    case play
+    case favorite(Bool)
+    case save(Bool)
+    case dislike(Bool)
+    case note(Bool)
+    case lyrics
+    case extras
+
+    /// 从**行**与**会话侧的已解析标记**算这份菜单。
+    /// `favoriteOn/dislikeOn/saved/noteDone` 必须由调用方给解析后的布尔
+    /// （`state.favoriteIsOn` / `session.savedWorkIDs.contains` 之类），
+    /// 这里不再去读 row 上的 `favorited`——服务端缺键即 false 的口径和
+    /// 行内 override 的口径都已经在状态层合流了。
+    static func items(
+        for row: WorksListRowDto,
+        favoriteOn: Bool, dislikeOn: Bool, saved: Bool, noteDone: Bool
+    ) -> [WorksRowMenuItem] {
+        var result: [WorksRowMenuItem] = []
+        // 不可播 ⇒ 播放/保存都不给（给一枚点了没反应的钮不如没有）。
+        if row.isPlayable {
+            result.append(.play)
+            result.append(.save(saved))
+        }
+        result.append(.favorite(favoriteOn))
+        result.append(.dislike(dislikeOn))
+        result.append(.note(noteDone))
+        // 纯音乐且没有词 ⇒ 「歌词」项不渲染（07 §3.H 同判据，与原行 ⋯ 一致）。
+        if !(row.instrumental == true && WorksListQuery.textIfPresent(row.lyrics) == nil) {
+            result.append(.lyrics)
+        }
+        // 21 面板（作品路径）只认伪 id：裸 jobId 服务端 404（§4.7），占位行更没有音频。
+        if row.isRealCandidateRow, row.status == .succeeded {
+            result.append(.extras)
+        }
+        return result
+    }
 }
 
 private enum WorksSheet: Identifiable, Equatable {

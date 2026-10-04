@@ -23,17 +23,29 @@ public struct PlaylistsPlazaView: View {
     /// （今天两者同源，都来自 03 那份摊平的 `LibraryFilterTerm.value`）。
     @State private var scenes: [(key: String, label: String)] = []
     @State private var scene: String?
+    /// `plazaSearch(q)` 路由带入的检索词（05 §1，2026-10-02）：回显行 + 网格本地过滤。
+    @State private var activeQuery: String?
 
     private enum Phase: Equatable { case loading, ready, failed(CatalogFailure) }
 
-    public init() {}
+    public init(searchQuery: String? = nil) {
+        // 去空白后为空 = 没带条件（等价 `plaza` 路由形态，不发空搜索键那一族的同一判据）。
+        _activeQuery = State(initialValue: WorksListQuery.textIfPresent(searchQuery))
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
+            // §1：回显行在导航条下、三源段控件之上；✕/「清除搜索」同一个动作。
+            if let activeQuery {
+                CovaSearchEchoRow(query: activeQuery) { self.activeQuery = nil }
+            }
             sourceRow
             if source.showsSceneChips { chipRow }
             content
         }
+        // 非 .ready 各态（骨架/整屏错误/空态）自身不纵向扩展，缺这一行整个 VStack 会被
+        // SwiftUI 居中，回显行与 chips 一起沉到屏幕中段（§2 布局图要求它们贴导航条）。
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .covaPage()
         .navigationTitle("歌单")
         .navigationBarTitleDisplayMode(.inline)
@@ -109,7 +121,9 @@ public struct PlaylistsPlazaView: View {
             CovaSkeleton(rows: 6).padding(.top, CovaSpace.lg)
         case .failed(let failure):
             // 首载失败 = **整屏**错误态；下拉刷新失败只 Toast，两者不混用（design 05 明文）。
+            // 剩余空间垂直居中（VStack 顶钉在上层，内容区剩下多少就在多少里居中）。
             CovaErrorState(kind: Self.kind(failure), retry: { Task { await load() } })
+                .frame(maxHeight: .infinity)
         case .ready:
             grid
         }
@@ -125,31 +139,55 @@ public struct PlaylistsPlazaView: View {
 
     @ViewBuilder
     private var pickGrid: some View {
+        let shown = filteredPicks
         if picks.isEmpty {
             CovaEmptyState(
                 symbol: "music.note.list",
                 title: source == .daily ? "今天还没有推荐位" : "还没有人把歌单分享出来",
                 hint: source == .daily ? "明天这个时候再来看一次。" : "在官方歌单里挑一张，或自己去建一张。"
             )
+            .frame(maxHeight: .infinity)
+        } else if shown.isEmpty, let activeQuery {
+            // 换源不换检索词：daily/广场两段同样按 `titleCn ?? title` 过滤（§1 的网格规则不分源）。
+            CovaEmptyState(
+                symbol: "magnifyingglass",
+                title: "没有找到『\(activeQuery)』相关的歌单",
+                hint: nil,
+                actionTitle: "清除搜索",
+                action: { self.activeQuery = nil }
+            )
+            .frame(maxHeight: .infinity)
         } else {
-            ScrollView {
-                LazyVGrid(
-                    columns: axLayout
-                        ? [GridItem(.flexible())]
-                        : [GridItem(.flexible(), spacing: CovaSpace.md), GridItem(.flexible())],
-                    spacing: CovaSpace.lg
-                ) {
-                    ForEach(Array(picks.enumerated()), id: \.element.playlist.id) { _, pick in
-                        pickCard(pick)
-                    }
+            pickGridList(shown)
+        }
+    }
+
+    /// 与 `filtered` 同一把尺子的 picks 版（检索词落在内嵌的 `playlist` 上）。
+    private var filteredPicks: [PlaylistPickDto] {
+        guard let activeQuery else { return picks }
+        return picks.filter {
+            ($0.playlist.titleCn ?? $0.playlist.title).localizedCaseInsensitiveContains(activeQuery)
+        }
+    }
+
+    private func pickGridList(_ shown: [PlaylistPickDto]) -> some View {
+        ScrollView {
+            LazyVGrid(
+                columns: axLayout
+                    ? [GridItem(.flexible())]
+                    : [GridItem(.flexible(), spacing: CovaSpace.md), GridItem(.flexible())],
+                spacing: CovaSpace.lg
+            ) {
+                ForEach(Array(shown.enumerated()), id: \.element.playlist.id) { _, pick in
+                    pickCard(pick)
                 }
-                .padding(.horizontal, CovaSpace.pageGutter)
-                .padding(.top, CovaSpace.md)
-                Text("已显示全部")
-                    .font(CovaType.caption).foregroundStyle(CovaColor.muted)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, CovaSpace.lg)
             }
+            .padding(.horizontal, CovaSpace.pageGutter)
+            .padding(.top, CovaSpace.md)
+            Text("已显示全部")
+                .font(CovaType.caption).foregroundStyle(CovaColor.muted)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, CovaSpace.lg)
         }
     }
 
@@ -162,14 +200,26 @@ public struct PlaylistsPlazaView: View {
                 title: "歌单还在准备中",
                 hint: "官方歌单上线后这里会出现全部场景。"
             )
+            .frame(maxHeight: .infinity)
+        } else if shown.isEmpty, let activeQuery {
+            // §1：检索过滤为空的空态是另一句话（场景空态是"这个场景还没有歌单"）。
+            CovaEmptyState(
+                symbol: "magnifyingglass",
+                title: "没有找到『\(activeQuery)』相关的歌单",
+                hint: nil,
+                actionTitle: "清除搜索",
+                action: { self.activeQuery = nil }
+            )
+            .frame(maxHeight: .infinity)
         } else if shown.isEmpty {
             CovaEmptyState(
                 symbol: "line.3.horizontal.decrease.circle",
                 title: "这个场景还没有歌单",
                 hint: "换一个场景看看，或直接说你想要什么氛围",
                 actionTitle: "去首页说一句",
-                action: { session.path = []; session.tab = .home }
+                action: { session.goToTabRoot(.home) }
             )
+            .frame(maxHeight: .infinity)
         } else {
             ScrollView {
                 LazyVGrid(
@@ -193,13 +243,23 @@ public struct PlaylistsPlazaView: View {
         }
     }
 
+    /// §7 明文「纯本地过滤，不发新请求」：先按场景 chip 收窄，再叠加检索词
+    /// （`titleCn ?? title` 的大小写不敏感子串匹配 —— 歌单没有别的可搜字段，不猜）。
     private var filtered: [PlaylistDto] {
-        guard let scene else { return playlists }
-        return playlists.filter { $0.scene == scene }
+        var list = playlists
+        if let scene {
+            list = list.filter { $0.scene == scene }
+        }
+        if let activeQuery {
+            list = list.filter {
+                ($0.titleCn ?? $0.title).localizedCaseInsensitiveContains(activeQuery)
+            }
+        }
+        return list
     }
 
     private func card(_ playlist: PlaylistDto) -> some View {
-        Button { session.path.append(.playlist(playlist.id)) } label: {
+        Button { session.push(.playlist(playlist.id)) } label: {
             cardBody(playlist)
         }
         .buttonStyle(.plain)
@@ -212,10 +272,10 @@ public struct PlaylistsPlazaView: View {
     private func pickCard(_ pick: PlaylistPickDto) -> some View {
         switch PlaylistBoard.destination(for: pick) {
         case .officialPlaylist(let id):
-            Button { session.path.append(.playlist(id)) } label: { cardBody(pick.playlist) }
+            Button { session.push(.playlist(id)) } label: { cardBody(pick.playlist) }
                 .buttonStyle(.plain)
         case .sharedPlaylist(let token):
-            Button { session.path.append(.sharedPlaylist(token)) } label: { cardBody(pick.playlist) }
+            Button { session.push(.sharedPlaylist(token)) } label: { cardBody(pick.playlist) }
                 .buttonStyle(.plain)
         case .nowhere:
             cardBody(pick.playlist)
@@ -321,7 +381,12 @@ public struct SettingsView: View {
     @State private var notifyStatus = "未设置"
     @State private var confirmLogout = false
     @State private var confirmClear = false
-    @State private var needWebsite = false
+    // §3.G 注销链（2026-10-02 对齐 web v2.65.0）：后果 Dialog → POST 分流。
+    // 端点无请求体、立即生效、无冷静期与撤销 ⇒ 本屏没有密码框、没有受理态。
+    @State private var confirmDelete = false
+    @State private var deleteBusy = false
+    /// 一次逻辑注销操作的幂等凭据：可重试的失败（5xx/传输）**复用**，新操作才重建。
+    @State private var deleteToken: IdempotentRequestToken?
 
     public init() {}
 
@@ -361,16 +426,6 @@ public struct SettingsView: View {
                 link("服务条款", "https://covalink.cn/terms")
                 link("版权说明", "https://covalink.cn/copyright")
             }
-            // 账号段整段（含分组标题）仅已登录渲染；游客顶部不出现登录引导行。
-            if case .signedIn = session.authPhase {
-                Section("账号") {
-                    // §3.G + §7 NEEDS-4：右值「需前往官网」是这条缺口唯一的**可见**形态，
-                    // 不能省 —— 省掉就等于让用户以为点下去能在 App 内删号。
-                    valueRow("账号删除", value: "需前往官网") { needWebsite = true }
-                    // §3.H：整行文字 error 色 = destructive 语义，无尾符号。
-                    Button("登出", role: .destructive) { confirmLogout = true }
-                }
-            }
             Section("关于") {
                 // §3.I + §3.H：版本 = `CFBundleShortVersionString (CFBundleVersion)`，**只读**；
                 // 两枚键任一取不到 ⇒ 整行不渲染（装配出错不该被印成产品信息）。
@@ -382,6 +437,32 @@ public struct SettingsView: View {
                 }
                 // I′ 开源许可：零第三方依赖 ⇒ 这一行**不渲染**（不是"暂无内容"）。
             }
+            // 账号段整段（含分组标题）仅已登录渲染，且是**最后一组**（11 §5 P3 组序：
+            // 破坏性的登出/注销沉到最底，「关于」信息组在它之上）；游客顶部不出现登录引导行。
+            if case .signedIn = session.authPhase {
+                Section("账号") {
+                    // §3.G（2026-10-02 对齐 web v2.65.0）：App 内注销 —— 行 → 后果 Dialog →
+                    // `POST /api/auth/delete-account` 分流。无密码复核、无受理态（契约没有这两位）。
+                    Button {
+                        confirmDelete = true
+                    } label: {
+                        HStack(spacing: CovaSpace.sm) {
+                            Text("注销账号")
+                                .font(CovaType.headline).foregroundStyle(CovaColor.error)
+                            Spacer(minLength: CovaSpace.sm)
+                            Image(systemName: "chevron.right")
+                                .font(CovaType.caption).foregroundStyle(CovaColor.muted)
+                                .accessibilityHidden(true)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("注销账号")
+                    // §3.H：整行文字 error 色 = destructive 语义，无尾符号。
+                    Button("登出", role: .destructive) { confirmLogout = true }
+                }
+            }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -390,14 +471,14 @@ public struct SettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await measure(); await readNotifyStatus() }
         .confirmationDialog("清除缓存？", isPresented: $confirmClear, titleVisibility: .visible) {
+            // iOS 26：confirmationDialog 不再渲染 role:.cancel 钮（系统行为，实测 AX 0 命中），
+            // 关闭通道是点 Dialog 之外或下滑 —— 留死代码不如不写。
             Button("清除", role: .destructive) { Task { await clearCache() } }
-            Button("取消", role: .cancel) {}
         } message: {
             Text("会清除封面与试听缓存，不影响已下载的音乐与登录状态。")
         }
-        .confirmationDialog("登出", isPresented: $confirmLogout, titleVisibility: .visible) {
+        .confirmationDialog("登出？", isPresented: $confirmLogout, titleVisibility: .visible) {
             Button("登出", role: .destructive) { Task { await session.signOut() } }
-            Button("取消", role: .cancel) {}
         } message: {
             // D8 的四条副作用必须**逐条**列出（§3.H：一行一条、符号 `•`），不能只说「确定要退出吗」。
             // 这四句是合规告知，不是装饰文案 —— §6 明令不得因长度被截断。
@@ -406,15 +487,26 @@ public struct SettingsView: View {
                  + "• AI 生成的试听音频与封面缓存会被删除\n"
                  + "• 离线记录（搜索历史、缓存的列表与偏好）将按账号清除")
         }
-        .alert("需前往官网", isPresented: $needWebsite) {
-            Button("复制账号页链接") {
-                UIPasteboard.general.string = "https://covalink.cn/account"
-                session.showToast("链接已复制")
+        .confirmationDialog("确认注销账号？", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("确认注销", role: .destructive) {
+                let token = deleteToken ?? IdempotentRequestToken(operation: .accountDeletion)
+                deleteToken = token
+                Task { await submitDeletion(token: token) }
             }
-            Button("取消", role: .cancel) {}
         } message: {
-            // NEEDS-4：账号删除端点未提供 ⇒ 不假装能在 App 内删号。
-            Text("账号删除需前往官网完成（后端缺口 NEEDS-4 已登记）。")
+            // §3.G②：后果逐条列出（同登出 Dialog 的口径），且必须如实说「立即生效、不可撤销」——
+            // 端点没有冷静期与撤销位，不许留下「还能反悔」的暗示。
+            Text("• 注销后账号立即退出，邮箱、手机号和第三方登录都会解除\n"
+                 + "• 授权订单与创作记录按法律要求保留，但不再关联可识别的个人信息\n"
+                 + "• 正在播的音乐会停止，播放队列会清空\n"
+                 + "• 离线记录与缓存将按账号清除")
+        }
+        .overlay {
+            // 提交在途挡一层：确认框关了之后请求才出去，行不该还能再点。
+            if deleteBusy {
+                Color.black.opacity(0.15).ignoresSafeArea()
+                ProgressView().controlSize(.large)
+            }
         }
     }
 
@@ -423,6 +515,40 @@ public struct SettingsView: View {
             get: { session.themeMode },
             set: { session.setTheme($0) }
         )
+    }
+
+    /// §3.G③：`POST /api/auth/delete-account` → 按回执分流。
+    /// **任何一档都不许把"没注销成"说成"注销了"**：unavailable/rejected/retryable 都留在本屏，
+    /// 只有 `effective`（与 410）才真正改账号侧事实。
+    private func submitDeletion(token: IdempotentRequestToken) async {
+        deleteBusy = true
+        defer { deleteBusy = false }
+        do {
+            let outcome = try await session.accountService.deleteAccount(token: token)
+            switch outcome {
+            case .effective:
+                deleteToken = nil
+                await session.signOut()
+                session.showToast("账号已注销", isError: true)
+            case .unauthenticated:
+                // 401 = 凭证已失效（会话过期，或上一次注销已生效把会话吊销）。
+                // 本地登出是实话；「已注销」客户端证不了，不说。
+                deleteToken = nil
+                await session.signOut()
+                session.showToast("登录状态已过期", isError: true)
+            case .unavailable:
+                deleteToken = nil   // 端点不存在 ⇒ 这把键没有任何服务端状态可对应
+                session.showToast("注销服务暂未上线，请联系客服", isError: true)
+            case .rejected(let message):
+                // 其余 4xx：键**保留**——同一逻辑操作的重试复用同一把。
+                session.showToast(message ?? "注销失败", isError: true)
+            case .retryable:
+                // 5xx/未知码：可安全重试（注销幂等，重放至多撞 401），键保留。
+                session.showToast("注销没成功，请稍后重试", isError: true)
+            }
+        } catch {
+            session.showToast("注销没成功，请稍后重试", isError: true)
+        }
     }
 
     /// §3.D + §8 的缓存占用读法（三档，各有用例钉一条）：

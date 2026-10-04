@@ -22,11 +22,18 @@ final class MembershipTableCopyTests: XCTestCase {
         }
     }
 
-    /// §7 第 2 条 + 待裁决 3：额度那一行**不写具体数字**（无契约来源）⇒ 四格全是「—」。
-    func testCreditRowCarriesNoInventedNumbers() {
-        let credits = MembershipView.rows.first { $0.label.contains("额度") }
-        XCTAssertNotNil(credits)
-        XCTAssertEqual(credits?.values, ["—", "—", "—", "—"])
+    /// §7 第 2 条 + 待裁决 3 + 2026-10-01 C4：额度类数字**没有契约来源** ⇒
+    /// 「每月额度」那一行**整行不渲染**（四格「—」等于印了一行没有数据的数据）；
+    /// 其余行也不许出现任何数字原值。
+    func testNoRowIsAllDashesAndNoCellCarriesInventedNumbers() {
+        XCTAssertNil(
+            MembershipView.rows.first { $0.label.contains("额度") },
+            "没有数据源的额度行不许留在表里（整行「—」是占位不是信息）"
+        )
+        XCTAssertNil(
+            MembershipView.rows.first { $0.values.allSatisfy { $0 == "—" } },
+            "全破折号的行是占位行，不许出现"
+        )
         for row in MembershipView.rows {
             for value in row.values {
                 XCTAssertFalse(

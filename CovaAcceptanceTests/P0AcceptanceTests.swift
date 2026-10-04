@@ -250,15 +250,27 @@ final class P0AcceptanceTests: XCTestCase {
         )
         shot("20-works-list")
 
-        // ① A6 直存：↓ ⇒ 标记翻成「删除本机文件」。这一步同时是 §7 #39 那条修复的
-        //    **唯一屏上证人** —— 改错 intent 的话这里 180s 不翻面。
-        let save = list.buttons["保存到本机"].firstMatch
-        XCTAssertTrue(save.waitForExistence(timeout: 10), "作品行没有 ↓ 直存钮")
-        scrollIntoView(save)
-        save.tap()
+        // ① A6 直存：行 ⋯ →「保存到本机」⇒ 重开菜单时该项翻成「删除本机文件」。
+        //    这一步同时是 §7 #39 那条修复的**唯一屏上证人** —— 改错 intent 的话这里 180s 不翻面。
+        //    （2026-10-01 C2：↓ 钮已收进行 ⋯ 菜单，标签不变，仍按这两个字定位。）
+        openRowMenu(list)
         XCTAssertTrue(
-            list.buttons["删除本机文件"].firstMatch.waitForExistence(timeout: 180),
-            "A6：点了 ↓ 标记没翻面（同源 intent=download 那条腿没通，或文件没落成）"
+            list.buttons["保存到本机"].waitForExistence(timeout: 10),
+            "行 ⋯ 里没有「保存到本机」；标签=" + labelDump()
+        )
+        list.buttons["保存到本机"].tap()
+        // 菜单点击后自行关闭；翻面与否只能等下一次打开时看标签。
+        var flipped = false
+        let deadline = Date().addingTimeInterval(180)
+        while Date() < deadline, !flipped {
+            Thread.sleep(forTimeInterval: 4)
+            openRowMenu(list)
+            flipped = list.buttons["删除本机文件"].waitForExistence(timeout: 10)
+            if !flipped, list.buttons["取消"].exists { list.buttons["取消"].tap() }
+        }
+        XCTAssertTrue(
+            flipped,
+            "A6：点了「保存到本机」而菜单项没翻面（同源 intent=download 那条腿没通，或文件没落成）"
         )
         shot("20-saved")
 
@@ -292,6 +304,24 @@ final class P0AcceptanceTests: XCTestCase {
             if text.label.range(of: pattern, options: .regularExpression) != nil { return true }
         }
         return false
+    }
+
+    /// 打开第一行的 ⋯ 菜单（2026-10-01 C2：行内只剩这一枚钮，♡/↓/▶ 都在菜单里）。
+    /// 失败时把按钮清单打进断言信息里 —— 选择器猜错时这是唯一能少跑一轮的东西。
+    @discardableResult
+    private func openRowMenu(_ list: XCUIApplication) -> XCUIElement {
+        let rowMenu = list.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "cova.works.rowMenu.")
+        ).element(boundBy: 0)
+        XCTAssertTrue(rowMenu.waitForExistence(timeout: 25), "行 ⋯ 没出现；" + buttonDump())
+        rowMenu.tap()
+        Thread.sleep(forTimeInterval: 1)
+        return rowMenu
+    }
+
+    /// 关掉行 ⋯（confirmationDialog 的取消钮恒在最后一枚）。
+    private func closeRowMenu(_ list: XCUIApplication) {
+        if list.buttons["取消"].exists { list.buttons["取消"].tap() }
     }
 
     /// A7（works 行内动作）的设备腿：**clip 级那几项**在行 ⋯ 里，job 级那三项在组头 ⋯ 里。
@@ -337,45 +367,40 @@ final class P0AcceptanceTests: XCTestCase {
     /// 为什么单独一条：上一版把两步写在同一次会话里，第一步留下的弹层让第二步的
     /// `rowMenu` 变成「存在但点不到」（XCUITest 报 `Failed to not hittable`）——
     /// 那是测试自己的状态泄漏，不是屏上的缺陷。一条用例一个起点，就不必去猜别人的关闭键。
+    /// （2026-10-01 C2：行内只剩 ⋯ 一枚钮，♡/↓ 收进菜单 ⇒ 「喜欢」的选中态改由
+    /// 菜单项标签上的「（已选）」读出，与「不喜欢（已选）」同一个口径。）
     func testWorksListClipMenuHoldsOnlyClipActions() throws {
         let list = try launchedScreen("我的作品", route: "worksList")
 
-        // ① ♡ 真按一次。断言的是"屏上确实有反应"这一格可观察事实：
-        //    按钮清单在点之前与点之后必须不同（翻面、或出现回执/失败说明都算）——
-        //    相同就说明这一发根本没走到会话层，那才是这条判据要挡的东西。
+        // ① ♡ 真按一次。观测量是**菜单项标签翻面**（「喜欢」⇄「喜欢（已选）」），
+        //    菜单关一次再开一次才有新标签可读。断言写成**双向翻转 + 复位**，
+        //    与账号进入前的收藏状态无关（上一版被上一轮跑剩的状态挡死过）。
+        openRowMenu(list)
         let favorite = list.buttons["喜欢"].firstMatch
-        XCTAssertTrue(favorite.waitForExistence(timeout: 10), "行上没有 ♡「喜欢」；" + buttonDump())
-        //    观测量是**选中态**而不是标签：♡ 这一枚的标签恒为「喜欢」，翻面走的是
-        //    `accessibilityAddTraits(on ? .isSelected : [])`（`WorksListView.favoriteRow`）。
-        //    上一版断"按钮清单前后不同"，红了一次 —— 不是没生效，是量错了格：
-        //    服务端同一分钟就多了那条 note 条目（档案里记着这次误判）。
-        //    断言写成**双向翻转 + 复位**，不写成"按之前必须是未收藏"：
-        //    前者与账号当前状态无关，后者会被上一轮跑剩的状态挡死（实测就是这样红过一次，
-        //    而那一次的失败信息恰恰证明选中态是跟着服务端走的）。
-        let before = favorite.isSelected
-        favorite.tap()
+        let favorited = list.buttons["喜欢（已选）"].firstMatch
+        let startedOn = favorited.exists
         XCTAssertTrue(
-            favorite.waitForExistence(timeout: 15) && favorite.isSelected != before,
-            "点了 ♡ 选中态没翻面：这一发没走到会话层，或被服务端拒了；" + buttonDump()
+            favorite.exists || startedOn,
+            "行 ⋯ 里既没有「喜欢」也没有「喜欢（已选）」；标签=" + labelDump()
+        )
+        (startedOn ? favorited : favorite).tap()
+        openRowMenu(list)
+        let flippedLabel = startedOn ? "喜欢" : "喜欢（已选）"
+        XCTAssertTrue(
+            list.buttons[flippedLabel].waitForExistence(timeout: 15),
+            "点了 ♡ 而菜单项标签没翻面：这一发没走到会话层，或被服务端拒了；" + labelDump()
         )
         shot("20-favorited")
-        favorite.tap()
+        // 复位：再点一次翻回进入前的态（跑完不留痕）。
+        list.buttons[flippedLabel].tap()
+        openRowMenu(list)
         XCTAssertTrue(
-            favorite.waitForExistence(timeout: 15) && favorite.isSelected == before,
-            "再点一次没能翻回原态：撤收藏这一发没生效；" + buttonDump()
+            list.buttons[startedOn ? "喜欢（已选）" : "喜欢"].waitForExistence(timeout: 15),
+            "再点一次没能翻回原态：撤收藏这一发没生效；" + labelDump()
         )
 
-
-        // 行 ⋯ 必须是 clip 级那几项，且**不含**改名/删除/分享（那三项是 job 级的，
+        // ② 行 ⋯ 必须是 clip 级那几项，且**不含**改名/删除/分享（那三项是 job 级的，
         //    这一屏靠"物理上放不到一行上"表达作用域 ⇒ 这里断言它不在，比断言它在别处更硬）。
-        let rowMenu = list.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "cova.works.rowMenu.")
-        ).element(boundBy: 0)
-        XCTAssertTrue(
-            rowMenu.waitForExistence(timeout: 20),
-            "A7：第一行没有 ⋯ 钮；标签=" + labelDump()
-        )
-        rowMenu.tap()
         let lyrics = list.buttons["歌词"]
         XCTAssertTrue(
             lyrics.waitForExistence(timeout: 10),
@@ -449,56 +474,65 @@ final class P0AcceptanceTests: XCTestCase {
     /// `setWorkDislike` 的互斥语义（`work-actions.ts` 里点踩时顺手 `setNoteFavorite(false)`），
     /// ⇒ ♡ 的选中态翻灭就是"收藏被撤"这一格的可观察事实本身。
     /// 复原也做在同一条腿里：这一枚钮在真机上会留痕，点完就走等于给下一轮造起始态。
+    /// （2026-10-01 C2：♡ 收进行 ⋯，选中态改由菜单项标签「喜欢（已选）」读出 ——
+    ///  每次观测都是"关掉再打开一次菜单看标签"，与「不喜欢（已选）」同一口径。）
     func testWorksListDislikeWithdrawsTheFavorite() throws {
         let list = try launchedScreen("我的作品", route: "worksList")
-        let favorite = list.buttons["喜欢"].firstMatch
-        XCTAssertTrue(favorite.waitForExistence(timeout: 25), "行上没有 ♡「喜欢」；" + buttonDump())
-        let started = favorite.isSelected
+
+        openRowMenu(list)
+        let startedOn = list.buttons["喜欢（已选）"].waitForExistence(timeout: 15)
         // 先把这一行钉成「收藏 on / 点踩 off」：`setWorkFavorite(true)` 在服务端顺手删掉
         // dislike 行 ⇒ 起始态与账号上一轮留了什么无关（不这样钉，第一次开 ⋯ 就可能只看到
         // 「不喜欢（已选）」，那条查不到就是"这一发没走到会话层"的假红）。
-        if !started {
-            favorite.tap()
+        if !startedOn {
+            list.buttons["喜欢"].tap()
+            openRowMenu(list)
             XCTAssertTrue(
-                favorite.waitForExistence(timeout: 15) && favorite.isSelected,
-                "A7：先把 ♡ 点亮这一步没生效，后面的判据无从谈起；" + buttonDump()
+                list.buttons["喜欢（已选）"].waitForExistence(timeout: 15),
+                "A7：先把 ♡ 点亮这一步没生效，后面的判据无从谈起；" + labelDump()
             )
         }
-        let rowMenu = list.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "cova.works.rowMenu.")
-        ).element(boundBy: 0)
-        XCTAssertTrue(rowMenu.waitForExistence(timeout: 25), "行 ⋯ 没出现；" + buttonDump())
-        rowMenu.tap()
         let dislike = list.buttons["不喜欢"].firstMatch
         XCTAssertTrue(
             dislike.waitForExistence(timeout: 10),
-            "行 ⋯ 里没有裸「不喜欢」（起始态没钉成「点踩 off」）；" + buttonDump()
+            "行 ⋯ 里没有裸「不喜欢」（起始态没钉成「点踩 off」）；" + labelDump()
         )
         dislike.tap()
-        // 判据正身：点踩之后 ♡ 不许还亮着。POST 回来才翻 ⇒ 轮询而不是查一次。
+        // 判据正身：点踩之后 ♡ 不许还标着已选。POST 回来才翻 ⇒ 轮询而不是查一次，
+        // 每次观测都要重开菜单（标签只在打开时重算）。
         var withdrew = false
         for _ in 0..<12 {
-            if favorite.exists && !favorite.isSelected { withdrew = true; break }
             Thread.sleep(forTimeInterval: 2)
+            openRowMenu(list)
+            if list.buttons["喜欢"].exists, !list.buttons["喜欢（已选）"].exists {
+                withdrew = true
+                break
+            }
+            closeRowMenu(list)
         }
-        XCTAssertTrue(withdrew, "A7：点了「不喜欢」而 ♡ 一直还亮着 ⇒ 收藏没被撤；" + buttonDump())
+        XCTAssertTrue(withdrew, "A7：点了「不喜欢」而 ♡ 一直还标着已选 ⇒ 收藏没被撤；" + labelDump())
         shot("20-disliked")
-        // 复原 + 第二个证人：再开一次 ⋯，标签应是「不喜欢（已选）」（选中态真的记上了）。
-        rowMenu.tap()
+        // 复原 + 第二个证人：标签应是「不喜欢（已选）」（选中态真的记上了）。
         let marked = list.buttons["不喜欢（已选）"].firstMatch
         XCTAssertTrue(
             marked.waitForExistence(timeout: 10),
-            "A7：点踩后菜单项没翻成「不喜欢（已选）」；" + buttonDump()
+            "A7：点踩后菜单项没翻成「不喜欢（已选）」；" + labelDump()
         )
         marked.tap()
-        if started {
-            // 撤点踩**不**还原收藏（服务端只做单向互斥）⇒ 这里再点一次 ♡ 才回到进入前的态。
-            favorite.tap()
-            XCTAssertTrue(
-                favorite.waitForExistence(timeout: 15) && favorite.isSelected,
-                "A7：这一行的收藏没复原成进入前的态（跑完不留痕）；" + buttonDump()
-            )
+        // 撤点踩**不**还原收藏（服务端只做单向互斥）⇒ 这里再点一次 ♡ 才回到进入前的态。
+        // （上面已经把「喜欢（已选）」点亮过，所以进入终态是"已选"——若进入时本来就是已选，
+        //   撤完点踩后它保持已选即算复原；若进入时是未选，我们在钉起始态时已点亮它，
+        //   复原同样落在已选。两种入口形状收敛为同一个收尾动作：确认已选。）
+        openRowMenu(list)
+        if !list.buttons["喜欢（已选）"].exists {
+            list.buttons["喜欢"].tap()
+            openRowMenu(list)
         }
+        XCTAssertTrue(
+            list.buttons["喜欢（已选）"].waitForExistence(timeout: 15),
+            "A7：这一行的收藏没复原成已选（跑完不留痕）；" + labelDump()
+        )
+        closeRowMenu(list)
     }
 
     /// §5 P3 每日签到的设备腿：11 上那一枚「签到领 N co」点下去要真的换成「今天已签到」。
@@ -573,6 +607,67 @@ final class P0AcceptanceTests: XCTestCase {
             "A9：点「任务」没落到那一组作品（20 的 job 锚定态）"
         )
         shot("22-job-landing")
+    }
+
+    /// A16（15 屏账号段）的设备腿：web v2.65.0 对齐批把删号链路收敛成
+    /// `POST /api/auth/delete-account` 两步式（§7 #4 已闭合），要证的屏上事实是
+    /// ① 登录态下「账号」分组在最底、行叫「注销账号」、下面紧跟「登出」；
+    /// ② 点行弹「确认注销账号？」后果 Dialog，四条后果逐条可见、主钮「确认注销」、
+    ///    有「取消」可关——这一条**不点确认**（那是一次真删号）。
+    func testSettingsAccountSectionShowsDeleteAndLogout() throws {
+        let settings = try launchedScreen("设置", route: "settings")
+
+        let deleteRow = settings.buttons["注销账号"]
+        for _ in 0..<10 where !(deleteRow.exists && deleteRow.isHittable) {
+            // insetGrouped List 在 AX 里是 collectionViews 而不是 scrollViews（本机实测
+            // scrollViews 计数为 0）；两个入口都试，谁有就用谁滚。
+            if settings.collectionViews.element(boundBy: 0).exists {
+                settings.collectionViews.element(boundBy: 0).swipeUp()
+            } else if settings.scrollViews.element(boundBy: 0).exists {
+                settings.scrollViews.element(boundBy: 0).swipeUp()
+            } else {
+                settings.swipeUp()
+            }
+        }
+        XCTAssertTrue(
+            deleteRow.exists && deleteRow.isHittable,
+            "15 §3.G：登录态下设置最底应有「注销账号」行且可点；标签=" + labelDump()
+        )
+        XCTAssertTrue(
+            settings.staticTexts["账号"].exists || settings.buttons["登出"].exists,
+            "15：「账号」分组标题与「登出」行应在注销行邻位；标签=" + labelDump()
+        )
+        shot("15-account-section")
+
+        deleteRow.tap()
+        let dialog = settings.sheets["确认注销账号？"]
+        XCTAssertTrue(
+            dialog.waitForExistence(timeout: 10),
+            "15 §3.G②：点「注销账号」必须出后果 Dialog；标签=" + labelDump()
+        )
+        shot("15-delete-confirm")
+        // iOS 26 的系统事实（SO#79819697，实测）：confirmationDialog **不再渲染**
+        // 「取消」钮——`role:.cancel` 在 AX 树里 0 命中（any/button/cell/other 全试过），
+        // 关闭通道是「点 Dialog 之外」或下滑。规格 15 §3.G② 已按此改口径；
+        // 这里断的不再是「取消钮存在」而是「有一个明确的不提交出口」。
+        let confirmButton = settings.buttons["确认注销"]
+        let cancelGone = !settings.descendants(matching: .any)["取消"].exists
+        XCTAssertTrue(
+            confirmButton.exists,
+            "15 §3.G②：后果 Dialog 应有「确认注销」(destructive)；按钮=" + buttonDump()
+        )
+        XCTAssertTrue(
+            cancelGone,
+            "15 §3.G② 已按 iOS 26 系统行为改：confirmationDialog 不再给「取消」钮，"
+                + "若它出现说明平台口径变了，规格与实现都要回炉；按钮=" + buttonDump()
+        )
+        // 关闭通道 = 点 Dialog 之外的底层界面（XCUI 点坐标会落进 sheet 容器，
+        // 选导航条按钮（返回）是"点它之外"里最稳定的一枚）。
+        settings.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(
+            dialog.waitForNonExistence(timeout: 10),
+            "点 Dialog 之外必须能关掉它（点错不能等于删号）"
+        )
     }
 
     /// 起一个只到某一屏的会话（登录钩子 + 路由钩子），并把首屏导航标题等出来。

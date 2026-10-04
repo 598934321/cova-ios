@@ -120,9 +120,15 @@
 ### G PlanCard
 
 - 完全按 `../components.md` §4：`color.elevated` 底 + 1pt `color.line` 边 + `radius.card` +
-  顶部 2pt `gradient.ai` 装饰条（宽度 100%）；内边距 `spacing.lg`；上下与消息流间距 `spacing.lg`
+  顶部 2pt `gradient.ai` 装饰条（宽度 100%，贴卡内上沿、随 `radius.card` 裁剪）；
+  内边距 `spacing.lg`；上下与消息流间距 `spacing.lg`。
+  **不用**通用 `CovaCard`（它是 `color.surface` 底且无边，服务列表/设置卡）——
+  计划卡是本屏独立容器
 - 标题候选：选中项 `type.headline` / `color.fg`；候选 chips 高 36（TG-07），
-  选中 `color.accentSoft`+`color.accentText`+1pt `color.accent` 边（components §6）
+  选中 `color.selectedBg` 底 + `color.selected` 字 + 1pt `color.line` 边
+  （web v2.65.0 去橙化选中档，design/README「与 web 的统一设计语言」）。
+  **契约注**：`title` 字段当前只有 `selected` 一个键、无候选列表 ⇒ chips 不渲染、
+  只上屏选中项；候选集字段属待补契约（见「待裁决 6」同族），届时 chips 才出现
 - 风格分析：`style.analysisZh` → `type.callout` / `color.fg`；`style.promptEn` → `type.mono`
   （tokens 中 mono 无 weight/size 之外的行高，caption 档字号）/ `color.muted`，默认折叠，
   「展开」文字钮
@@ -135,19 +141,40 @@
   `targetDurationSec` 与 `durationSec` 同时存在时**以 `targetDurationSec` 为准**（契约字段优先级）
 - 费用行：`credits`（`type.mono` / `color.accentText`，「预计消耗 N co」）+ 余额
   （`type.caption` / `color.secondary`，「余额 M」）；余额源 `entitlements.creditsBalance`（NEEDS-3）
-- 底部操作：「开始制作」主钮（`gradient.brandButton`，高 50，TG-07）+「修改要求」文字钮
-  （`color.accentText`）
-- **状态徽标**（卡内左上）：`../components.md` §9 语义（success/warning/error/muted 胶囊 caption）
+- 底部操作：「开始制作」主钮（`gradient.brandButton` 胶囊 + 白字 +
+  `primaryButtonShadow`，高 50，TG-07；不可用时回落 `color.surface` 底 +
+  `color.muted` 字）+「修改要求」文字钮（`type.callout` / `color.accentText`，≥44pt 热区）
+- **状态徽标**（卡内右上）：`../components.md` §9 语义——**胶囊**：`type.caption` 字 +
+  横向 `spacing.sm` 内边距；success/warning/error 字色同义 + 衬底取同色 15% 不透明度
+  （TG-27：soft 系衬底未入库，配方与 B 条/error 遮罩同源）；`color.muted` 字 + `color.surface`
+  底（非 15%）。归属置灰（50% 档 TG-26）契约阻塞未实装（待裁决 6），实现时整卡含徽标一体置灰
 - 归属校验未通过（`sourceMessage.messageId !== clientMessageId`）→ 卡体置灰 50% +
   顶部 warning 条（components §4 已钉），「开始制作」禁用
 
 ### H 双 Demo 候选卡组
 
 - 容器：把两张 `CandidateCard`（`../components.md` §5）包在一起，横排各 50%（间距 `spacing.sm`），
-  与卡组底部「终态条」同一卡片框（`color.elevated` + 1pt `color.line`，`radius.card`）
-- 终态条（本屏硬规则的视觉表达，§5）：`type.subhead`，高 = 文本 + `spacing.md`
-- 单卡：封面方（比例 TG-10）或像素呼吸占位 + 标题 `type.subhead` + 时长 `type.mono` +
-  状态徽标 §9 + 玻璃播放钮 40pt 悬浮居中（缺口 TG-22 玻璃圆钮尺寸档）+ 底部操作条（♡ 收藏 / ↓ 下载 / ⤴ 分享）
+  与卡组底部「终态条」同一卡片框（`color.elevated` + 1pt `color.line`，`radius.card`）。
+  候选数 <2 时单卡占满宽度（两张候选位、空位不渲染占位）
+- 终态条（本屏硬规则的视觉表达，§5）：`type.subhead`，高 = 文本 + `spacing.md`；
+  文案与色完全按 §5 六行表（muted/warning/success/error）
+- 单卡：封面方（1:1，TG-10 比例档）或像素呼吸占位（`CovaPixelCover`）+
+  标题 `type.subhead` + 时长 `type.mono` + 状态徽标 §9 胶囊档 +
+  玻璃播放钮 40pt 悬浮居中（缺口 TG-22 玻璃圆钮尺寸档；仅 ready 卡，
+  40 视觉 + 扩展热区至 44）+ 底部操作条：
+  · ♡ 收藏——`mediaReferenceId` 缺失时整钮不渲染，在途吞后发；
+  · ↓ 下载——**不渲染**（D12 扣费入口隐藏）；
+  · ⤴ 分享——**不渲染**（契约无候选公开页/短链端点，NEEDS-24；
+    `audioUrl` 系 Bearer 授权地址，不进系统分享面板）；
+  · 失败卡——底部动作换「重试」文字钮（`color.accentText`，≥44pt）：
+    动作 = **只读对账**（重读会话详情 + plans，服务端为事实源），
+    不是 `plans/start` 重开一轮（见 §5 行注，「只补做一版」端点属待裁决 4）；
+  · 就绪卡——「选这版继续制作」文字钮（`color.accentText`，≥44pt）；
+    未到终态时点击 → Toast「两个版本都完成后可以继续」（不用 `.disabled` 真禁用，
+    要让点击说得出口），终态且已按「选一版继续制作」后才放开真实动作
+- 终态行的右侧动作：「选一版继续制作」**主行动钮**（`CovaButton` primary 档——
+  web v2.65.0 对齐批后为中性液态玻璃，不是品牌渐变）仅在终态且至少一版可挑时出现；
+  「补充制作」文字钮（`color.accentText`）仅在终态出现（§4.1-I 宿主）
 
 ### I 补充制作进度条
 
@@ -206,12 +233,14 @@ B 条常驻；**本次降级不回切 SSE**，下一次用户发送时重开 SSE
 | ready + pending | 「就绪 1/2 · 等另一个版本完成」 | `color.warning` | 已就绪卡显封面+播放钮+时长；另一张仍占位 | **试听已就绪卡可用**（先 Bearer 下载到沙盒校验非空再 `file://`，D7）；收藏可用；「选这版继续制作」**禁用**并带说明（点击 → Toast「两个版本都完成后可以继续」） |
 | failed + pending | 「1/2 遇到问题 · 等另一个版本完成」 | `color.warning` | 失败卡 error 遮罩 + 「重试」（components §5） | 同上前两行叠加 |
 | ready + ready（**终态**） | 「两个版本都好了，挑一版继续」 | `color.success` | 两卡均就绪 | 试听/收藏/分享全开；出现「选一版继续制作」主钮（选一 → 后续补充制作，§4.1-I）；下载入口仍按 D12 隐藏 |
-| ready + failed（**终态**） | 「一版完成，另一版失败」 | `color.warning` | 就绪卡可交互；失败卡 error 遮罩 + 「重试」 | 「选一版继续制作」可用（唯一可选）；重试该候选需后端支持（未见端点 → 重试钮走 `plans/start` 重开一轮，登记「待裁决 4」） |
+| ready + failed（**终态**） | 「一版完成，另一版失败」 | `color.warning` | 就绪卡可交互；失败卡 error 遮罩 + 「重试」 | 「选一版继续制作」可用（唯一可选）；「只补做失败那一版」的端点契约未文档化（待裁决 4）→ 「重试」为**只读对账**（重读会话详情 + plans），不重开一轮 |
 | failed + failed（**终态**） | 「两个版本都没能完成」 | `color.error` | 两张失败卡 + 各自「重试」 | 引导「换一句话再来一次」（聚焦 J）；**不显示**任何扣费/退款话术（D12 只展示余额，退款口径后端未文档化） |
 | 候选数 >2（后端返回 3+） | 同上按前 2 条判定 | — | **只渲染前 2**（硬规则） | 多余候选不出现在本屏任何列表/收藏入口 |
 
 - 三张以上候选、无 `mediaReferenceId` 的候选、`title` 为空的候选 → 分别按「只取前二」/
   「收藏钮不渲染」/「标题回落 `版本 1`、`版本 2`」处理
+- 全表所有「重试」同语义：**只读对账**（重读会话详情 + plans，服务端为事实源）——
+  「只补做失败那一版」的端点契约未文档化（待裁决 4），不拿 `plans/start` 重开一轮
 - 归属：候选卡与计划卡同属一轮（`jobId` 关联），同轮多卡并存时按 `createdAt` 升序排列（09 详情
   `generationJobs` 已 reverse 为正序，与 web 一致）
 
@@ -237,8 +266,9 @@ B 条常驻；**本次降级不回切 SSE**，下一次用户发送时重开 SSE
   - 运行状态行：「运行状态，<短语>」（**不**播报事件名 `run_started` 等技术串）
   - 计划卡：「制作计划，状态 <中文态>，标题候选 <选中项>，可用候选 <n> 项，风格分析 <可展开>，
     歌词 <N> 段，参数 <逐条>，预计消耗 <N> co，余额 <M>，开始制作 按钮 <已禁用时：禁用，原因 …>」
-  - 候选卡组：「两个版本，<终态条文案>」→ 每卡「版本 N，<标题>，<时长>，<状态>，试听 按钮，
-    收藏 按钮，分享 按钮」
+  - 候选卡组：「两个版本，<终态条文案>」→ 每卡「版本 N，<标题>，<时长>，<状态>，试听 按钮」；
+    有 `mediaReferenceId` 时加「收藏 按钮」；失败卡加「重试 按钮」；就绪卡按上表加
+    「选这版继续制作 按钮」。下载/分享不渲染 ⇒ 不进入朗读清单
   - 交付进度：「补充制作中，<百分比>」（值变化时**不**逐帧播报，仅在元素被聚焦时读当前值）
 - 新消息到达**不打断**当前朗读（无 `aria-live` 式强插）：改用一次性「1 条新回复 ⌄」浮动钮
   （`color.elevated` 底 + `color.accentText` 字，≥44pt），点按滚动到最新——避免 VoiceOver 被流打断
@@ -367,6 +397,9 @@ B 条常驻；**本次降级不回切 SSE**，下一次用户发送时重开 SSE
 - [ ] 余额不足路径不出现充值/购买话术或入口（D12 合规扫描）
 - [ ] Reduce Motion：打字效果、像素呼吸、symbol 脉冲全为静态替代，信息不丢失
 - [ ] AX5 档：候选卡组纵向堆叠、B 条 2 行、无横向溢出；VoiceOver 下新消息不打断朗读
+- [ ] **卡面口径**：计划卡 `color.elevated` + 1pt `color.line` + `radius.card` + 顶部 2pt
+      `gradient.ai` 装饰条；主钮 50pt `gradient.brandButton` 胶囊；状态徽标为胶囊；
+      候选卡组与终态条同卡片框、单卡 1:1 封面/像素呼吸 + 40pt 玻璃播放钮（ready 才有）
 - [ ] 全部尺寸/色值/时长为 token 引用；tokens 缺失项均出现在「Token 缺口」而非散落字面量
 
 ## Token 缺口
@@ -384,6 +417,8 @@ B 条常驻；**本次降级不回切 SSE**，下一次用户发送时重开 SSE
 | TG-24 | 骨架「轮廓卡」规格（整卡轮廓呼吸） | 首载计划卡轮廓 |
 | TG-25 | 消息流间距/锚底滚动语义档 | 新消息插入时的滚动行为 |
 | TG-26 | 置灰/只读的不透明度档（50%） | 归档卡、归属未通过卡 |
+| TG-10 | 封面比例档（1:1 方图） | 候选卡封面（§3.H 引用，原表漏登） |
+| TG-27 | 语义色 soft 衬底档（同义 15% 不透明度） | 状态徽标胶囊衬底（success/warning/error 共用配方） |
 
 ## 待裁决
 

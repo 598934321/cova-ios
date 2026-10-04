@@ -9,25 +9,27 @@
 > 唯一依据。04–19 已全数实例化；**20–23 为 2026-09-26 按 `DEVELOPMENT.md` §5 P1/P2 补齐的四屏**
 > （works 列表 / extras 补充制作 / ledger 明细 / producers 制作人入口）——此前它们**无规格**，
 > 按硬边界 8「设计闸门」不得施工，本轮补的就是这块欠账；
-> `01–03` 为 G1 已产出物，**未改动**（改动需验收）。
+> `01–03` 为 G1 已产出物，**01/03 已于 2026-10-02 随「Apple Music 参照改版」重写/修订**
+> （该轮一次过确认：5 页签含 `Tab(role:.search)` 搜索位、首页改对话型、曲库搜索迁出、
+> 新增 25 屏）；其余 G1 屏未改动（改动需验收）。
 
 | # | 屏幕 | 要点 | 规格 |
 |---|---|---|---|
-| 01 | 首页 | 见 `01-home.md` | `01-home.md`（G1，已产出待验收）。**↔ 23**：其 §2 会话输入卡缺「+」钮与面板本体（`23-producers-entry.md` §3.A/B 首次定义），需回写但属 G1 已产出物 ⇒ **待验收后再改** |
+| 01 | 首页 | **2026-10-02 重写为对话型首页**：display 问候（web 序章同款文案+「o」accent 橙）→ `CovaModeTabs` 生成/搜索切换 → `CovaTagChip` 引导标签（web `MODE_TAGS` 逐字）→ feed 六分区（推荐歌单/最近播放/新歌上架/你的创作/场景精选/AI 音乐人）→ **底置 `CovaComposer`**（ChatGPT iOS 式 `safeAreaInset`：生成档→创作栈 09、搜索档→曲库/歌单两目标）。**↔ 23**：输入条「+」面板规则沿用 23 §3（producers 空 ⇒ 钮与面板不渲染）；附件/音色/`workflowMode` 不做（契约未文档化） | `01-home.md` |
 | 02 | 全屏播放器 | 见 `02-player.md` | `02-player.md`（G1，已产出待验收） |
-| 03 | 曲库 | 见 `03-library.md` | `03-library.md`（G1，已产出待验收） |
-| 04 | **左侧抽屉** | 玻璃材质，宽 78% 屏宽。分区：主导航（首页/曲库/歌单/创作——创作项 AI 渐变文字）/ 我的资产（收藏/歌单/创作/已下载）/ 商业（会员·金色调、企业服务·蓝色调，跳网页）/ 底部我的卡片（头像+名字+余额胶囊+设置齿轮）。手势：左缘右滑/点 logo 打开；点遮罩或左滑关闭 | `04-drawer.md` |
-| 05 | **歌单广场** | 官方歌单网格双列（封面 16:10 + 标题 + 曲数），顶部分类 chips（按 scene）；下拉刷新 | `05-playlists-plaza.md` |
+| 03 | 曲库 | **2026-10-02 修订**：`.searchable` 迁出至 25 页签，本屏回归「级联筛选 + 列表」；`library(preset)` 变**可复用件**（25 分类卡/01 搜索档在发起栈内 push 本件、页签不切换）；带入 `search` 时以「搜索：{query} ✕」回显行呈现 | `03-library.md` |
+| 04 | **App 外壳（原生 TabView）** | **2026-10-02 二次重写**：五页签 = 首页/曲库/创作/我的 + **`Tab(role: .search)` 搜索位**（系统右端分隔，对齐 Apple Music）；每页签独立 `NavigationStack`、点当前页签回根、`tabBarMinimizeBehavior` 滚动收起；MiniPlayer = `tabViewBottomAccessory`（26.0/26.1 `isEnabled:` 分流已钉）；原抽屉去处对照表沿用 | `04-shell.md`（原 `04-drawer.md` 改名重写） |
+| 05 | **歌单广场** | 官方歌单网格双列（封面 16:10 + 标题 + 曲数），顶部分类 chips（按 scene）；下拉刷新；**2026-10-02 新增 `searchQuery` 入屏参数**（01 搜索档歌单目标的落点，纯客户端过滤 + 回显行） | `05-playlists-plaza.md` |
 | 06 | **歌单详情** | 大封面头图（fit/focal 焦点）+ 标题/策展人/简介 + 「播放全部」渐变胶囊 + 收藏 ♡ + TrackRow 列表；头图上滑折叠进导航条 | `06-playlist-detail.md` |
 | 07 | **曲目详情** | modal 半屏：大封面、标签流、歌词摘要、相似曲目横滑、操作行（收藏/下载/分享） | `07-track-detail.md` |
 | 08 | **创作：会话列表** | 左滑删除；每行：会话标题、最后消息摘要、时间、进行中的生成任务带进度环；顶部「新会话」渐变胶囊；空态 = 引导语 + prompt starters | `08-ai-sessions.md` |
-| 09 | **创作：会话详情** | DeepSeek 式对话流：用户气泡（accentSoft 底右对齐）/ agent 文本（无气泡左对齐）/ thinking 折叠块（「深度思考」展开逐条，muted 字）/ 计划卡（组件 §4）/ 双 Demo 候选卡（组件 §5）/ 补充制作进度条。底部输入框同首页会话卡。SSE 断线时顶部细条提示「连接中断，轮询中」 | `09-ai-session-detail.md`。**↔ 21**：§3.I 交付进度条的完成位需加「补充制作」钮（会话路径宿主），由 21 §1 定义、本文件**待回写** |
-| 10 | **登录** | logo 64pt + 邮箱/密码输入（胶囊 50pt，focus accent 描边）+ 登录渐变主钮 + 「游客浏览」文字钮 + 隐私/条款链接。登录中按钮转菊花；错误行内提示（error 色） | `10-login.md` |
-| 11 | **我的** | 用户卡（头像/名字/covaId）+ 余额与套餐卡（co 余额大字 tabular-nums + 套餐徽标；**无充值按钮，D12**）+ 资产入口列表（收藏/歌单/创作/下载）+ 设置入口 | `11-mine.md`。**↔ 22**：需新增「co 币明细」入口行（**待回写**；`22-credits-ledger.md` §1 已钉「不点余额卡」的理由与落点） |
+| 09 | **创作：会话详情** | DeepSeek 式对话流：用户气泡（accentSoft 底右对齐）/ agent 文本（无气泡左对齐）/ thinking 折叠块（「深度思考」展开逐条，muted 字）/ 计划卡（组件 §4）/ 双 Demo 候选卡（组件 §5）/ 补充制作进度条。底部输入框同首页会话卡。SSE 断线时顶部细条提示「连接中断，轮询中」。**2026-10-03 卡面口径校准**：计划卡 elevated+line+`gradient.ai` 顶条/徽标胶囊/主钮 50 胶囊/费用行 mono；候选卡组横排 50/50 大卡（1:1 封面或像素呼吸 + 40pt 玻璃播放钮）与终态条同卡框；「重试」钉为只读对账；标题候选 chips 契约阻塞不渲染 | `09-ai-session-detail.md`。**↔ 21**：§3.I 交付进度条的完成位需加「补充制作」钮（会话路径宿主），由 21 §1 定义、本文件**待回写** |
+| 10 | **登录** | logo 64pt + 邮箱/密码输入（胶囊 50pt，focus `focusRing` 中性灰描边）+ 登录渐变主钮 + 「游客浏览」文字钮 + 隐私/条款链接。登录中按钮转菊花；错误行内提示（error 色） | `10-login.md` |
+| 11 | **我的** | 「我的」页签**根屏**（原抽屉卡片并入）；容器 = `.insetGrouped` 分组列表：组 1 用户卡（头像/名字/Cova 号+邮箱）/ 组 2 余额与套餐（co 余额大字 tabular-nums + 套餐徽标；**无充值按钮，D12**）/ 组 3 资产入口（收藏/歌单/创作/下载）/ 组 4 商业 / 组 5 设置入口 | `11-mine.md`。**↔ 22**：需新增「co 币明细」入口行（**待回写**；`22-credits-ledger.md` §1 已钉「不点余额卡」的理由与落点） |
 | 12 | **我的收藏 / 我的歌单 / 我的创作 / 已下载** | 四屏同构列表页：TrackRow 或 PlaylistCard 列表 + 空态引导。「已下载」含空间占用统计与 Wi-Fi 仅下载开关（D12 放行后可见） | `12a-favorites.md`（**同构基线**）/ `12b-my-playlists.md` / `12c-my-creations.md` / `12d-downloads.md`。**↔ 20**：`GET /api/studio/create/works` 的 `total` 已把 12c 待裁决 1「作品总数无端点」的前提解掉（12c **待回写**，或按 20 待裁决 1 与 08/12c 一并合并裁决）。**↔ 12d**：作品的补充制作产物**不进** 12d（`21-work-extras.md` §1；`DEVELOPMENT.md` §7 #36 同口径） |
 | 13 | **会员** | 权益对比表（免费/创作/专业/企业），金属金色调；**仅展示与跳网页**（「前往官网了解」Safari），无购买 | `13-membership.md` |
 | 14 | **企业服务** | 简介 + 案例 + 「联系 enterprise@covalink.cn」跳网页/邮件 | `14-enterprise.md` |
-| 15 | **设置** | 主题（跟随系统/浅/深）、音频质量、清除缓存（显示占用）、通知开关、隐私/条款/版权说明外链、关于（版本号）、登出（红色，二次确认） | `15-settings.md`（「音频质量」被裁决移除，见其 §待裁决 5）。**↔ 22**：本屏 §8 明写「无余额、无充值」⇒ co 币明细**不得**挂进设置（`22-credits-ledger.md` §1 已把该落点排除） |
+| 15 | **设置** | `.insetGrouped` 分组列表：主题（跟随系统/浅/深）、音频质量、清除缓存（显示占用）、通知开关、隐私/条款/版权说明外链、关于（版本号）、**账号组恒为最后分组**（账号删除 + 登出红字行，二次确认） | `15-settings.md`（「音频质量」被裁决移除，见其 §待裁决 5）。**↔ 22**：本屏 §8 明写「无余额、无充值」⇒ co 币明细**不得**挂进设置（`22-credits-ledger.md` §1 已把该落点排除） |
 | 16 | **AI 音乐人主页** | 头像大图 + 人设简介 + 曲目列表（artistId 筛选） | `16-ai-artist-home.md` |
 | 17 | **空态/加载/错误组件页** | 设计规范页：每类状态的标准样式（空态插画+引导语+CTA；骨架屏；错误+重试） | `17-state-gallery.md`（**通用状态唯一源**，编号 S1–S9）。**↔ 20–23**：四屏新增编号 S 无（全部复用 S1–S9），但 **TG-44…TG-52 尚未回写其 §12 汇总**（见下方通用要求）；§10 的「已显示全部」唯一尾部措辞与 22 的边界行构成偏差（见偏差表） |
 | 18 | **本地通知样式** | 生成完成通知：标题「你的歌做好了」+ 双候选名，点击深链回会话详情 | `18-local-notification.md` |
@@ -35,7 +37,8 @@
 | 20 | **作品列表（studio/create works）** | `GET /api/studio/create/works` 的全量形态（§4.7：参数只有 `q`/`filter`/`sort`/`cursor`/`limit`，`limit` 夹 1..100 默认 30，未知 `filter` 值服务端当 `all` ⇒ 只发 9 值闭集；`favorite`/`dislike` **缺键 ≠ false**，取消要显式发 `false`）：`filter`（9 值单选）+ `q` + `sort`（newest/oldest）+ 字符串化行偏移 `cursor`（§4.7：不是不透明游标，但仍只回传不自算）+ `limit=30`；行按 `jobId` **分组**（一次生成 2 行）；clip 级动作（♡/不喜欢/做成笔记/歌词）流行 ⋯，**job 级动作（重命名/分享/删除）只随组头 ⋯**——作用域靠「物理上放不到一行上」披露；`source != studio-create` 的行**无分享钮**（§7 #24） | `20-works-list.md`（2026-09-26 P1 新增；已按 §4.7 校准：三条动作端点实测细则、`filter` 未知值当 `all`、`favorited` 缺键即 false） |
 | 21 | **补充制作（extras 面板）** | 半屏 sheet、**一个容器两条路径**：作品路径 `POST/GET works/:id/extras`（**不消耗 co** ⇒ 不渲染任何数字/合计/余额），会话路径 `GET/POST /api/studio/extras`（按 key 计价，`MEDIA_EXTRA_PRICES`：`wav 20 / accompaniment 30 / stems 50 / vocal_stems 50 / lyrics_timing 10 / lyrics_video 100`，§4.7 已逐项收录）；6 个 key、纯音乐**少 4 项（整行不渲染）**、`files` 待做时**无 url ⇒ 无取件钮**、状态文本塞在 `version` 里 ⇒ **按枚举建模、原串不上屏**；`deliveryRevision` 只做对账不上屏，且**作品路径根本不回它**；产物取件走 `files[].url` **原样消费**（同源 200 流 / `accompaniment` 同源 302；url 内嵌的是 worker job ⇒ 不许自拼），**不受 §7 #39 名单外桶阻塞** | `21-work-extras.md`（2026-09-26 P2 新增；已按 §4.7 校准：两路径三处不同形、取件走 `files[].url` 原样且**同源不受 #39 阻塞**、纯音乐 4 项由服务端滤）。**↔ 09**：会话侧呼出钮需 09 回写（本轮未改该文件） |
 | 22 | **co 币明细（ledger）** | `GET /api/me/credits/ledger?limit=100` → `{entries}`，**只有 `limit` 一个参数、无 cursor、无 total、排序固定 `createdAt DESC, id DESC`（§4.7）⇒ 明写「只能看最近 100 条」并拒绝假分页**（尾部行与「已显示全部」互斥、必居其一）；`reasonLabel` 是**唯一文案源**，iOS **绝不二次映射**（§4.7：13/24 个 reason 落「其他变动」，含 `media_extra`）；行 = `±amount reasonLabel 余额 balanceAfter 时间`；`jobId` 为 null ⇒ **不渲染**「任务」钮（§7 #38 复测：一步生成/库曲下载两支**有** jobId、`studio_create_generation` 一支恒 null ⇒ A9 那半句今天不可达，已改判待修）；金额不用 error/success 色（扣费不是错误）；与 11 同为站内仅有的两个「余额」面，**设置里不许出现**（15 §8） | `22-credits-ledger.md`（2026-09-26 P2 新增；已按 §4.7 校准：**排序固定、无游标为长期口径**、**撤销 iOS 侧 reason 映射表**）。**↔ 11**：入口行需 11 回写（建议位置见其 §3.E 之下、独立一组） |
-| 23 | **制作人入口（producers）** | 不是导航节点：创作输入「+」面板内的一组卡。`GET /api/studio/producers` **灰度关闭时 200 + `{producers:[]}`＝今天的生产现状 ⇒ 默认态是入口不可见（不是置灰、不是骨架、不是「暂未开放」）**；非空卡面按字段清单钉（`displayName/tagline/stages/deliverables/extensions`），**未释义字段（`fictional/audience/greeting/demoCount/cardCount`）一律不上屏**；卡无动作（`producers/projects`、`:id/actions\|surveys` 属 P3）；限流 120/时 | `23-producers-entry.md`（2026-09-26 P2 新增）。⚠️ **§4.7 没有 producers 段** ⇒ 本屏是四屏里唯一无实测卡兜底的，未释义字段一律不上屏。**↔ 01/09**：「+」钮与面板本体由 23 §3 首次定义，两屏需回写（01–03 属 G1 已产出物，改动需验收） |
+| 23 | **制作人入口（producers）** | 不是导航节点：创作输入「+」面板内的一组卡。`GET /api/studio/producers` **灰度关闭时 200 + `{producers:[]}`＝今天的生产现状 ⇒ 默认态是入口不可见（不是置灰、不是骨架、不是「暂未开放」）**；非空卡面按字段清单钉（`displayName/tagline/stages/deliverables/extensions`），**未释义字段（`fictional/audience/greeting/demoCount/cardCount`）一律不上屏**；卡无动作（`producers/projects`、`:id/actions\|surveys` 属 P3）；限流 120/时 | `23-producers-entry.md`（2026-09-26 P2 新增）。⚠️ **§4.7 没有 producers 段** ⇒ 本屏是四屏里唯一无实测卡兜底的，未释义字段一律不上屏。**↔ 01/09**：「+」钮与面板本体由 23 §3 首次定义（2026-10-02 起 01 的宿主控件换为底置 `CovaComposer`，「入口常驻、内容按服务端事实显隐」分工不变） |
+| 25 | **搜索（页签根屏）** | `Tab(role:.search)` 的根屏：落地页 = 搜索历史 chips（本地账沿用原 03 §3：10 条/D9 owner 绑定）+ **分类浏览网格**（场景/情绪/风格三维各取 taxonomy 前 8，色条标识卡，无封面图）；输入态 = `.searchable` + 结果列表 + 03 筛选件复用；分类卡/结果行 → **本栈内** push `library(preset)`（页签不切换） | `25-search.md`（2026-10-02 新增） |
 
 ## 通用要求
 
@@ -119,10 +122,35 @@
 | 硬边界 9（D12）把「下载扣费 UI 入口」关在合规评审之外；extras 产物是**可落本机的文件**，且 §4.7 证实这条腿**今天真能落盘**（同源流） | 判定为**作品侧交付**（与 BUG-15 免费直存同族），非库曲 checkout ⇒ 21 渲染「保存到本机」。若合规评审判它属下载入口 ⇒ 整钮不渲染（12d 门 1 同法，连「未开放」都不给）。**待合规结论**（可施工性已不是问题，问题只剩口径） | `21-work-extras.md` 待裁决 2 |
 | 22 的账目里可能出现 `iap_credits_purchase` 这类**服务端给的**含「充值」语义的 `reasonLabel`，而 `Scripts/d12-copy-check.sh` 的文件头自陈「后端下发字符串任何静态判据都看不到」 | 原样显示（§4.7 禁止二次映射）+ **登记为上架前人工走查项**：D12 的门禁 A12 只扫字面量，这条**结构性失明**不能靠扫描器绿了就当过 | `22-credits-ledger.md` §7 / §9 最后两条 |
 | `11-mine.md` §3.C/§9 判据「余额卡整卡不可点（有意的合规设计）」，而 ledger 需要一个入口 | 入口做成**独立一行**（11 §3.E 之下、独立一组），**不**复用余额卡的点击；且 22 顶部不重复余额大数（少发一次 `me`）。11 需回写该入口行 | `22-credits-ledger.md` §1 / 待裁决 1、3 |
-| `15-settings.md` §8/§9「设置页无余额字样」 | 22 明确**不挂设置**（会把明细页变成设置的违规判据来源），并排除 04 抽屉与 13 会员 | `22-credits-ledger.md` §1 |
+| `15-settings.md` §8/§9「设置页无余额字样」 | 22 明确**不挂设置**（会把明细页变成设置的违规判据来源），并排除外壳导航位与 13 会员 | `22-credits-ledger.md` §1 |
 | `12c-my-creations.md` 待裁决 1 的前提是「我的生成物总数**无端点**」 | 该前提已被 §4.4 的 `GET /api/studio/create/works` + `total` 解掉；12c 的「M 个作品」现可取。本轮**不改 12c**，登记为待回写；08/12c/20 三屏是否合并一并裁决 | `20-works-list.md` 待裁决 1（+ 本表行 12/19 的 ↔ 注） |
+
+## （新增，2026-10-03）web v2.65 设计语言对齐批
+
+> web v2.65.0「筛选、分段和播放列表当前项改为浅灰选中，不再用橙色实心底」。
+> iOS 侧凡「选中填充」语义的旧橙系全部切到 `color.selected`/`color.selectedBg`；
+> 规则全集见 `design/README.md`「与 web 的统一设计语言」。已回写的屏：
+
+| 屏 | 改动 | 出处 |
+|---|---|---|
+| 03 曲库 | 已选值 chips 行：accentSoft → selectedBg | `03-library.md` §2 |
+| 05 歌单广场 | 分类 chips 选中：accentSoft/accentText/accent 边 → selected 三件套 | `05-playlists-plaza.md` §3.B / §6 |
+| 09 会话详情 | PlanCard 标题候选 chips 选中 → selected 三件套 | `09-ai-session-detail.md` §3.G |
+| 13 会员 | 当前套餐列顶边/列底：accent/accentSoft → fg/selectedBg | `13-membership.md` §3.C / §5 |
+| 15 设置 | 主题单选选中：accentText/accent 指示条 → selected | `15-settings.md` §3.B |
+| 20 作品列表 | 筛选 chips 选中 → selected 三件套 | `20-works-list.md` §3.C / §5 |
+| 01 首页 | 「深度思考」开关 chip → selected 三件套（开关态按当前项档） | `01-home.md` §3 选项行 |
+| 10 登录 / 19 创作 | 输入 focus 描边：accent → focusRing（中性灰） | `10-login.md` §3.D / `19-studio-create.md` §3.B |
+
+**不波及**（语义橙/装饰橙，非选中填充）：09 用户气泡与警示衬底（`accentSoft` 语义档）、
+06 已收藏态胶囊与播放中高亮行、22/21 的 `accentSoft` 过渡衬底（TG-21）、25 风格组
+`accentSoft` 竖条（装饰标识）、02 收藏心/循环模式/进度条、页签 tint、链接/文字钮
+`accentText`、登录与 hero CTA 的 `gradient.brandButton`。
 | `19-studio-create.md` §3.E 明令结果行**不渲染** ♡ / ⋯ / 分享 / 重命名 / 歌词 | 那不是终态设计而是 P0 范围（19 §1 原文）。P1 动作全部落在 20，19 只需补一颗「全部作品」钮（待回写）；两屏动作集合不再互相复制 | `20-works-list.md` §1 / 本表行 19 |
 | §5 P1-2 要求「**作品详情**提供翻唱/续写/重制入口」，但站内无作品详情屏、`DEVELOPMENT.md` 也无单行详情端点（§4.4 只有 `works?id=`） | 20/21 都**不**渲染该组入口，共同提出「作品工作面板」候选（20 待裁决 2 ↔ 21 待裁决 3），**必须一次裁决**，免得长出两个互不相认的面板 | `20-works-list.md` 待裁决 2 |
 | 20 的 `POST works/:id/favorite`（物化 note）与 09 的 `PATCH /api/media/references/:id/retention` 是**同一对象的两条写通道** | 20 统一走 `works/:id/favorite` 并要求两侧状态互相回填；「谁是事实源」待后端答（17 §10 并发通则：同一资源两处写入口径只能有一条） | `20-works-list.md` §7 待答（7） |
 | 23 需要创作输入「**+**」面板，而 01 §2 / 09 §J 只有「找歌/做歌/深度思考」，**面板本体不存在** | 由 23 §3.A/B 首次定义（含「入口常驻、内容按服务端事实显隐」的分工），01/09 各需回写一颗「+」钮；01–03 属 G1 已产出物 ⇒ **待验收后再改** | `23-producers-entry.md` §1（+ 本表行 01/09 的 ↔ 注） |
 | `18-local-notification.md` 之外「非屏幕的界面物要不要编号」无先例可抄 | 判据成文并写进上面的编号法表：**独立端点 + 独立空态判定 + 独立 A# 判据**即占一行（23 据此取号，不建深链） | 本文件「加一行的规则」 |
+| `01-home.md` §2 顶部会话输入卡（占屏首块）vs「对话型首页 + 底置输入条」（Apple Music 外壳 + ChatGPT iOS 输入位） | **底置 `CovaComposer`（`safeAreaInset`）**：web 序章只搬内容结构（问候/双态/标签），不搬顶部 hero 位置；顶部卡的历史形态整体退役 | `01-home.md` §1/§4（2026-10-02 方案确认） |
+| 03 `.searchable` 内置搜索 vs 独立搜索页签 | 迁出至 `Tab(role:.search)` 根屏 25；03 只留筛选与「带入条件」回显行；搜索历史一并迁移（同为本地账） | `03-library.md` §3 / `25-search.md`（同上） |
+| 05 待裁决 2「歌单内搜索是否做」 | 落地：01 输入条搜索档目标=歌单 → `plazaSearch(q)` 带参入屏，纯客户端过滤；05 自身不加搜索栏 | `05-playlists-plaza.md` §1 / §待裁决 2（同上） |

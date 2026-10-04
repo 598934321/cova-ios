@@ -238,15 +238,19 @@ enum CovaArtworkCache {
 /// · `init(url:title:)` —— 上游已解析成 `URL` 的腿（播放器封面）走这里，
 ///   但**同样过一遍名单判据**（`CovaArtworkResolution.init(resolvedURL:)`），不免检。
 ///
-/// 「没给图」与「给了但不可出站」是**两种不同**的占位：前者是正确行为（音符），
-/// 后者是一次看得见的出口拒绝（警示三角 + 无障碍标签点名 host）。
+/// 「没给图」与「给了但不可出站」在**取数层**是两种不同状态（后者一次请求都不许发、
+/// 也不重试），但在**用户可见层**共用同一枚中性占位：拒绝文案是工程诊断
+/// （`CovaArtworkResolution.refusalMessage` 留给日志与排查用），不是给用户看的，
+/// 画上警示三角等于把内部裁决当成作品状态（2026-10-01 C2 修：拒绝与缺图同形，
+/// 不再出现 ⚠️；§7 #49 那条「诊断串漏进 VoiceOver 标签」也随之收口）。
 public struct CovaArtwork: View {
     private let resolution: CovaArtworkResolution
     private let title: String
     @State private var phase: Phase
 
     /// `.placeholder` = 「这一行没有可显示的封面」（服务端没给，或给了但取不到）；
-    /// `.refused` = 「给了一个不可出站的地址」—— 两类占位分家就是 R18-2 要的可见性。
+    /// `.refused` = 「给了一个不可出站的地址」—— 两档在取数层分家（refused 不发请求），
+    /// 画出来是同一枚中性占位图。
     private enum Phase { case loading, loaded(Image), placeholder, refused }
 
     public init(resolution: CovaArtworkResolution, title: String) {
@@ -283,13 +287,10 @@ public struct CovaArtwork: View {
             case .loaded(let image):
                 image.resizable().scaledToFill()
                     .transition(.opacity)   // 淡入，不是"从空盒子突然跳出一张图"
-            case .placeholder:
+            case .placeholder, .refused:
+                // 拒绝与缺图共用同一枚中性占位：出口拒绝是内部裁决，不该长得像
+                // "这首作品出了问题"，更不该把诊断串带上屏（§7 #49）。
                 Image(systemName: "music.note")
-                    .foregroundStyle(CovaColor.muted)
-            case .refused:
-                // 与 `.placeholder` 分家的唯一理由：出口拒绝是**故障**，
-                // 不该长得像"这首本来就没封面"。
-                Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(CovaColor.muted)
             }
         }
@@ -297,11 +298,11 @@ public struct CovaArtwork: View {
         .task(id: resolution) { await load() }
     }
 
-    /// 拒绝时把「是哪一台 host」并进无障碍标签（VoiceOver 与人工走查都读得到）；
-    /// 其余只报曲名 —— 地址本身（含查询里的签名）一次都不回显。
+    /// 无障碍只报「曲名 + 封面有没有」：拒绝的具体原因（host/裁决路径）是调试面信息，
+    /// 不进 VoiceOver —— 读屏用户不需要替我们消化一次出口守卫的命中详情。
     private var accessibilityText: String {
-        guard case .refused = phase, let message = resolution.refusalMessage else { return title }
-        return "\(title)：\(message)"
+        guard case .refused = phase else { return title }
+        return "\(title)，封面不可用"
     }
 
     private func load() async {

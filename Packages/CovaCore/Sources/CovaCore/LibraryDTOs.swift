@@ -179,7 +179,7 @@ public struct TrackDto: Codable, Equatable, Sendable {
     }
 }
 
-/// 曲目行副文案（03 §4 / 06 / 16 三屏共用同一条腿）：`艺人 · 时长s · BPM n`。
+/// 曲目行副文案（03 §4 / 06 / 16 三屏共用同一条腿）：`艺人 · m:ss · BPM n`。
 ///
 /// BPM 那一段**只在服务端真给了值时出现**：07 的「可空/缺失规则」明文「`bpm`/`key` 为 **0 或空**
 /// → 该标签不进 G 区（不显示「BPM 0」）」，这里把同一条裁决用到所有曲目行 —— 没给就整段不出现，
@@ -195,9 +195,18 @@ public enum TrackRowCopy {
         return "BPM \(bpm)"
     }
 
+    /// 时长段：行内读法一律 `m:ss`（183 → "3:03"），不再直译成「183s」。
+    /// 负值不是时长 ⇒ `nil`，调用方整段不拼（与 `bpmSegment` 同一口径：缺就不编）。
+    /// 与 `PlayerTime.elapsed` 刻意不同形：那一档是播放器时码（`00:00` 起、分钟位补零），
+    /// 行内列表的惯例是 `2:18`，两套排印各归各的位。
+    public static func durationSegment(_ seconds: Int?) -> String? {
+        guard let seconds, seconds >= 0 else { return nil }
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
     /// 只拼**存在**的片段：少一段就少一个分隔符，不留悬挂的「 · 」。
     public static func subtitle(artist: String, durationSeconds: Int?, bpm: Int?) -> String {
-        joined([artist, durationSeconds.map { "\($0)s" }, bpmSegment(bpm)])
+        joined([artist, durationSegment(durationSeconds), bpmSegment(bpm)])
     }
 
     static func joined(_ segments: [String?]) -> String {

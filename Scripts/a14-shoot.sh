@@ -9,14 +9,17 @@ EMAIL=REPLACE_ME_TEST_EMAIL
 PASS=REPLACE_ME_TEST_PASSWORD
 rm -rf "$OUT"; mkdir -p "$OUT"
 
-# 屏号=键串（TAB/SHEET/ROUTE/DRAWER 的组合）
+# 屏号=键串（TAB/SHEET/ROUTE 的组合）。2026-10-01 外壳重写后抽屉不再存在：
+# 原 `04-drawer` 一格随 `COVA_PREVIEW_DRAWER` 键一并撤掉（键本身已删）。
+# `08-aiSessions` 改走 `COVA_PREVIEW_TAB=studio` —— 08 是创作页签的**根屏**，
+# `navigate(.aiSessions)` 到它只回根不叠层，页签键是它的正当入口。
+# `02-player` 受 04 §4 约束（无播放任务 ⇒ 02 不可打开）：要走 `COVA_PREVIEW_PLAY=<trackId>`
+# 真播放腿把快照先填上，`A14_TRACK` 不给这一屏就**不进数组**（拍了也只能是空壳）。
 screens=(
   "01-home|COVA_PREVIEW_TAB=home"
-  "02-player|COVA_PREVIEW_SHEET=player"
   "03-library|COVA_PREVIEW_TAB=library"
-  "04-drawer|COVA_PREVIEW_TAB=home COVA_PREVIEW_DRAWER=1"
   "05-plaza|COVA_PREVIEW_ROUTE=plaza"
-  "08-aiSessions|COVA_PREVIEW_ROUTE=aiSessions"
+  "08-aiSessions|COVA_PREVIEW_TAB=studio"
   "11-mine|COVA_PREVIEW_TAB=mine"
   "12a-favorites|COVA_PREVIEW_ROUTE=favorites"
   "12b-myPlaylists|COVA_PREVIEW_ROUTE=myPlaylists"
@@ -24,6 +27,13 @@ screens=(
   "14-enterprise|COVA_PREVIEW_ROUTE=enterprise"
   "15-settings|COVA_PREVIEW_ROUTE=settings"
 )
+if [ -n "${A14_TRACK:-}" ]; then
+  screens=(
+    "01-home|COVA_PREVIEW_TAB=home"
+    "02-player|COVA_PREVIEW_PLAY=${A14_TRACK}"
+    "${screens[@]:1}"
+  )
+fi
 guest=(
   "10-login|COVA_PREVIEW_SHEET=login"
 )
