@@ -263,7 +263,11 @@ px→pt 一一对应；iOS 消费文件 `design/tokens.json` → `CovaUI`。
   `api/studio/create/generate/route.ts:24-30`）—— 其余档（400/502）的 `error` 是中文人话。
   所以「余额不足」那句只能由客户端按 `required` 组装，而 400 才能透传服务端原文；
   本仓的裁决面是 `StudioCreateRejection.userMessage`（并把"裸码形状"的 `error` 挡在上屏之外，A15）。
-  提交失败自动退款（refund reason `generation_refund`）。`COVA_SUNO_AGENT_ENABLED` 关时 `charge` 恒 0
+  失败计费口径（v2.71.6 起，one-step 与 studio/create 统一）：**失败保留扣费**（作为免费重试的
+  预付），重试不再扣费；超 **7 天**未重试的在**下次读取时**自动退款（ledger reason
+  `cova_one_step_generation_refund` / `cova_ai_agent_generation_refund`，businessKey 尾缀
+  `:walkaway`），兜底退款后再重试重新计费——不再是旧口径的「失败即退、重试再扣」。
+  `COVA_SUNO_AGENT_ENABLED` 关时 `charge` 恒 0
   （开发环境）⇒ **0 不等于免费**，客户端无从判别 ⇒ UI 只在 `charge > 0` 时渲染扣费那一行。
 - modelVersion：`chirp-hawk`（V6 默认）/ `chirp-goose`（V6-mini）/ `chirp-hawk-wild`；
   旧值（v5.5/v5/v4.5plus…）服务端归一为默认 V6；Lyria（`'Lyria 3.5'`/`'Lyria 3 Pro'`）
