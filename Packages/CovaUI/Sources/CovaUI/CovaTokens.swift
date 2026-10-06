@@ -42,12 +42,15 @@ public enum CovaColor {
     public static let warning = dynamic("#FF9F0A", "#FF9F0A")
     /// 会员金（04 §3.F / components §9）。**Light 用深金、Dark 用亮金** —— 双值已在 tokens 里备好，
     /// 实现侧不得再自行挑一个（04 §5 明文）。
-    public static let memberGold = dynamic("#66511F", "#D9A52F")
-    public static let memberGoldSoft = dynamic("#F7F0D8", "#2A2210")
-    public static let memberGoldBorder = dynamic("#C8AA5A", "#66511F")
+    /// 深色五值按 2026-10-06 裁定（`文档/设计/cova-tokens.json` `_meta.rulings`：web globals.css
+    /// `.dark` 实际值为唯一准；无深色对应值的取与浅色同 token 色相/明度关系更近的一端，即 mac 同值），
+    /// iOS 原分叉值全部被否决（旧值见 rulings 的 `rejected` 字段，这里不再复述免得 grep 误命中）。
+    public static let memberGold = dynamic("#66511F", "#F2DDA2")
+    public static let memberGoldSoft = dynamic("#F7F0D8", "#2A2413")
+    public static let memberGoldBorder = dynamic("#C8AA5A", "#8A7440")
     public static let enterpriseBlue = dynamic("#006EDC", "#79BEFF")
-    public static let enterpriseBlueSoft = dynamic("#EAF4FF", "#0A2540")
-    public static let enterpriseBlueBorder = dynamic("#84BDF3", "#1D4ED8")
+    public static let enterpriseBlueSoft = dynamic("#EAF4FF", "#102A44")
+    public static let enterpriseBlueBorder = dynamic("#84BDF3", "#3A6A9E")
     /// `color.tagScene` / `color.tagMood`：25 分类卡的左缘标识条色（03 §4 行内标签胶囊同源）。
     public static let tagScene = dynamic("#0D9488", "#2DD4BF")
     public static let tagMood = dynamic("#6366F1", "#818CF8")
