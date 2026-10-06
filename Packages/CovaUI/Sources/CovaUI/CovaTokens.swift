@@ -169,6 +169,64 @@ public enum CovaType {
     }
 }
 
+/// SF Symbol 图标尺寸档（`tokens.json` 的 `symbol.*` 区，2026-10-06 任务25 新增）。
+///
+/// **刻意偏差：图标一律固定 point、不跟随 Dynamic Type。** 图标的尺寸由触控目标（≥44pt）
+/// 与版式位置决定——随文字放大会撑破 hit-target 框、让 overlay 角标偏离定位点；
+/// 需要无障碍放大的文本已由 `CovaType` 走 Apple text style，图标侧 `imageScale` 只有
+/// small/medium/large 三档，表达不了 9–64pt 的版式谱系。与「紧凑字档/tracking 未落地」
+/// 同族登记于 `文档/设计/刻意偏差登记.md` D-01/D-02（iOS 端载体为 `Font.system(size:)`）。
+///
+/// 档按站点语义归并，同一尺寸不同语义的给不同名；`…Point` 常量为 `.frame(width:)`
+/// 复用同值（图标框与符号同档，避免两处数字漂移）。
+public enum CovaSymbol {
+    /// 空态/错误态的插图位大符号：`CovaEmptyState`/`CovaErrorState` 与各屏局部错误块共用。
+    public static let state = Font.system(size: 34, weight: .light)
+    public static let statePoint: CGFloat = 34
+
+    // MARK: 02 播放页传输控制族（同屏一组，不拆散）
+
+    /// 播放/暂停主钮（02 §3，屏上唯一 64 档）。
+    public static let playerMain = Font.system(size: 64, weight: .regular)
+    /// 上一首/下一首。
+    public static let playerControl = Font.system(size: 26, weight: .semibold)
+    /// 15s 快退/快进（与主钮/次钮同族）。
+    public static let playerSeek = Font.system(size: 24, weight: .medium)
+    /// 循环三态钮（02 §5：repeat / repeat+accent 点 / repeat.1）。
+    public static let loopControl = Font.system(size: 22, weight: .medium)
+    /// 迷你播放条主钮与播放页收藏心（20 半粗，行外大触控位）。
+    public static let playerAction = Font.system(size: 20, weight: .semibold)
+
+    // MARK: 行级控件与装饰符号
+
+    /// 行级大控件：收藏心（详情页）、多选勾选圈（收藏/歌单/补充制作清单）。
+    public static let controlLarge = Font.system(size: 22)
+    public static let controlLargePoint: CGFloat = 22
+    /// 行首装饰符号（21 补充制作 TG-18 档）：队列/交付物行的语义图标。
+    public static let rowSymbol = Font.system(size: 20)
+    public static let rowSymbolPoint: CGFloat = 20
+    /// 强调小控件：大卡播放钮、播放页 ⋯ 菜单、创作入口 sparkles（18 半粗）。
+    public static let controlProminent = Font.system(size: 18, weight: .semibold)
+    /// 常规行内控件：✕ / ⋯ / 试听钮 / 发送钮（16 半粗）。
+    public static let control = Font.system(size: 16, weight: .semibold)
+    /// 常规行内控件的无字重档（09 候选卡收藏心）。
+    public static let controlPlain = Font.system(size: 16)
+    /// 状态对号（16 §签到态 checkmark.circle，15 档）。
+    public static let status = Font.system(size: 15)
+    /// agent 消息标识位（09 §3.D：24pt 框内居中 sparkles，符号本体 14 半粗）。
+    public static let agentMark = Font.system(size: 14, weight: .semibold)
+    /// 外链指示（设置页 arrow.up.right.square）。
+    public static let linkExternal = Font.system(size: 13)
+    /// 小型状态符：09 运行状态行 12 / 05 已收藏角标 12。
+    public static let statusSmall = Font.system(size: 12)
+    /// 角标（01 作品卡 sparkles 圆章，11 半粗）。
+    public static let badge = Font.system(size: 11, weight: .semibold)
+    /// 展开/收起箭头（详情页歌词「全文」旁 10pt chevron）。
+    public static let chevron = Font.system(size: 10)
+    /// 菜单档位指示（01 搜索目标 chevron.up.chevron.down，9 半粗）。
+    public static let chevronCompact = Font.system(size: 9, weight: .semibold)
+}
+
 /// 动效（`tokens.json` 的 `motion.*`）。`motion.curve` = cubic-bezier(0.32,0.72,0.24,1)；
 /// 时长档按 token 毫秒转秒。Reduce Motion 的替代态由各调用点执行（token `motion.reduceMotion`）。
 public enum CovaMotion {

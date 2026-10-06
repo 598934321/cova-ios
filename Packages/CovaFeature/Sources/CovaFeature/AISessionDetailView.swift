@@ -370,7 +370,7 @@ public struct AISessionDetailView: View {
             // 标识位 24pt 档（TG-18：头像位 24 ⇒ 符号本体 14pt 居中那一档）。
             HStack(alignment: .top, spacing: CovaSpace.sm) {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(CovaSymbol.agentMark)
                     .foregroundStyle(CovaGradient.ai)
                     .frame(width: 24, height: 24, alignment: .topLeading)
                     .accessibilityHidden(true)
@@ -461,7 +461,7 @@ public struct AISessionDetailView: View {
         if let spec = RunLineCopy.line(forEvent: event) {
             HStack(spacing: CovaSpace.xs) {
                 Image(systemName: spec.symbol)
-                    .font(.system(size: 12))
+                    .font(CovaSymbol.statusSmall)
                     .foregroundStyle(runTint(spec.tint))
                 Text(spec.label)
                     .font(CovaType.caption).foregroundStyle(CovaColor.muted)
@@ -676,7 +676,7 @@ extension AISessionDetailView {
             } label: {
                 cover.overlay {
                     Image(systemName: "play.fill")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(CovaSymbol.control)
                         .foregroundStyle(.white)
                         .frame(width: 40, height: 40)
                         .background(.ultraThinMaterial, in: Circle())
@@ -850,7 +850,7 @@ extension AISessionDetailView {
             Task { await toggleFavorite(candidate) }
         } label: {
             Image(systemName: on ? "heart.fill" : "heart")
-                .font(.system(size: 16))
+                .font(CovaSymbol.controlPlain)
                 .foregroundStyle(on ? CovaColor.accent : CovaColor.muted)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
@@ -1293,7 +1293,7 @@ extension AISessionDetailView {
     var composerSendButton: some View {
         Button { Task { await send() } } label: {
             Image(systemName: busy ? "hourglass" : "arrow.up")
-                .font(.system(size: 16, weight: .semibold))
+                .font(CovaSymbol.control)
                 .foregroundStyle(canSend ? .white : CovaColor.fg.opacity(0.4))
                 .frame(width: 40, height: 40)
                 .background {

@@ -133,7 +133,7 @@ public struct WorkExtrasPanelView: View {
         HStack(spacing: CovaSpace.sm) {
             Button(action: close) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(CovaSymbol.control)
                     .foregroundStyle(CovaColor.secondary)
                     .frame(width: WorkExtrasMetrics.touchMin, height: WorkExtrasMetrics.touchMin)
                     .contentShape(Rectangle())
@@ -196,7 +196,7 @@ public struct WorkExtrasPanelView: View {
                 // 20pt 档符号（TG-18），`color.secondary`；纯装饰 ⇒ 不进朗读序列（§6 那一停
                 // 只念标签与动作，不念图标名）。
                 Image(systemName: symbol)
-                    .font(.system(size: WorkExtrasMetrics.symbolSize))
+                    .font(CovaSymbol.rowSymbol)
                     .foregroundStyle(CovaColor.secondary)
                     .frame(width: WorkExtrasMetrics.symbolSize)
                     .accessibilityHidden(true)
@@ -329,7 +329,7 @@ public struct WorkExtrasPanelView: View {
     /// 勾选圈（TG-18 的 22pt 档）。装饰件：朗读由整行的标签负责，所以它自己不进朗读序列。
     private func checkbox(_ checked: Bool) -> some View {
         Image(systemName: checked ? "checkmark.circle.fill" : "circle")
-            .font(.system(size: WorkExtrasMetrics.checkboxSize))
+            .font(CovaSymbol.controlLarge)
             .foregroundStyle(checked ? CovaColor.accent : CovaColor.line)
             .frame(
                 width: WorkExtrasMetrics.checkboxSize, height: WorkExtrasMetrics.checkboxSize
@@ -358,7 +358,7 @@ public struct WorkExtrasPanelView: View {
         HStack(alignment: .center, spacing: CovaSpace.md) {
             if let symbol = row.symbol {
                 Image(systemName: symbol)
-                    .font(.system(size: WorkExtrasMetrics.symbolSize))
+                    .font(CovaSymbol.rowSymbol)
                     .foregroundStyle(CovaColor.secondary)
                     .frame(width: WorkExtrasMetrics.symbolSize)
                     .accessibilityHidden(true)
@@ -537,7 +537,7 @@ public struct WorkExtrasPanelView: View {
     private var wholePanelFailure: some View {
         VStack(spacing: CovaSpace.md) {
             Image(systemName: failureSymbol)
-                .font(.system(size: 34, weight: .light))
+                .font(CovaSymbol.state)
                 .foregroundStyle(CovaColor.error.opacity(0.8))
                 .accessibilityHidden(true)
             Text(WorkExtrasCopy.readFailed)
@@ -640,9 +640,10 @@ enum WorkExtrasMetrics {
     static let touchMin: CGFloat = 44
     /// G 主钮胶囊高（§3.G）。
     static let primaryButtonHeight: CGFloat = 50
-    /// TG-18 符号 20pt 档 / 勾选圈 22pt 档。
-    static let symbolSize: CGFloat = 20
-    static let checkboxSize: CGFloat = 22
+    /// TG-18 符号 20pt 档 / 勾选圈 22pt 档。字级已收编进 `CovaSymbol`（rowSymbol/controlLarge），
+    /// 这里只保留框宽几何的别名 —— 同一份数字，不留第二处真值。
+    static let symbolSize = CovaSymbol.rowSymbolPoint
+    static let checkboxSize = CovaSymbol.controlLargePoint
     /// §8 截断：标签 1 行（AX 不截）；副标 1 行（AX 2 行）。
     static let labelLines = 1
     static let labelLinesAX = 2

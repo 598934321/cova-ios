@@ -243,7 +243,7 @@ public struct HomeView: View {
                 Task { await playFeatured(playlist) }
             } label: {
                 Image(systemName: featuredPlaying ? "hourglass" : "play.fill")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(CovaSymbol.controlProminent)
                     .foregroundStyle(.white)
                     .frame(width: HomeFeaturedCard.playButtonSide, height: HomeFeaturedCard.playButtonSide)
                     .background(.ultraThinMaterial, in: Circle())
@@ -688,7 +688,7 @@ struct RecentPlayCard: View {
                         .accessibilityHidden(true)
                     if row.kind == .work {
                         Image(systemName: "sparkles")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(CovaSymbol.badge)
                             .foregroundStyle(.white)
                             .padding(CovaSpace.xs)
                             .background(.ultraThinMaterial, in: Circle())
