@@ -346,7 +346,7 @@ public struct CovaEmptyState: View {
     public var body: some View {
         VStack(spacing: CovaSpace.md) {
             Image(systemName: symbol)
-                .font(.system(size: 34, weight: .light))
+                .font(CovaSymbol.state)
                 .foregroundStyle(CovaColor.muted)
             Text(title).font(CovaType.headline).foregroundStyle(CovaColor.fg)
             if let hint {
@@ -378,7 +378,7 @@ public struct CovaErrorState: View {
     public var body: some View {
         VStack(spacing: CovaSpace.md) {
             Image(systemName: symbol)
-                .font(.system(size: 34, weight: .light))
+                .font(CovaSymbol.state)
                 .foregroundStyle(CovaColor.error.opacity(0.8))
             Text(title).font(CovaType.headline).foregroundStyle(CovaColor.fg)
             Text(hint).font(CovaType.subhead).foregroundStyle(CovaColor.secondary)

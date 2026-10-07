@@ -321,7 +321,7 @@ public struct MineView: View {
         VStack(spacing: CovaSpace.md) {
             Spacer()
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 34, weight: .light))
+                .font(CovaSymbol.state)
                 .foregroundStyle(CovaColor.error.opacity(0.8))
                 .accessibilityHidden(true)
             Text("账号信息没取到").font(CovaType.headline).foregroundStyle(CovaColor.fg)
@@ -483,7 +483,7 @@ public struct MineView: View {
                 if checkin == .done {
                     HStack(spacing: CovaSpace.sm) {
                         Image(systemName: "checkmark.circle")
-                            .font(.system(size: 15)).foregroundStyle(CovaColor.success)
+                            .font(CovaSymbol.status).foregroundStyle(CovaColor.success)
                         Text(title).font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
                         Spacer(minLength: 0)
                     }

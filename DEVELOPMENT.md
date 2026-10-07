@@ -124,11 +124,11 @@ px→pt 一一对应；iOS 消费文件 `design/tokens.json` → `CovaUI`。
 
 ### 3.3 语义色 / 商务色 / 标签色
 
-| Token | 浅色 | 深色（tokens.json 档） |
+| Token | 浅色 | 深色（2026-10-06 裁定档，`文档/设计/cova-tokens.json` `_meta.rulings`） |
 |---|---|---|
 | success / error / warning | `#30D158` / `#FF453A` / `#FF9F0A` | 同 |
-| membership-metal 会员金 | `#66511F`（soft `#F7F0D8` / border `#C8AA5A`） | `#D9A52F` / `#2A2210` / `#66511F` |
-| enterprise-metal 企业蓝 | `#006EDC`（soft `#EAF4FF` / border `#84BDF3`） | `#79BEFF` / `#0A2540` / `#1D4ED8` |
+| membership-metal 会员金 | `#66511F`（soft `#F7F0D8` / border `#C8AA5A`） | `#F2DDA2` / `#2A2413` / `#8A7440` |
+| enterprise-metal 企业蓝 | `#006EDC`（soft `#EAF4FF` / border `#84BDF3`） | `#79BEFF` / `#102A44` / `#3A6A9E` |
 | tag-scene / tag-mood | `#0D9488` / `#6366F1` | `#2DD4BF` / `#818CF8` |
 
 ### 3.4 字阶（iOS pt，SF Pro；全局 tabular-nums）
@@ -140,6 +140,8 @@ px→pt 一一对应；iOS 消费文件 `design/tokens.json` → `CovaUI`。
 | callout / subhead / caption | 15 / 13 / 11 | 400 | — |
 | mono | 13 | 400 | SF Mono / `monospacedDigit`，时码与数字位 |
 
+紧凑档（D24）与 tracking 未落地为已拍板刻意偏差，登记于 `文档/设计/刻意偏差登记.md` D-01/D-02。
+
 ### 3.5 圆角 / 间距 / 触控 / z 序
 
 - 圆角（pt）：control **12**、surface/card **18**（`--cova-radius-surface: 18px`）、
@@ -148,8 +150,8 @@ px→pt 一一对应；iOS 消费文件 `design/tokens.json` → `CovaUI`。
 - 触控目标 ≥44pt；主按钮胶囊高 50、chip 36。
 - z 序（web `--z-index-*` 实测，语义契约 toast > lyrics > dialog > overlay > player > nav）：
   nav **40** < player **1000** < overlay **1080** < dialog **1100** < lyrics **1200** < toast **1250**。
-  ⚠️ `design/tokens.json` 的 zOrder 写 toast 1150 且无 lyrics 层——与 web 现行值漂移，
-  iOS 以本表为准并修 tokens.json。
+  ✅ `design/tokens.json` 的 `elevation.zOrder` 已与上表逐值对齐（含 lyrics 层、toast 1250），
+  与 web `globals.css` `--z-index-*`（约 :103-113）一致——2026-10-06 核对。
 
 ### 3.6 组件态
 

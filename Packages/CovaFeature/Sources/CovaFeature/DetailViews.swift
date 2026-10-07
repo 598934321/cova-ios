@@ -453,7 +453,7 @@ public struct TrackDetailSheet: View {
     private var topBar: some View {
         HStack {
             Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.system(size: 16, weight: .semibold))
+                Image(systemName: "xmark").font(CovaSymbol.control)
                     .foregroundStyle(CovaColor.secondary)
             }
             .accessibilityLabel("关闭")
@@ -467,7 +467,7 @@ public struct TrackDetailSheet: View {
                     session.showToast("链接已复制")
                 }
             } label: {
-                Image(systemName: "ellipsis").font(.system(size: 16, weight: .semibold))
+                Image(systemName: "ellipsis").font(CovaSymbol.control)
                     .foregroundStyle(CovaColor.secondary)
             }
             .accessibilityLabel("更多操作")
@@ -500,7 +500,7 @@ public struct TrackDetailSheet: View {
                         }
                     } label: {
                         Image(systemName: on ? "heart.fill" : "heart")
-                            .font(.system(size: 22))
+                            .font(CovaSymbol.controlLarge)
                             .foregroundStyle(on ? CovaColor.accent : CovaColor.muted)
                     }
                     .buttonStyle(.plain)
@@ -566,7 +566,7 @@ public struct TrackDetailSheet: View {
                     HStack(spacing: 2) {
                         Text("全文").font(CovaType.caption)
                         Image(systemName: lyricsExpanded ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 10))
+                            .font(CovaSymbol.chevron)
                     }
                     .foregroundStyle(CovaColor.accent)
                 }

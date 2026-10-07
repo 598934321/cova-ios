@@ -131,7 +131,7 @@ public struct FavoritesView: View {
         ) {
             if editing {
                 Image(systemName: selected.contains(item.id) ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 22)).foregroundStyle(
+                    .font(CovaSymbol.controlLarge).foregroundStyle(
                         selected.contains(item.id) ? CovaColor.accent : CovaColor.muted)
                     .accessibilityLabel("选择本曲")
                     .accessibilityValue(selected.contains(item.id) ? "已选择" : "未选择")
@@ -472,7 +472,7 @@ public struct MyPlaylistsView: View {
             ) {
                 if editing {
                     Image(systemName: selected.contains(playlist.id) ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 22))
+                        .font(CovaSymbol.controlLarge)
                         .foregroundStyle(selected.contains(playlist.id) ? CovaColor.accent : CovaColor.muted)
                         .accessibilityLabel("选择本歌单")
                         .accessibilityValue(selected.contains(playlist.id) ? "已选择" : "未选择")

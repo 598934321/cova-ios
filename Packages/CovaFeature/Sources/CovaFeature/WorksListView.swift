@@ -559,7 +559,7 @@ public struct WorksListView: View {
     private func failedBlock(message: String) -> some View {
         VStack(spacing: CovaSpace.md) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 34, weight: .light))
+                .font(CovaSymbol.state)
                 .foregroundStyle(CovaColor.error.opacity(0.8))
             Text(WorksListCopy.listFailed)
                 .font(CovaType.headline).foregroundStyle(CovaColor.fg)

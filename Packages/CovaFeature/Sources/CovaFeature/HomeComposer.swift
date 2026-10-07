@@ -197,7 +197,7 @@ struct CovaComposer: View {
         switch mode {
         case .generate:
             Image(systemName: "sparkles")
-                .font(.system(size: 18, weight: .semibold))
+                .font(CovaSymbol.controlProminent)
                 .foregroundStyle(CovaGradient.ai)
                 .frame(width: ShellMetrics.touchMin, height: ShellMetrics.touchMin)
                 .accessibilityHidden(true)
@@ -220,7 +220,7 @@ struct CovaComposer: View {
                         .font(CovaType.caption)
                         .foregroundStyle(CovaColor.secondary)
                     Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(CovaSymbol.chevronCompact)
                         .foregroundStyle(CovaColor.muted)
                 }
                 .frame(minHeight: ShellMetrics.touchMin)
@@ -247,7 +247,7 @@ struct CovaComposer: View {
     private var sendButton: some View {
         Button(action: onSend) {
             Image(systemName: sending ? "hourglass" : "arrow.up")
-                .font(.system(size: 16, weight: .semibold))
+                .font(CovaSymbol.control)
                 .foregroundStyle(canSend ? .white : CovaColor.fg.opacity(0.4))
                 .frame(width: 40, height: 40)
                 .background {

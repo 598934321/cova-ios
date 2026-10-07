@@ -28,14 +28,14 @@ public struct MiniPlayerView: View {
                     Spacer()
                     Button { Task { await session.toggle() } } label: {
                         Image(systemName: snap?.state == .playing ? "pause.fill" : "play.fill")
-                            .font(.system(size: 20, weight: .semibold))
+                            .font(CovaSymbol.playerAction)
                             .foregroundStyle(CovaColor.fg)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(snap?.state == .playing ? "暂停" : "播放")
                     Button { Task { await session.next() } } label: {
                         Image(systemName: "forward.fill")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(CovaSymbol.control)
                             .foregroundStyle(CovaColor.secondary)
                     }
                     .buttonStyle(.plain)
@@ -118,7 +118,7 @@ public struct PlayerView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(CovaSymbol.controlProminent)
                     .foregroundStyle(CovaColor.secondary)
                     .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
                     .contentShape(Rectangle())
@@ -177,7 +177,7 @@ public struct PlayerView: View {
             }
         } label: {
             Image(systemName: on ? "heart.fill" : "heart")
-                .font(.system(size: 20, weight: .semibold))
+                .font(CovaSymbol.playerAction)
                 .foregroundStyle(on ? CovaColor.accent : CovaColor.muted)
                 .symbolEffect(.bounce, value: on)  // 02 §5：选中态缩放弹跳
                 .frame(width: PlayerMetrics.touchMin, height: PlayerMetrics.touchMin)
@@ -324,31 +324,31 @@ public struct PlayerView: View {
     private func transport(_ snap: PlaybackSnapshot?) -> some View {
         HStack(spacing: CovaSpace.xl) {
             Button { Task { await session.previous() } } label: {
-                Image(systemName: "backward.fill").font(.system(size: 26, weight: .semibold))
+                Image(systemName: "backward.fill").font(CovaSymbol.playerControl)
                     .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("上一首")
             Button { Task { await session.seek((snap?.position ?? 0) - 15) } } label: {
-                Image(systemName: "gobackward.15").font(.system(size: 24, weight: .medium))
+                Image(systemName: "gobackward.15").font(CovaSymbol.playerSeek)
                     .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("后退 15 秒")
             Button { Task { await session.toggle() } } label: {
                 Image(systemName: snap?.state == .playing ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 64, weight: .regular))
+                    .font(CovaSymbol.playerMain)
                     .foregroundStyle(CovaColor.accent)
             }
             .accessibilityLabel(snap?.state == .playing ? "暂停" : "播放")
             Button { Task { await session.seek((snap?.position ?? 0) + 15) } } label: {
-                Image(systemName: "goforward.15").font(.system(size: 24, weight: .medium))
+                Image(systemName: "goforward.15").font(CovaSymbol.playerSeek)
                     .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("前进 15 秒")
             Button { Task { await session.next() } } label: {
-                Image(systemName: "forward.fill").font(.system(size: 26, weight: .semibold))
+                Image(systemName: "forward.fill").font(CovaSymbol.playerControl)
                     .frame(minWidth: PlayerMetrics.touchMin, minHeight: PlayerMetrics.touchMin)
                     .contentShape(Rectangle())
             }
@@ -411,7 +411,7 @@ public struct PlayerView: View {
     @ViewBuilder
     private func loopLabel(_ mode: LoopMode) -> some View {
         Image(systemName: mode == .one ? "repeat.1" : "repeat")
-            .font(.system(size: 22, weight: .medium))
+            .font(CovaSymbol.loopControl)
             .overlay(alignment: .topTrailing) {
                 if mode == .all {
                     Circle().fill(CovaColor.accent).frame(width: 6, height: 6).offset(x: 4, y: -2)

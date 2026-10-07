@@ -1,0 +1,38 @@
+# 任务25 门禁（bash Scripts/check.sh，2026-10-06，HEAD=554ba68）
+
+14:==> 3/10 追加：D12 合规文案门禁（Scripts/d12-copy-check.sh）
+15:D12 自检植入点：app=Cova/CovaApp.swift｜包=Packages/CovaCore/Sources/CovaCore/AccountDeletionDTOs.swift｜Info.plist=Config/Info.plist:8
+16:D12 面覆盖核验：仓库内 .swift 共 235 个（面内 118，具名排除 117）
+17:D12 载体面：已解析（.swift/.plist）118；图片/音视频等不可判定 18；未解析载体红 0
+18:D12 扫描面：Cova（1 个 .swift）
+19:D12 扫描面：Packages/CovaCore/Sources（56 个 .swift）
+20:D12 扫描面：Packages/CovaFeature/Sources（40 个 .swift）
+21:D12 扫描面：Packages/CovaPlayer/Sources（16 个 .swift）
+22:D12 扫描面：Packages/CovaUI/Sources（5 个 .swift）
+23:D12 资源面（只查载体、不解析内容）：design/assets/CovaAssets.xcassets
+24:D12 具名排除（测试夹具/清单，边界见文件头）：CovaAcceptanceTests
+25:D12 具名排除（测试夹具/清单，边界见文件头）：CovaTests
+27:D12 自检（沿真实违规路径植入；诱饵文本见 Scripts/d12-gate-selftest-copy.txt）：
+54:D12 自检：12 段诱饵全部被抓、全部复原（md5 逐字节一致）
+55:✅ D12 文案门禁通过：两层禁词命中 0；扫描面覆盖全仓 .swift；载体面无未解析文件；必备购买字面量在册
+57:** BUILD SUCCEEDED **
+62:** TEST SUCCEEDED **
+63:    CovaTests：passed=2 failed=0 skipped=0，基线=2（只认 passed）
+66:** TEST SUCCEEDED **
+67:    CovaCoreTests(iOS)：passed=956 failed=0 skipped=0，基线=950（只认 passed）
+69:** TEST SUCCEEDED **
+70:    CovaFeatureTests(iOS)：passed=314 failed=0 skipped=0，基线=307（只认 passed）
+71:==> 7/10 核心层行覆盖率（SwiftPM 插桩 + llvm-cov，阈值 94%）
+72:    说明：Xcode 不为本地 SwiftPM 包目标产出 xccov 覆盖率，故由 SwiftPM 插桩测量；
+77:    覆盖率运行有效：测试源码命中 14467 行
+78:    CovaCore 行覆盖率：5741/6092 = 94.24%
+80:** TEST SUCCEEDED **
+81:    CovaPlayerTests(iOS)：passed=483 failed=0 skipped=0，基线=483（只认 passed）
+82:==> 9/10 播放器层行覆盖率（8/10 的 Coverage.profdata + llvm-cov lcov，阈值 94%）
+96:    覆盖率运行有效：测试源码命中 10846 行，逐文件行数据点名 16 个源文件（= 映射侧全集）
+97:    CovaPlayer 行覆盖率：3806/4000 = 95.15%
+99:✅ check.sh 全部通过
+
+    CovaPlayer 行覆盖率：3806/4000 = 95.15%
+    无 UI 不变量（产物侧）：2 个 target objdir（含测试 target）的 .o 无 UI 符号引用（mangling 7SwiftUI|5UIKit|5AVKit|8PhotosUI|6MapKit|8MetalKit|9SpriteKit|9WidgetKit|7CallKit|8WatchKit|10RealityKit|8RoomPlan|6WebKit|14SafariServices|9MessageUI / ObjC 类前缀 UI WK SF MF）；测试二进制无 UI 框架强依赖（词表 15 项，仅容忍 weak 形态：[UIKit]）
+✅ check.sh 全部通过

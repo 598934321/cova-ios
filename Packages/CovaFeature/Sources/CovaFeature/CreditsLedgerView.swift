@@ -308,7 +308,7 @@ public struct CreditsLedgerView: View {
     private var emptyState: some View {
         VStack(spacing: CovaSpace.md) {
             Image(systemName: "list.bullet.rectangle")
-                .font(.system(size: 34, weight: .light))
+                .font(CovaSymbol.state)
                 .foregroundStyle(CovaColor.muted)
                 .accessibilityHidden(true)
             Text(CreditsLedgerCopy.emptyTitle)
@@ -339,7 +339,7 @@ public struct CreditsLedgerView: View {
     private var wholeScreenFailure: some View {
         VStack(spacing: CovaSpace.md) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 34, weight: .light))
+                .font(CovaSymbol.state)
                 .foregroundStyle(CovaColor.error.opacity(0.8))
                 .accessibilityHidden(true)
             Text(CreditsLedgerCopy.readFailed)

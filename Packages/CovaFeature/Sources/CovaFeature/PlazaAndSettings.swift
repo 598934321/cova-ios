@@ -299,7 +299,7 @@ public struct PlaylistsPlazaView: View {
                     // 角标只读；收藏动作在 06。游客恒无角标，且这**不是缺陷**（NEEDS-1/3 未闭合）。
                     if playlist.isSaved == true {
                         Image(systemName: "bookmark.fill")
-                            .font(.system(size: 12))
+                            .font(CovaSymbol.statusSmall)
                             .foregroundStyle(CovaColor.accent)
                             .padding(CovaSpace.xs)
                             .accessibilityLabel("已收藏")
@@ -615,7 +615,7 @@ public struct SettingsView: View {
             .foregroundStyle(CovaColor.fg)
             .overlay(alignment: .trailing) {
                 Image(systemName: "arrow.up.right.square")
-                    .font(.system(size: 13)).foregroundStyle(CovaColor.muted)
+                    .font(CovaSymbol.linkExternal).foregroundStyle(CovaColor.muted)
                     .accessibilityHidden(true)
             }
     }
