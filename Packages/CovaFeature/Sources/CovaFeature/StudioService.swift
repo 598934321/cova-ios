@@ -1,6 +1,53 @@
 import CovaCore
 import Foundation
 
+/// 「开始制作」失败 → 一句话（402 / 429 的判据落点）。
+///
+/// 为什么要一个独立类型、而不是把 402/429 塞进 `CovaAPIError`：
+/// 那两个状态码在 `plans/start` 上**自带可上屏的数字**（本次需要多少 co、多少秒后再试），
+/// 而 `CovaAPIError.httpStatus(code:apiCode:)` 按登录防枚举的取舍只保留业务码 ——
+/// 信封里的 `balance`/`required` 与响应头的 `Retry-After` 在那一层就死了。
+/// 分诊本身**复用** `StudioCreateRejection`（同一族判据：屏上无英文码、不编「未知错误」），
+/// 不另写一份 402/429 词表 —— 两份词表迟早对不上（本仓 min-2 缺陷族）。
+public struct StudioStartFailure: Error, Equatable, Sendable {
+    /// 由状态码 + 信封分诊出的拒绝类别（与 `studio/create/generate` 同一套）。
+    public let rejection: StudioCreateRejection
+    /// 服务端 `Retry-After` 秒数（只有 429/503 且服务端给纯数字时才有值）。
+    public let retryAfterSeconds: Int?
+
+    public init(rejection: StudioCreateRejection, retryAfterSeconds: Int? = nil) {
+        self.rejection = rejection
+        self.retryAfterSeconds = retryAfterSeconds
+    }
+
+    /// 上屏文案（09 §10：零余额那一段必须说清「这次没有扣费」）。
+    public var userMessage: String {
+        switch rejection {
+        case .creditsInsufficient(_, let required):
+            guard let required, required > 0 else { return "余额不足（这次没有扣费）" }
+            return "余额不足，本次需要 \(required) co（这次没有扣费）"
+        case .rateLimited:
+            // 秒数只做「更具体」，不做「更宽松」：没有秒数时仍是一句完整的人话。
+            if let seconds = retryAfterSeconds, seconds > 0 {
+                return "请求过于频繁，请 \(seconds) 秒后再试"
+            }
+            return rejection.userMessage
+        default:
+            return rejection.userMessage
+        }
+    }
+
+    /// 状态码 + 响应体 + `Retry-After` → 分诊（纯函数，脱网可测）。
+    public static func classify(
+        statusCode: Int, body: Data?, retryAfterSeconds: Int? = nil
+    ) -> StudioStartFailure {
+        StudioStartFailure(
+            rejection: StudioCreateRejection.classify(statusCode: statusCode, body: body),
+            retryAfterSeconds: retryAfterSeconds
+        )
+    }
+}
+
 /// 创作闭环（M2）的类型化访问：会话建 / 列表 / 详情、计划卡、启动制作、候选收藏。
 ///
 /// 与 `CatalogService` 同一把口径：失败分成「网络 / 服务端 / **后端缺口**」三类，
@@ -12,6 +59,9 @@ import Foundation
 /// · 本服务**不提供**任何删除/重命名会话的方法 —— 契约没有这两个端点，
 ///   design 08 明令「手势、菜单项、VoiceOver 元素一律不出现」。
 public struct StudioService: Sendable {
+    /// 启动制作的唯一路径（单测与文档引用同一常量，避免两处拼写）。
+    public static let startPath = "/api/studio/one-step/plans/start"
+
     private let client: CovaAPIClient
     public init(client: CovaAPIClient) { self.client = client }
 
@@ -66,7 +116,26 @@ public struct StudioService: Sendable {
             snapshotHash: snapshotHash,
             token: token ?? IdempotentRequestToken(operation: .planStart)
         )
-        return try await client.post("/api/studio/one-step/plans/start", body: body)
+        // 走 `performCoded` 而不是 `post`：start 的 402/429 承载着**上屏要用的数字与秒数**
+        // （`credits_insufficient` 的 `balance`/`required`、`Retry-After`），而
+        // `CovaAPIError.httpStatus` 只留业务码、把信封与响应头全丢掉 ⇒ 屏上只剩「HTTP 402」。
+        let payload = try JSONEncoder().encode(body)
+        let outcome = try await client.performCoded(
+            method: .post, path: Self.startPath, jsonBody: payload
+        )
+        guard outcome.isSuccess else {
+            throw StudioStartFailure.classify(
+                statusCode: outcome.statusCode,
+                body: outcome.body,
+                retryAfterSeconds: outcome.retryAfterSeconds
+            )
+        }
+        // 2xx 但读不出任务：写可能已经落地（与 `GenerationJobResponseDto.isUnresolvedSubmission`
+        // 同一条钱路纪律）⇒ 交回调用方按「未拿到任务号」核对，不在这里编一句话。
+        guard let response = try? JSONDecoder().decode(GenerationJobResponseDto.self, from: outcome.body) else {
+            throw CovaAPIError.decoding(field: "studio-start")
+        }
+        return response
     }
 
     /// 生成候选的收藏标记（`PATCH /api/media/references/:id/retention`）。
@@ -185,8 +254,16 @@ public struct StudioService: Sendable {
         let deepThinking: Bool
     }
 
-    /// 把 `CovaAPIError` 归类成 UI 可说的三句话（会话面的解码缺口是 NEEDS-23）。
+    /// 把任意错误归类成 UI 可说的三句话（会话面的解码缺口是 NEEDS-23）。
+    ///
+    /// `StudioStartFailure` 必须**在这里**拦下：它的 402/429 文案是本端点自己算出来的
+    /// （带 co 数与秒数），交给 `CatalogService.classify` 只会落回 `.server("HTTP 402")`。
+    /// 401/403 仍交给目录层那一档：登录态过期是**跨屏**语义，不该由 start 这一屏另说一句。
     public static func classify(_ error: Error) -> CatalogFailure {
-        CatalogService.classify(error, decodingNeeds: "NEEDS-23")
+        if let start = error as? StudioStartFailure {
+            if case .unauthenticated = start.rejection { return .unauthenticated }
+            return .server(start.userMessage)
+        }
+        return CatalogService.classify(error, decodingNeeds: "NEEDS-23")
     }
 }

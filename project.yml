@@ -219,8 +219,13 @@ targets:
         #     字面量收编进 CovaUI.CovaSymbol 命名尺寸档（全为 SF Symbol，pt 零变化，
         #     刻意不随 Dynamic Type），tokens.json 新增 symbol 区镜像；手册 zOrder
         #     自报改为已对齐 + §3.4 补 D-01/D-02 指针。
-        CFBundleShortVersionString: "0.3.5"
-        CFBundleVersion: "107"
+        # → 0.3.6/108 生产接口对齐（2026-10-26）：`plans/start` 的 402/429 不再掉进
+        #     `CatalogService` 的「HTTP 402 / HTTP 429」兜底 —— 走 `performCoded` 拿原始信封，
+        #     402 上屏「余额不足，本次需要 N co（这次没有扣费）」，429 上屏「请求过于频繁，请 N 秒后再试」
+        #     （`Retry-After` 由传输层解析成纯数字秒数，HTTP-date 形态刻意不解析）。
+        #     分诊复用 `StudioCreateRejection`，不另写 402/429 词表。
+        CFBundleShortVersionString: "0.3.6"
+        CFBundleVersion: "108"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

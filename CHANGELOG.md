@@ -7,6 +7,32 @@
 
 ---
 
+## 0.3.6 (108) — 2026-10-26
+
+**生产接口对齐批（M-1 / M-2）**：盘点（`归档/qa-evidence/多端对齐-20261026/iOS.md`）
+给出的 2 项「必须改」落地。两处都在同一条钱路上：`POST /api/studio/one-step/plans/start`。
+
+- **M-1 · 402 余额不足**：`StudioService.startPlan` 改走 `performCoded`，非 2xx 交
+  `StudioStartFailure.classify` 分诊（复用 `StudioCreateRejection`，不另写词表）。
+  上屏从 `HTTP 402` 变为「余额不足，本次需要 N co（这次没有扣费）」。
+  服务端形状（web 2.77.61 `lib/one-step/generation.ts:803` 抛 402 + `{balance,required}`）无需改动。
+- **M-2 · 429 限流**：`HTTPResponse` / `CovaHTTPOutcome` 增加**只读的** `retryAfterSeconds: Int?`
+  —— 传输层只搬那一格整数，**不留 headers**（头里有 `Set-Cookie`，硬边界 3）。
+  只认 RFC 7231 的 delta-seconds（纯 ASCII 数字），HTTP-date 形态刻意 `nil`（不做日历/时区换算）。
+  上屏从 `HTTP 429` 变为「请求过于频繁，请 N 秒后再试」，无 `Retry-After` 时回落「请求过于频繁，请稍后再试」。
+- **401 仍是跨屏语义**：start 专线只截 402/429/400/5xx，401/403 仍落 `CatalogFailure.unauthenticated`。
+- 测试：Core 965（`RetryAfterHeaderTests` 7 条 + `APIClientCodedOutcomeTests` 两条接线/缺省格）、
+  Feature 328（`StudioStartFailureTests` 14 条）。`bash Scripts/check.sh` **EXIT=0 / 10 步全过**
+  （覆盖率 CovaCore 94.30% / CovaPlayer 95.15%，D12 12 段诱饵全抓全复原）。
+  变异自证：拆掉 `classify` 的 start 分支 ⇒ 3 红；让 `Retry-After` 恒 nil ⇒ 5 红；两处还原后 md5 逐字节一致。
+
+## 0.3.5 (107) — 2026-10-06（补记）
+
+**任务25 设计对齐**（commit `554ba68`）：深色金属色 5 对值归零到裁定档（`_meta.rulings`）；
+38 处 `.font(.system(size:)` 收编进 `CovaUI.CovaSymbol` 命名尺寸档（全为 SF Symbol，pt 零变化，
+刻意不随 Dynamic Type），`tokens.json` 新增 `symbol` 区镜像；手册 zOrder 自报改为已对齐。
+—— 本条为**事后补记**：当时只改了 `project.yml` 的版本字段，本文件漏记。
+
 ## 0.3.4 (106) — 2026-10-04
 
 **09 屏 spec 对齐批**（`AISessionDetailView` 对抗性审查 → 全量重写 1700→2313 行，

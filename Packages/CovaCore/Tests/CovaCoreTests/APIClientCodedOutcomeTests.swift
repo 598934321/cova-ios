@@ -16,7 +16,10 @@ private actor CodedTransport: HTTPTransport {
     static let oldAccess = "ACCESS_TOKEN_PLACEHOLDER"
     static let creditsBody = Data(#"{"error":"credits_insufficient","balance":3,"required":20}"#.utf8)
 
-    enum Mode: Sendable { case creditsInsufficient, offline }
+    enum Mode: Sendable { case creditsInsufficient, offline, rateLimited }
+    static let rateLimitedBody = Data(#"{"error":"请求过于频繁，请稍后再试"}"#.utf8)
+    /// 服务端 `lib/security.ts:116` 给的 `Retry-After`（秒）。
+    static let retryAfter = 42
     private let mode: Mode
     private var recorded: [HTTPRequest] = []
 
@@ -39,6 +42,15 @@ private actor CodedTransport: HTTPTransport {
                     return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
                 }
                 return HTTPResponse(statusCode: 402, body: Self.creditsBody)
+            case .rateLimited:
+                if request.bearerToken == Self.oldAccess {
+                    return HTTPResponse(statusCode: 401, body: TestTransportData.unauthorized)
+                }
+                return HTTPResponse(
+                    statusCode: 429,
+                    body: Self.rateLimitedBody,
+                    retryAfterSeconds: Self.retryAfter
+                )
             }
         default:
             return HTTPResponse(statusCode: 404, body: Data())
@@ -92,6 +104,31 @@ final class APIClientCodedOutcomeTests: XCTestCase {
         XCTAssertEqual(refreshes, 1, "401 只许触发一次刷新")
         let attempts = await transport.requestCount(path: CodedTransport.targetPath)
         XCTAssertEqual(attempts, 2, "原始一次 + 重放一次")
+    }
+
+    /// 429 的 `Retry-After` 必须**穿到调用方手里**（M-2 的接线判据）。
+    ///
+    /// 只测解析器不够：`Retry-After` 是在传输层读出来的，中间要过
+    /// `HTTPResponse` → `CovaHTTPOutcome` 两跳。任一跳漏搬，屏上就只剩「请求过于频繁」
+    /// 而说不出多少秒 —— 那是可观测的降级，不是实现细节。
+    func testRateLimitCarriesRetryAfterThroughTheCodedLeg() async throws {
+        let (client, _) = try await signedInClient(mode: .rateLimited)
+        let outcome = try await client.performCoded(
+            method: .post, path: CodedTransport.targetPath, jsonBody: Data("{}".utf8)
+        )
+        XCTAssertEqual(outcome.statusCode, 429)
+        XCTAssertFalse(outcome.isSuccess)
+        XCTAssertEqual(outcome.body, CodedTransport.rateLimitedBody)
+        XCTAssertEqual(outcome.retryAfterSeconds, CodedTransport.retryAfter)
+    }
+
+    /// 没有 `Retry-After` 的响应不许凭空造一个秒数（宁可回到不带秒数的话术）。
+    func testMissingRetryAfterStaysNil() async throws {
+        let (client, _) = try await signedInClient(mode: .creditsInsufficient)
+        let outcome = try await client.performCoded(
+            method: .post, path: CodedTransport.targetPath, jsonBody: Data("{}".utf8)
+        )
+        XCTAssertNil(outcome.retryAfterSeconds)
     }
 
     /// 传输层失败**照抛**：那种情况压根没有一个 HTTP 结果可交（不许伪造一个状态码）。

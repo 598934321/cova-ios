@@ -45,10 +45,18 @@ extension HTTPRequest: CustomStringConvertible, CustomDebugStringConvertible, Cu
 public struct HTTPResponse: Sendable {
     public let statusCode: Int
     public let body: Data
+    /// `Retry-After` 的**纯数字**秒数（429 / 503 才有意义）。
+    ///
+    /// 刻意只留一个整数、不留 headers：响应头里有 `Set-Cookie`（登录态凭证），
+    /// 把整份头塞进这个会被 `description`/`Mirror` 打印的类型，等于给凭证开一条
+    /// 上屏与入日志的路（硬边界 3）。HTTP-date 形态一律 `nil`：不解析日历与时区，
+    /// 宁缺一个秒数，也不猜一个可能差 8 小时的死线。
+    public let retryAfterSeconds: Int?
 
-    public init(statusCode: Int, body: Data) {
+    public init(statusCode: Int, body: Data, retryAfterSeconds: Int? = nil) {
         self.statusCode = statusCode
         self.body = body
+        self.retryAfterSeconds = retryAfterSeconds
     }
 }
 
@@ -241,6 +249,24 @@ public struct URLSessionTransport: HTTPTransport {
         guard let http = response as? HTTPURLResponse else {
             throw CovaAPIError.invalidResponse
         }
-        return HTTPResponse(statusCode: http.statusCode, body: data)
+        return HTTPResponse(
+            statusCode: http.statusCode,
+            body: data,
+            retryAfterSeconds: Self.retryAfterSeconds(http.value(forHTTPHeaderField: "Retry-After"))
+        )
+    }
+
+    /// `Retry-After` → 整秒。**只认 RFC 7231 的 delta-seconds 形态**（纯 ASCII 数字）。
+    ///
+    /// 不认 HTTP-date：解析日期要日历与时区，服务端与本机时区一旦不同就是一条
+    /// 差好几小时的「请 N 秒后再试」；宁可没有秒数（调用方回落到不带秒数的话术）。
+    /// 取 `String?` 而不是 `HTTPURLResponse`，是为了这条判据能脱网单测。
+    static func retryAfterSeconds(_ headerValue: String?) -> Int? {
+        guard let raw = headerValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              raw.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let seconds = Int(raw), seconds >= 0
+        else { return nil }
+        return seconds
     }
 }

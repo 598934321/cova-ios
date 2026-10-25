@@ -8,10 +8,16 @@ import Foundation
 public struct CovaHTTPOutcome: Equatable, Sendable {
     public let statusCode: Int
     public let body: Data
+    /// `Retry-After` 秒数（服务端只给纯数字时才有值；HTTP-date 形态为 `nil`）。
+    ///
+    /// 它**不是** header 本身：传输层只把那一格整数搬过来，`Set-Cookie` 之类的凭证
+    /// 头仍然进不了这个类型（硬边界 3 与上面那段注释同一条口径）。
+    public let retryAfterSeconds: Int?
 
-    public init(statusCode: Int, body: Data) {
+    public init(statusCode: Int, body: Data, retryAfterSeconds: Int? = nil) {
         self.statusCode = statusCode
         self.body = body
+        self.retryAfterSeconds = retryAfterSeconds
     }
 
     public var isSuccess: Bool { (200...299).contains(statusCode) }
@@ -167,7 +173,11 @@ public actor CovaAPIClient {
         let response = try await performRaw(
             method: method, path: path, queryItems: queryItems, jsonBody: jsonBody
         )
-        return CovaHTTPOutcome(statusCode: response.statusCode, body: response.body)
+        return CovaHTTPOutcome(
+            statusCode: response.statusCode,
+            body: response.body,
+            retryAfterSeconds: response.retryAfterSeconds
+        )
     }
 
     private func send(_ request: HTTPRequest) async throws -> HTTPResponse {
