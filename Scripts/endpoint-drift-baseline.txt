@@ -1,0 +1,41 @@
+# iOS 调用面基线（生成：swift Scripts/check-endpoint-drift.swift --update）
+# 每行一条归一化路径：Swift 插值已折成 {p}；以 / 结尾的是拼接式前缀。
+# 改这一份 = 显式声明“调用面变了”，请在同一 commit 里说明原因。
+/api/auth/delete-account
+/api/auth/login
+/api/auth/logout
+/api/auth/me
+/api/auth/refresh
+/api/favorites
+/api/find-my-song/generation-jobs
+/api/find-my-song/sessions
+/api/find-my-song/sessions/{p}
+/api/iap/products
+/api/iap/verify
+/api/library/taxonomy
+/api/me/checkin
+/api/me/credits/ledger
+/api/media/objects/
+/api/media/references/{p}/retention
+/api/notes/{p}/favorite
+/api/play-history
+/api/playlists
+/api/playlists/daily
+/api/playlists/public
+/api/playlists/{p}
+/api/saved-playlists
+/api/shared-playlists/
+/api/studio/agent
+/api/studio/agent-runs
+/api/studio/create/generate
+/api/studio/create/works
+/api/studio/extras
+/api/studio/one-step/plans
+/api/studio/one-step/plans/start
+/api/studio/one-step/plans/{p}
+/api/studio/one-step/plans/{p}/lyrics/regenerate
+/api/studio/one-step/plans/{p}/versions
+/api/studio/producers
+/api/tracks
+/api/tracks/play
+/api/tracks/{p}

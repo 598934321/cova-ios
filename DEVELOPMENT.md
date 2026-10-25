@@ -868,3 +868,8 @@ TD-45 门面层缺「取消→⏭」复现腿；TD-46 导航矩阵成本须拆�
 - 新增写操作 → `Idempotency.swift` 登记新 operation 键型；同 (scope) 重试复用同键。
 - 契约不符 → 登记 §7 表 + 不猜字段名（宁可后端Gap错显式报出）。
 - 设计值 → 只引 `design/tokens.json`（发现与 §3 漂移时先修 tokens.json 再用）。
+- **调用面漂移巡检** → `swift Scripts/check-endpoint-drift.swift`（需同机有 `../web` 源码树，
+  或用 `COVA_WEB_ROOT=…` 指定）。它把 §4 那份人工比对固化成判据：iOS 用到的每条 `/api/…`
+  必须在 web 的 `src/app/api/**/route.ts` 里存在，且与 `Scripts/endpoint-drift-baseline.txt` 逐行一致。
+  改调用面（加/删端点）必须同 commit 跑 `--update` 重写基线并说明原因；
+  退出码 0=零漂移 / 1=有漂移 / 2=环境不合格。**刻意不进 check.sh**：发版门禁不许依赖同机 web 源码树。
