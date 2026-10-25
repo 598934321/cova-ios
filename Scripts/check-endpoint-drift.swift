@@ -31,7 +31,10 @@ let root = scriptDir.deletingLastPathComponent()
 let env = ProcessInfo.processInfo.environment
 let webRoot = env["COVA_WEB_ROOT"].map { URL(fileURLWithPath: $0) }
     ?? root.deletingLastPathComponent().appendingPathComponent("web")
-let apiDir = webRoot.appendingPathComponent("src/app/api")
+// 必须解析符号链接：枚举器返回的是**真实**路径，而 apiDir 若含 /tmp 这类软链前缀，
+// 下面按 prefix 截断就会失败（表现是 277 条路由一条都对不上，而不是报环境错）。
+// 这条是 2026-10-26 用 `git archive` 出的临时树验证发布版时踩到的。
+let apiDir = webRoot.appendingPathComponent("src/app/api").resolvingSymlinksInPath()
 let baselineURL = root.appendingPathComponent("Scripts/endpoint-drift-baseline.txt")
 
 func failEnv(_ message: String) -> Never {
@@ -100,9 +103,10 @@ func iosCallPaths() -> [String] {
 func webRoutes() -> [String] {
     guard let e = fm.enumerator(at: apiDir, includingPropertiesForKeys: nil) else { return [] }
     var set = Set<String>()
-    let prefix = apiDir.path + "/"
+    let prefix = apiDir.resolvingSymlinksInPath().path + "/"
     for case let u as URL in e where u.lastPathComponent == "route.ts" {
-        var rel = u.path
+        // 两边都解析：枚举器可能回软链前的真实路径，apiDir 也可能带软链前缀。
+        var rel = u.resolvingSymlinksInPath().path
         if rel.hasPrefix(prefix) { rel.removeFirst(prefix.count) }
         var comps = rel.components(separatedBy: "/")
         comps.removeLast() // 去掉 route.ts
