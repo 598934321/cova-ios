@@ -28,15 +28,20 @@ final class LedgerDTOTests: XCTestCase {
         XCTAssertEqual(page.entries.last?.createdAt, "2026-09-19T09:00:00.000Z")
     }
 
-    /// 服务端**没有** total / nextCursor / balance ⇒ 本类型没有那三个属性（不建模不发的键）。
-    /// 就算响应里偷偷多出这三个键，也读不出、更渲染不了。
-    func testNoTotalNoCursorNoBalanceAreModelled() throws {
+    /// 服务端**没有** total / nextCursor ⇒ 本类型没有那两个属性（不建模不发的键）。
+    /// 就算响应里偷偷多出这些键，也读不出、更渲染不了。
+    ///
+    /// 2026-10-26 变化：**顶层** `balance` 仍不建模，但服务端 2.77.x 改在 `wallet` 段里给余额
+    /// （`{wallet:{balance,purchasedCredits,purchasedCreditsExpiresAt}}`），本类型因此多了 `wallet` 一格。
+    /// 这条断言的两半都还在：① 顶层三个键读不出；② 属性集合恰好是这三格（多一格就要在这里表态）。
+    func testNoTotalNoCursorAndNoTopLevelBalanceAreModelled() throws {
         let page = try JSONDecoder().decode(
             CreditLedgerPageDto.self,
             from: Data(#"{"entries":[],"total":1234,"nextCursor":"abc","balance":99,"limit":50}"#.utf8)
         )
         let labels = Set(Mirror(reflecting: page).children.compactMap(\.label))
-        XCTAssertEqual(labels, ["entries", "unreadableItemCount"])
+        XCTAssertEqual(labels, ["entries", "unreadableItemCount", "wallet"])
+        XCTAssertNil(page.wallet, "顶层 balance 不是 wallet 段，不许被当成钱包读进来")
         XCTAssertTrue(page.entries.isEmpty)
     }
 

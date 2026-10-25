@@ -1015,6 +1015,9 @@ fileprivate extension WorksListFilter {
     var chipTitle: String {
         switch self {
         case .all: return "全部"
+        // 「已生成」与「制作中」是服务端 filter 的两半（succeeded vs queued/submitted/processing），
+        // 顺序按服务端词表排（generated 在前），不按中文语序重排。
+        case .generated: return "已生成"
         case .generating: return "制作中"
         case .vocal: return "有人声"
         case .instrumental: return "纯音乐"

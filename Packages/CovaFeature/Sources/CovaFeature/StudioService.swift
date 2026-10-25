@@ -216,7 +216,8 @@ public struct StudioService: Sendable {
             card: response.planCard,
             charged: response.credits?.charged,
             balance: response.credits?.balance,
-            insufficient: response.credits?.insufficient
+            insufficient: response.credits?.insufficient,
+            turnId: response.credits?.turnId
         )
     }
 

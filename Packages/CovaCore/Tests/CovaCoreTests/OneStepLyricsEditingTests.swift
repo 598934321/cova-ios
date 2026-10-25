@@ -464,6 +464,8 @@ final class OneStepLyricsEditingTests: XCTestCase {
             (.httpStatus(code: 402, apiCode: "topup_required"), .insufficientBalance),
             (.httpStatus(code: 404, apiCode: "not_found"), .cardGone),
             (.httpStatus(code: 403, apiCode: "forbidden"), .cardGone),
+            (.httpStatus(code: 413, apiCode: "llm_input_cap"), .inputTooLong),
+            (.httpStatus(code: 413, apiCode: nil), .inputTooLong),
             (.httpStatus(code: 400, apiCode: "invalid_lyrics"), .rejected(status: 400)),
             (.httpStatus(code: 500, apiCode: nil), .rejected(status: 500)),
             (.unauthorized(apiCode: nil), .cardGone)
@@ -478,7 +480,7 @@ final class OneStepLyricsEditingTests: XCTestCase {
         var seen = Set<String>()
         for rejection in [
             OneStepLyricsEditRejection.staleCard, .idempotencyConflict, .insufficientBalance, .cardGone,
-            .rejected(status: 400)
+            .inputTooLong, .rejected(status: 400)
         ] {
             XCTAssertFalse(rejection.userCopy.isEmpty)
             XCTAssertFalse(rejection.userCopy.containsASCIILetter, rejection.userCopy)
@@ -487,6 +489,10 @@ final class OneStepLyricsEditingTests: XCTestCase {
         // 「这次没有扣费」只许出现在"预检就把请求拦下"那一档（D12：只陈述事实，不给出充值的路）
         XCTAssertTrue(OneStepLyricsEditRejection.insufficientBalance.userCopy.hasPrefix("这次没有扣费"))
         XCTAssertFalse(OneStepLyricsEditRejection.staleCard.userCopy.contains("扣费"))
+        // 413 这一档**没有**生产实测证据（未真实触发过）⇒ 只许说"太长、去精简"，
+        // 不许替服务端保证"没有扣费"（那是 402 预检档才有的结论）。
+        XCTAssertFalse(OneStepLyricsEditRejection.inputTooLong.userCopy.contains("扣费"))
+        XCTAssertTrue(OneStepLyricsEditRejection.inputTooLong.userCopy.contains("精简"))
     }
 
     // MARK: - 响应承接（写成功与"读不回显"是两件事）
@@ -522,6 +528,33 @@ final class OneStepLyricsEditingTests: XCTestCase {
 
         let short = OneStepLyricsRegenerateOutcome(card: nil, charged: 0, balance: 0, insufficient: true)
         XCTAssertTrue(short.chargeCopy.contains("没能扣费"), short.chargeCopy)
+    }
+
+    /// `credits.turnId` 是**附带事实**：能读就读到（客服对账要它），读不到就是 nil，
+    /// 且它绝不参与 `chargeCopy` 的任何分支（把轮次号混进话术就是把内部标识塞上屏）。
+    func testRegenerateCreditsCarryTurnIdWithoutTouchingTheCopy() throws {
+        let dto = try JSONDecoder().decode(
+            OneStepLyricsRegenerateResponseDto.self,
+            from: Data(#"{"credits":{"turnId":"turn-9f2","charged":6,"balance":44,"insufficient":false}}"#.utf8)
+        )
+        XCTAssertEqual(dto.credits?.turnId, "turn-9f2")
+        XCTAssertEqual(dto.credits?.charged, 6)
+
+        let outcome = OneStepLyricsRegenerateOutcome(
+            card: nil, charged: dto.credits?.charged, balance: dto.credits?.balance,
+            insufficient: dto.credits?.insufficient, turnId: dto.credits?.turnId
+        )
+        XCTAssertEqual(outcome.turnId, "turn-9f2")
+        XCTAssertFalse(outcome.chargeCopy.contains("turn-9f2"), "轮次号不许上屏")
+        XCTAssertTrue(outcome.chargeCopy.contains("6 co"))
+
+        // 旧服务端没有 turnId 这一格 ⇒ nil，不影响其余字段
+        let legacy = try JSONDecoder().decode(
+            OneStepLyricsRegenerateResponseDto.self,
+            from: Data(#"{"credits":{"charged":6,"balance":44}}"#.utf8)
+        )
+        XCTAssertNil(legacy.credits?.turnId)
+        XCTAssertEqual(legacy.credits?.charged, 6)
     }
 
     /// 重做的载荷只有共享信封那三件 —— 多一个键都不发明（`shared.ts:81`）。

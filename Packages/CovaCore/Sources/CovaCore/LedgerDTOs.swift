@@ -6,9 +6,13 @@ import Foundation
 // 三条把整屏形状钉死的事实：
 // · 请求侧**只有 `limit`**（夹在 1..100，默认 50）：**没有** `offset` / `cursor` / `type` 参数，
 //   排序固定 `createdAt DESC, id DESC` ⇒ "只能看最近 100 条"要如实呈现，不许假装能翻页；
-// · 响应侧**只有 `{entries}`**：**没有** `total` / `nextCursor` / 余额 ⇒ 本文件不建模那三个键，
-//   也不在类型上留一个"以后能接"的可选字段（留了就会有人去渲染它）；
-//   余额走权威腿 `GET /api/auth/me`（`entitlements`），不在流水里。
+// · 响应侧 = `{wallet, entries}`（**已变，纯增量**）：2026-10-26 对照生产 2.77.61
+//   `src/app/api/me/credits/ledger/route.ts:88-90` 逐字核对，服务端现回
+//   `wallet:{balance, purchasedCredits, purchasedCreditsExpiresAt}` + `entries`。
+//   本文件头此前写"只有 {entries}、余额走 /api/auth/me"——**那句已过时**，余额现在这里就有，
+//   `/me` 仍是权威腿但不再是唯一来源。
+//   `total` / `nextCursor` 依然**没有**：只补了 `wallet` 一段，翻页能力一个字没多。
+//   `wallet` 建模为整体可选：旧服务端没有这一段时整段缺席 ⇒ 读不到就是 nil，不填 0。
 // · `reasonLabel` 由服务端映射表生成，而那张表**与真实 reason 不同步**：24 个在写的 reason 里
 //   **13 个落到「其他变动」**（含 `media_extra`、`cova_ai_agent_generation`、灵感商店一族、
 //   `iap_credits_purchase`、admin 三件）⇒ 客户端**原样显示服务端字符串，绝不自己再映射一遍**
@@ -203,10 +207,36 @@ public struct CreditLedgerEntryDto: Decodable, Equatable, Sendable {
     }
 }
 
-/// `GET /api/me/credits/ledger` 的响应：**只有 `{entries}`**。
+/// 钱包快照（`wallet` 段）。**纯增量**：本段是 web 2.77.x 才补上的（见文件头）。
 ///
-/// **没有** `total` / `nextCursor` / `balance`（§4.7 逐条实测）⇒ 本类型没有那三个属性，
-/// 于是「共 N 条」「下一页」「当前余额」在这一屏都**无从渲染** —— 这是如实，不是缺功能。
+/// 三个值全部可选：服务端没给 / 旧版本没有这一段 ⇒ 读不到就是 nil，**不填 0**
+/// （0 会被渲染成「余额 0 co」，那是把一次缺字段说成一个没钱的钱包）。
+/// `purchasedCreditsExpiresAt` 是 ISO8601 **原样字符串**：本层不做时区换算，
+/// 到点作废的判定在服务端（`effectiveWallet`），客户端只负责显示"哪天到期"。
+public struct CreditWalletDto: Decodable, Equatable, Sendable {
+    /// 可用总额（服务端已把 paid + grant 换算好）。
+    public let balance: Int?
+    /// 充值桶（会到期的那部分）。
+    public let purchasedCredits: Int?
+    /// 充值桶到期时间（ISO8601 原样）。
+    public let purchasedCreditsExpiresAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case balance, purchasedCredits, purchasedCreditsExpiresAt
+    }
+
+    public init(balance: Int?, purchasedCredits: Int?, purchasedCreditsExpiresAt: String?) {
+        self.balance = balance
+        self.purchasedCredits = purchasedCredits
+        self.purchasedCreditsExpiresAt = purchasedCreditsExpiresAt
+    }
+}
+
+/// `GET /api/me/credits/ledger` 的响应：`{wallet, entries}`（**已变，纯增量**）。
+///
+/// 仍然**没有** `total` / `nextCursor`（§4.7 逐条实测 + 2026-10-26 复核）⇒ 「共 N 条」
+/// 「下一页」这一屏仍**无从渲染**，这是如实，不是缺功能。
+/// 余额现在**这里有**（`wallet`）；`/api/auth/me` 仍是权威腿，但不再是唯一来源。
 /// 排序固定 `createdAt DESC, id DESC` ⇒ 客户端**不重排**（重排会把服务端的稳定序打乱，
 /// 而"同一页两次读出的顺序不同"就是用户会报的那个 bug）。
 ///
@@ -218,12 +248,15 @@ public struct CreditLedgerPageDto: Decodable, Equatable, Sendable {
 
     public let entries: [CreditLedgerEntryDto]
     public let unreadableItemCount: Int
+    /// 钱包快照（可选：旧服务端缺这一段）。
+    public let wallet: CreditWalletDto?
 
-    enum CodingKeys: String, CodingKey { case entries }
+    enum CodingKeys: String, CodingKey { case entries, wallet }
 
-    public init(entries: [CreditLedgerEntryDto], unreadableItemCount: Int) {
+    public init(entries: [CreditLedgerEntryDto], unreadableItemCount: Int, wallet: CreditWalletDto? = nil) {
         self.entries = entries
         self.unreadableItemCount = unreadableItemCount
+        self.wallet = wallet
     }
 
     public init(from decoder: Decoder) throws {
@@ -249,6 +282,9 @@ public struct CreditLedgerPageDto: Decodable, Equatable, Sendable {
         }
         entries = rows
         unreadableItemCount = unreadable
+        // 整段缺席 / 形状不对 ⇒ nil，**不抛**：wallet 是增量便利项，
+        // 不该让它把整页流水判死（entries 才是这一屏的主数据）。
+        wallet = try? root.decodeIfPresent(CreditWalletDto.self, forKey: .wallet)
     }
 
     /// 可跳去任务的那些行（`jobId` 非空）。A9 的「点击「任务」跳转」只有这一份数据来源。

@@ -7,6 +7,28 @@
 
 ---
 
+## 0.3.7 (109) — 2026-10-26
+
+**「可延后」清单前四项落地**（盘点 §4；后两项按下不做的判据见
+`归档/qa-evidence/多端对齐-20261026/iOS-DEFERRED-VERDICT.md`）。
+
+- **413 输入超限**：`OneStepLyricsEditRejection` 新增 `.inputTooLong`（认 **413 状态码**、不认 code），
+  话术「这段歌词太长，超出一次能处理的上限；先精简再重做。」——此前落进「服务端拒绝了这次提交」，
+  用户只会把同一份超长歌词再点一次。**刻意不写「没有扣费」**：这一档没有生产实测证据。
+- **重做的计量事实**：`credits.turnId` 纳入 DTO 与 `OneStepLyricsRegenerateOutcome`（不进任何分支、
+  不上屏，仅供客服对账）；同时把「按 token 实扣、不再一口价」写进类型注释，禁止屏上写死价位。
+- **co 明细的钱包段**：`CreditLedgerPageDto` 新增可选 `wallet{balance, purchasedCredits, purchasedCreditsExpiresAt}`
+  （生产 2.77.61 `me/credits/ledger/route.ts:88-90` 实测）。文件头那句「响应只有 {entries}、余额走 /me」
+  已过时，就地更正；`total`/`nextCursor` 仍未建模，**顶层 balance 仍不建模**（有断言钉住）。
+  `wallet` 形状坏掉只退回 nil，不连累 `entries`。
+- **作品筛选补 `generated`**：服务端词表一直是 10 值（`works.ts:301-302` = `status='succeeded'`），
+  iOS 闭集只有 9 个 ⇒「已生成」这一栏无从选择。现补枚举 + chip「已生成」（排在「制作中」之前，与服务端同序）。
+- 测试：Core **971**（+6：`LedgerWalletDTOTests` 5 + `turnId` 容忍 1）。
+  `bash Scripts/check.sh` EXIT=0 / 10 步全过（覆盖率 CovaCore 94.30%+ / CovaPlayer 95.15%）。
+  既有用例 `testNoTotalNoCursorNoBalanceAreModelled` 因新增 `wallet` 而变红 —— 按它的意图改名为
+  `testNoTotalNoCursorAndNoTopLevelBalanceAreModelled` 并**收紧了断言**（顶层 balance 仍必须读不出），
+  不是放宽。
+
 ## 0.3.6 (108) — 2026-10-26
 
 **生产接口对齐批（M-1 / M-2）**：盘点（`归档/qa-evidence/多端对齐-20261026/iOS.md`）

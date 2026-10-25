@@ -242,11 +242,17 @@ public struct OneStepLyricsRegenerateResponseDto: Decodable, Equatable, Sendable
         public let charged: Int?
         public let balance: Int?
         public let insufficient: Bool?
+        /// 本轮计量轮的 id（`llm-metering.ts` 的 `turnId`）。
+        ///
+        /// 只做**附带事实**、不进任何分支：用途是当用户对「这次扣了多少」有异议时，
+        /// 能把这一屏的账对到服务端某一轮上。读不到就是 `nil`。
+        public let turnId: String?
 
         enum CodingKeys: String, CodingKey {
             case charged
             case balance
             case insufficient
+            case turnId
         }
     }
 

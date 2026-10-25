@@ -461,7 +461,12 @@ public enum OneStepLyricsEditRejection: Equatable, Sendable, Error {
     case insufficientBalance
     /// 403/404：这张卡不归我，或不在了。
     case cardGone
-    /// 其余非 2xx（400 invalid_patch / 413 llm_input_cap / 5xx …）。
+    /// 413 `llm_input_cap`：要送进模型的歌词超出服务端输入上限
+    /// （`lyrics/regenerate/route.ts:62-63`）⇒ 模型一次都没调，用户要改的只是
+    /// 「太长」，不是「被拒」。单独成档的理由：这一档的**下一步动作**是把歌词改短；
+    /// 混进「服务端拒绝了这次提交」只会让用户把同一份超长歌词再点一次。
+    case inputTooLong
+    /// 其余非 2xx（400 invalid_patch / 5xx …）。
     case rejected(status: Int?)
 
     /// 从 `CovaAPIError` 归类。**只认这一族**：不是 `CovaAPIError` 的错误返回 nil，
@@ -474,6 +479,9 @@ public enum OneStepLyricsEditRejection: Equatable, Sendable, Error {
             case (409, "conflict"), (409, "revision_conflict"): return .staleCard
             case (409, "idempotency_conflict"): return .idempotencyConflict
             case (402, _): return .insufficientBalance
+            // 413 按**状态码**认、不按 code 认：服务端只在输入超限这一条上用 413，
+            // 而 code 属于文案侧（`llm_input_cap`），改名不该让分诊失效。
+            case (413, _): return .inputTooLong
             case (403, _), (404, _): return .cardGone
             default: return .rejected(status: code)
             }
@@ -488,6 +496,9 @@ public enum OneStepLyricsEditRejection: Equatable, Sendable, Error {
         case .idempotencyConflict: return "后端认出这不是一次重发，改动没有保存；再点一次保存即可。"
         case .insufficientBalance: return "这次没有扣费，余额不足以重做歌词。"
         case .cardGone: return "这张计划卡已经不在了。"
+        // 刻意不写「没有扣费」：413 发生在进模型之前、服务端本轮不结算 —— 但这一档
+        // 我没有生产实测证据（未真实触发过），只陈述用户能行动的那件事。
+        case .inputTooLong: return "这段歌词太长，超出一次能处理的上限；先精简再重做。"
         case .rejected: return "这次没保存上，服务端拒绝了这次提交。"
         }
     }
@@ -513,17 +524,25 @@ public struct OneStepLyricsRegenerateOutcome: Equatable, Sendable {
     public let balance: Int?
     /// 后端明说"结算时扣不动"（`llm-metering.ts:152-154`：`charged:0` + `insufficient:true`）。
     public let insufficient: Bool?
+    /// 本轮计量轮 id（客服对账用；读不到就是 nil，不进任何分支）。
+    public let turnId: String?
 
     public init(
-        card: OneStepPlanCardDto?, charged: Int?, balance: Int?, insufficient: Bool?
+        card: OneStepPlanCardDto?, charged: Int?, balance: Int?, insufficient: Bool?,
+        turnId: String? = nil
     ) {
         self.card = card
         self.charged = charged
         self.balance = balance
         self.insufficient = insufficient
+        self.turnId = turnId
     }
 
     /// 扣费话术：三种事实各说各的，**绝不把"没读到"说成"没扣"**。
+    ///
+    /// 计费口径提醒（web ≥2.77.x）：歌词重做**不再是一口价**，改成按本轮 token 实扣
+    /// （`enterLlmTurn → llmTurnPrecheck → 模型 → settleLlmTurn`）⇒ `charged` 每次都不同，
+    /// 屏上只能说「这次消耗 N co」，不许写死某个价位，也不许承诺"再做一次还是这个数"。
     public var chargeCopy: String {
         if insufficient == true { return "这次没能扣费：余额不足，歌词没有重做。" }
         guard let charged else { return "歌词已重做，这次扣了多少没读到，以账单为准。" }

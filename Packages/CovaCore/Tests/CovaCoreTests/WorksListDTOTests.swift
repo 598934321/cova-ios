@@ -269,8 +269,10 @@ final class WorksListDTOTests: XCTestCase {
     func testFilterAndSortValueSetsMatchTheServerExactly() {
         XCTAssertEqual(
             WorksListFilter.allCases.map(\.rawValue),
-            ["all", "generating", "vocal", "instrumental", "liked", "disliked", "cover",
-             "extend", "remaster"]
+            // 服务端词表（web `src/app/api/studio/create/works/route.ts` 的 `filters`）逐字同序。
+            // 2026-10-26 补 `generated`：服务端一直认这个值，iOS 闭集当时漏了它。
+            ["all", "generated", "generating", "vocal", "instrumental", "liked", "disliked",
+             "cover", "extend", "remaster"]
         )
         XCTAssertEqual(WorksListSort.allCases.map(\.rawValue), ["newest", "oldest"])
         // 未知值服务端当 all ⇒ 客户端的恢复入口只认闭合词表，认不出来给 nil（不假装选中了）。

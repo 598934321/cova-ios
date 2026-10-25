@@ -15,6 +15,13 @@ import Foundation
 /// 闭集把这件事变成编译期问题（与 A2 对 `PlayReportSource` 的判据同族）。
 public enum WorksListFilter: String, Equatable, Sendable, CaseIterable, Identifiable {
     case all
+    /// `generated` = 服务端 `generationJobs.status = 'succeeded'`
+    /// （`web/src/lib/studio/create/works.ts:301-302`）—— 即「已经出成品」的那一档。
+    /// 与 `generating` 是互斥的两半：一个是做完了，一个是还在做。
+    ///
+    /// 2026-10-26 补：服务端 10 值里一直有这个，iOS 闭集当时只有 9 个 ⇒ 「已生成」这一栏
+    /// 在本端**无从选择**。补进来是纯增量：服务端早就认这个值，加之前没有任何请求发过它。
+    case generated
     case generating
     case vocal
     case instrumental
