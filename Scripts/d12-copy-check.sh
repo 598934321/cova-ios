@@ -65,6 +65,11 @@
 # `Tests`/`Test` 结尾、以及 SwiftPM 清单 `Package.swift` 不扫 —— 测试夹具会**故意**
 # 写出那句「不许上屏」的话。这条排除是人工判断，自检证明不了它对，只证明面内会被扫到。
 #
+# 2026-10-26 追加一条具名排除：**`Scripts/*.swift`**（开发脚本，如
+# `check-endpoint-drift.swift`）。它们不进任何 app target、不会被编译进产物，
+# 承载的是运维输出而不是上屏文案。**刻意具名到目录**：写成 `*.swift` 这种通配
+# 会把 app target 的来源一起免检 —— 那是判据的洞，不是豁免。
+#
 # 跑法：`bash Scripts/d12-copy-check.sh`（本机 bash 3.2 + BSD 工具链，不用 GNU 扩展）。
 set -euo pipefail
 # 判据按字节工作（awk 的 substr/index 逐字节扫 UTF-8 字节流），钉死 C locale：
@@ -461,6 +466,8 @@ is_excluded_path() {
   done
   case "$p" in
     Package.swift|*/Package.swift) return 0 ;;
+    # 开发脚本（不进产物、不上屏）。具名到 Scripts/ 一层，不用通配。
+    Scripts/*.swift) return 0 ;;
   esac
   return 1
 }
