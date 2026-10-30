@@ -562,4 +562,61 @@ final class StudioCreateDTOTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - COVA-20261024-003 R1：modelVersion 只在用户显式选引擎时才发
+
+    /// 用户没选引擎 ⇒ **键不存在**（不是发 null）。
+    /// 服务端缺键时用 `DEFAULT_CREATE_MODEL_VERSION`，客户端不该把那个默认值复制一份钉死。
+    func testModelVersionIsAbsentWhenUserDidNotChooseAnEngine() throws {
+        for blank in [nil, "", "   "] as [String?] {
+            let request = try StudioCreateGenerateRequestDto(
+                prompt: "氛围音乐", modelVersion: blank, token: token()
+            )
+            XCTAssertFalse(
+                try body(request).keys.contains("modelVersion"),
+                "modelVersion=\(String(describing: blank)) 时不许出现该键"
+            )
+        }
+    }
+
+    /// 选了 Lyria ⇒ 原样上送（服务端 `isLyriaModelVersion` 命中即原样采用，不归一）。
+    func testLyriaModelVersionPassesThroughVerbatim() throws {
+        let request = try StudioCreateGenerateRequestDto(
+            prompt: "氛围音乐", modelVersion: "Lyria 3 Pro", token: token()
+        )
+        XCTAssertEqual(try body(request)["modelVersion"] as? String, "Lyria 3 Pro")
+    }
+
+    /// 两侧空白裁掉（服务端 `input.modelVersion.trim()` 同口径）。
+    func testModelVersionIsTrimmed() throws {
+        let request = try StudioCreateGenerateRequestDto(
+            prompt: "氛围音乐", modelVersion: "  Lyria 3.5  ", token: token()
+        )
+        XCTAssertEqual(try body(request)["modelVersion"] as? String, "Lyria 3.5")
+    }
+
+    /// 客户端**不校验**模型 id 合法性：清单来自服务端，本地自造白名单就是 R1 明禁的硬编码。
+    /// 这条钉的是"别在这里长出一个校验"——真伪由 worker 兜底。
+    func testModelVersionIsNotValidatedLocally() throws {
+        XCTAssertNoThrow(
+            try StudioCreateGenerateRequestDto(
+                prompt: "p", modelVersion: "Lyria 未来型号 X9", token: token()
+            )
+        )
+        XCTAssertNoThrow(
+            try StudioCreateGenerateRequestDto(
+                prompt: "p", modelVersion: "suno-custom-whatever", token: token()
+            )
+        )
+    }
+
+    /// 加了这个字段之后，不选引擎的 create 请求仍然**逐键相等**于 P0 那版形状。
+    func testAddingModelVersionKeepsPlainCreateShapeStable() throws {
+        let request = try StudioCreateGenerateRequestDto(prompt: "a", token: token())
+        XCTAssertEqual(
+            Set(try body(request).keys),
+            ["mode", "operation", "prompt", "idempotencyKey"],
+            "不选引擎时，线上形状必须与加字段前逐键一致"
+        )
+    }
 }

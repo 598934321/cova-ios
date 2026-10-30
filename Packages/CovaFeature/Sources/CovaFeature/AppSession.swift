@@ -973,6 +973,26 @@ public final class AppSession {
     }
 
     public internal(set) var studioCreate = StudioCreateState()
+    /// 应用当前是否在前台可见（COVA-20261024-003 **R2**：「页面不可见暂停、恢复可见立即拉取」）。
+    ///
+    /// 由根视图的 `scenePhase` 驱动，默认 true（冷启即前台）。
+    /// 轮询腿读它决定要不要暂停 —— **暂停不等于停止**：任务还在跑，只是不必在后台空转
+    /// 烧网络与配额；恢复可见立刻补一拍。
+    ///
+    /// 判定收敛在 `GenerationPollVisibility`（CovaCore 纯值类型，三条规则在单测里逐条钉住），
+    /// 本类只负责把 `scenePhase` 喂进去、把补拍标记给轮询腿消费。
+    public internal(set) var appVisibility = GenerationPollVisibility()
+    public var isAppVisible: Bool { appVisibility.isVisible }
+    /// Lyria 模型清单的内存缓存（R1：≤60s、失败回退上次成功并标「可能过期」）。
+    /// 放在会话层而不是视图层：「换个屏再回来」不该重新拉一次，
+    /// 而视图一销毁缓存就没了。
+    var lyriaModelCache = LyriaModelCache()
+    /// 屏上要渲染的 Lyria 清单（R1）。`nil` = 首帧还没结论。
+    public internal(set) var studioCreateLyriaCatalog: LyriaModelCatalog?
+    /// 上次拉清单**失败了**（用于「重试」提示的措辞：加载失败 vs 服务端就是空）。
+    public internal(set) var studioCreateLyriaLoadFailed = false
+    /// 用户选中的引擎（`nil` = 没选 ⇒ 请求里省略 `modelVersion`，交服务端默认）。
+    public internal(set) var studioCreateSelectedModelID: String?
     /// 同一次提交的幂等凭据：**重试复用、新提交重建**（A11）。
     var studioCreateToken: IdempotentRequestToken?
     /// 本会话**已经报过一次**的任务号。只用来判"这一条响应是不是重放回显"

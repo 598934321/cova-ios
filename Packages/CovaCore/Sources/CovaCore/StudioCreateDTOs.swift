@@ -77,6 +77,19 @@ public struct StudioCreateGenerateRequestDto: Encodable, Equatable, Sendable {
     /// 续写起点（秒）。只有 `operation == .extend` 且带 `sourceClipId` 时服务端才消费它；
     /// 缺省时服务端自己取原曲结尾，取不到才回 400「暂时读不到原曲长度，请手动选择续写起点」。
     public let continueAt: Double?
+    /// 生成引擎 / 模型版本（COVA-20261024-003 R1）。
+    ///
+    /// 服务端读取语义（`web/src/lib/studio/create/generate.ts:133-140`）：
+    /// · 缺省 ⇒ 用 `DEFAULT_CREATE_MODEL_VERSION`（Suno 默认）；
+    /// · `isLyriaModelVersion(value)` 命中 ⇒ **原样**采用（Lyria 通道）；
+    /// · 其余 ⇒ 过 `normalizeCreateModelVersion` 归一。
+    ///
+    /// ⇒ 客户端只在**用户显式选了 Lyria 模型**时才发这一格；用户没选就省略键，
+    /// 让服务端用它自己的默认值（"没选"和"选了默认"在语义上不是同一件事，
+    /// 且服务端默认值会随版本变，客户端不该把它复制一份钉死）。
+    /// ⚠️ 本端**不校验**模型 id 合法性：清单来自服务端 `GET /api/lyria/models`，
+    /// 校验真伪是 worker 的事；本地自造一份白名单就是 R1 明禁的"硬编码清单"。
+    public let modelVersion: String?
 
     public init(
         prompt: String,
@@ -84,6 +97,7 @@ public struct StudioCreateGenerateRequestDto: Encodable, Equatable, Sendable {
         operation: StudioCreateOperation = .create,
         sourceClipId: String? = nil,
         continueAt: Double? = nil,
+        modelVersion: String? = nil,
         token: IdempotentRequestToken
     ) throws {
         guard token.operation == .studioCreateGenerate else {
@@ -131,11 +145,14 @@ public struct StudioCreateGenerateRequestDto: Encodable, Equatable, Sendable {
         self.sourceClipId = clip
         // 服务端按 0.1 取整 ⇒ 客户端也按 0.1 落，屏上显示的值与发出去的值才是同一个数。
         self.continueAt = continueAt.map { ($0 * 10).rounded() / 10 }
+        // 空白与"没给"同义：用户没选引擎 ⇒ 省略键，交服务端默认。
+        let trimmedModel = modelVersion?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.modelVersion = (trimmedModel?.isEmpty == false) ? trimmedModel : nil
         self.idempotencyKey = token.key
     }
 
     enum CodingKeys: String, CodingKey {
-        case mode, operation, prompt, idempotencyKey, sourceClipId, continueAt
+        case mode, operation, prompt, idempotencyKey, sourceClipId, continueAt, modelVersion
     }
 
     /// **没有值的键不许出现**（不是发 `null`）：服务端用 `optionalTrimmed` 读它们，
@@ -149,6 +166,7 @@ public struct StudioCreateGenerateRequestDto: Encodable, Equatable, Sendable {
         try container.encode(idempotencyKey, forKey: .idempotencyKey)
         try container.encodeIfPresent(sourceClipId, forKey: .sourceClipId)
         try container.encodeIfPresent(continueAt, forKey: .continueAt)
+        try container.encodeIfPresent(modelVersion, forKey: .modelVersion)
     }
 }
 
