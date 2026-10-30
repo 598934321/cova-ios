@@ -13,6 +13,7 @@
 /api/iap/products
 /api/iap/verify
 /api/library/taxonomy
+/api/lyria/models
 /api/me/checkin
 /api/me/credits/ledger
 /api/media/objects/
