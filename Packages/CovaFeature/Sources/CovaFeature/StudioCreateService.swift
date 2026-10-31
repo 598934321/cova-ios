@@ -75,6 +75,8 @@ public struct StudioCreateService: Sendable {
     /// 任务轮询腿（`?id=<jobId>` → `{job}`）。一步创作的任务也在这个端点上、同一形状
     /// （同表同投影），所以 P1 的会话详情轮询可以直接复用本方法。
     public static let generationJobPath = "/api/find-my-song/generation-jobs"
+    /// Lyria 模型清单（R1）。服务端权威，客户端不硬编码清单。
+    public static let lyriaModelsPath = "/api/lyria/models"
 
     private let client: CovaAPIClient
 
@@ -90,6 +92,7 @@ public struct StudioCreateService: Sendable {
         operation: StudioCreateOperation = .create,
         sourceClipId: String? = nil,
         continueAt: Double? = nil,
+        modelVersion: String? = nil,
         token: IdempotentRequestToken
     ) async throws -> StudioCreateGenerateResponseDto {
         let payload: Data
@@ -97,7 +100,8 @@ public struct StudioCreateService: Sendable {
             payload = try JSONEncoder().encode(
                 StudioCreateGenerateRequestDto(
                     prompt: prompt, operation: operation,
-                    sourceClipId: sourceClipId, continueAt: continueAt, token: token
+                    sourceClipId: sourceClipId, continueAt: continueAt,
+                    modelVersion: modelVersion, token: token
                 )
             )
         } catch let error as StudioCreateRequestError {
@@ -139,6 +143,14 @@ public struct StudioCreateService: Sendable {
         try await client.get(
             Self.generationJobPath, queryItems: [URLQueryItem(name: "id", value: id)]
         )
+    }
+
+    /// Lyria 模型清单（COVA-20261024-003 **R1**）：`GET /api/lyria/models` → `{enabled, models, source}`。
+    ///
+    /// 只做一次网络往返，**不做缓存、不做回退**——那两件事是 `LyriaModelCache` 的职责，
+    /// 分开放是因为它们各有各的判据（本方法只管"线格式解码对不对"）。
+    public func lyriaModels() async throws -> LyriaModelsResponseDTO {
+        try await client.get(Self.lyriaModelsPath)
     }
 
     /// 传输层错误 → 目录层那三句话（复用 `CatalogService.classify` 的口径，

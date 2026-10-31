@@ -8,6 +8,8 @@ import SwiftUI
 /// 登录态门控：游客照常进壳（首页/曲库可浏览），创作/我的页签根走 17-S6 引导形态。
 public struct CovaRootView: View {
     @State private var session = AppSession(previewTab: previewTab())
+    /// R2 的可见性来源（见下方 `onChange`）。
+    @Environment(\.scenePhase) private var scenePhase
     private let themeMode: CovaThemeMode
 
     public init(themeMode: CovaThemeMode = .system) {
@@ -164,6 +166,13 @@ public struct CovaRootView: View {
                 // "在播但 00:00"的图。
                 try? await Task.sleep(nanoseconds: 6_000_000_000)
             }
+        }
+        // COVA-20261024-003 R2「页面不可见暂停、恢复可见立即拉取」：
+        // 可见性由系统 scenePhase 驱动（SwiftUI 原生，不引 UIKit 依赖），
+        // 会话层据此暂停/补拍生成轮询。放在根视图是因为它是唯一常驻的视图；
+        // 轮询腿本身住在 AppSession 里（跟着会话活，不跟着屏死），两者在这里接上。
+        .onChange(of: scenePhase) { _, phase in
+            session.updateAppVisibility(phase == .active)
         }
         .onReceive(NotificationCenter.default.publisher(for: StudioNotifier.didTap)) { tap in
             session.handleNotificationTap(userInfo: tap.userInfo ?? [:])
