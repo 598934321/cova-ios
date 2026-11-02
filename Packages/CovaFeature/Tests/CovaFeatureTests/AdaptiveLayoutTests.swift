@@ -22,10 +22,12 @@ final class AdaptiveLayoutTests: XCTestCase {
 
     /// t84：iPhone 底栏连搜索格最多 5 格 ⇒ compact 不显示顶层搜索格（否则系统折出「更多」把「我的」藏起来）。
     func testSearchTabOnlyInRegularWidth() {
-        XCTAssertTrue(CovaAdaptiveLayout.showsSearchTab(isRegularWidth: true))
-        XCTAssertFalse(CovaAdaptiveLayout.showsSearchTab(isRegularWidth: false))
+        XCTAssertTrue(CovaAdaptiveLayout.showsSearchTab(isRegularWidth: true, isPad: true))
+        XCTAssertFalse(CovaAdaptiveLayout.showsSearchTab(isRegularWidth: false, isPad: true), "iPad 分屏窄栏")
+        XCTAssertFalse(CovaAdaptiveLayout.showsSearchTab(isRegularWidth: false, isPad: false))
+        XCTAssertFalse(CovaAdaptiveLayout.showsSearchTab(isRegularWidth: true, isPad: false), "iPhone Pro Max 横屏 regular 宽仍是底栏")
         let visibleCompact = AppSession.Tab.allCases.filter {
-            $0 != .search || CovaAdaptiveLayout.showsSearchTab(isRegularWidth: false)
+            $0 != .search || CovaAdaptiveLayout.showsSearchTab(isRegularWidth: true, isPad: false)
         }
         XCTAssertLessThanOrEqual(visibleCompact.count, 5, "iPhone 底栏超过 5 格会出现系统「更多」页签")
     }

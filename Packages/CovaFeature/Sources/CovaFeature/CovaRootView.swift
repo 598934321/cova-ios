@@ -211,7 +211,9 @@ public struct CovaRootView: View {
                 }
                 .safeAreaInset(edge: .bottom) { toastOverlay }
             }
-            .hidden(!CovaAdaptiveLayout.showsSearchTab(isRegularWidth: hSizeClass == .regular))
+            .hidden(!CovaAdaptiveLayout.showsSearchTab(
+                isRegularWidth: hSizeClass == .regular,
+                isPad: UIDevice.current.userInterfaceIdiom == .pad))
         }
         .tint(CovaColor.accent)
         // t74 iPad：web 768 宽的导航是可收起侧栏 ⇒ `.sidebarAdaptable`

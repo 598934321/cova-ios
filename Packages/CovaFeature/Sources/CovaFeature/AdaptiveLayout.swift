@@ -31,7 +31,9 @@ enum CovaAdaptiveLayout {
 
     /// 顶层搜索格是否进页签栏（t84）：iPhone 底栏连搜索格最多 5 格，超出系统折出「更多」，
     /// 「我的」会被藏进去 ⇒ compact 宽度不显示搜索格（入口改为根屏放大镜）。
-    static func showsSearchTab(isRegularWidth: Bool) -> Bool { isRegularWidth }
+    /// t74c 复审：iPhone Plus / Pro Max **横屏**也是 regular 宽，但仍是底栏 ⇒ 6 格照样折「更多」；
+    /// 所以还要判设备是 iPad（`isPad` 由视图读 `UIDevice.userInterfaceIdiom` 传入，纯函数可测）。
+    static func showsSearchTab(isRegularWidth: Bool, isPad: Bool) -> Bool { isPad && isRegularWidth }
 
     /// 居中限宽的上限：compact（iPhone / iPad 分屏窄栏）不限宽。
     static func contentMaxWidth(isRegularWidth: Bool) -> CGFloat {
@@ -62,7 +64,9 @@ struct CovaCompactSearchEntryModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content.toolbar {
-            if !CovaAdaptiveLayout.showsSearchTab(isRegularWidth: sizeClass == .regular) {
+            if !CovaAdaptiveLayout.showsSearchTab(
+                isRegularWidth: sizeClass == .regular,
+                isPad: UIDevice.current.userInterfaceIdiom == .pad) {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { session.push(.search) } label: {
                         Image(systemName: "magnifyingglass")

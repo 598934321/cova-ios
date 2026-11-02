@@ -24,6 +24,7 @@
   （#3 从 `.brand` 换 `.primary` 时丢了胶囊）。spec 04/06/07/10/inventory 同步；新增 `NeutralCTAAlignmentTests`（2）。
 - 首页问候首行游客态保留逗号（web `{salutation}，{displayName}` 逐字，01 §2 同步）；新增 `HomeGreetingAlignmentTests`（1）。
 - 同栈 `push` 页签根屏（`.plaza` / `.aiSessions`）= 回根，不叠第二层同屏；新增 `TabRootPushTests`（1）。
+- 搜索页签判据补 `isPad`：iPhone Plus / Pro Max 横屏（regular 宽）不再 6 格折「更多」；04 §1 / §5 文案同步歌单与窄栏搜索入口。
 
 ---
 
