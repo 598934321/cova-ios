@@ -15,6 +15,13 @@ final class AdaptiveLayoutTests: XCTestCase {
         XCTAssertEqual(CovaAdaptiveLayout.cardColumns(isRegularWidth: false, axLayout: true, spacing: 12).count, 1)
     }
 
+    func testSearchTabOnlyOnPadRegular() {
+        XCTAssertFalse(CovaAdaptiveLayout.showsSearchTab(isPad: false, isRegularWidth: false), "iPhone 竖屏：5 格底栏，不折叠「更多」")
+        XCTAssertFalse(CovaAdaptiveLayout.showsSearchTab(isPad: false, isRegularWidth: true), "iPhone Pro Max 横屏同样不挂")
+        XCTAssertFalse(CovaAdaptiveLayout.showsSearchTab(isPad: true, isRegularWidth: false), "iPad 分屏窄栏 = 手机底栏")
+        XCTAssertTrue(CovaAdaptiveLayout.showsSearchTab(isPad: true, isRegularWidth: true))
+    }
+
     func testReadableWidthOnlyCapsRegular() {
         XCTAssertEqual(CovaAdaptiveLayout.contentMaxWidth(isRegularWidth: true), CovaAdaptiveLayout.readableMaxWidth)
         XCTAssertEqual(CovaAdaptiveLayout.contentMaxWidth(isRegularWidth: false), .infinity, "compact 不限宽，iPhone 观感不变")

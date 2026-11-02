@@ -24,6 +24,8 @@
   （#3 从 `.brand` 换 `.primary` 时丢了胶囊）。spec 04/06/07/10/inventory 同步；新增 `NeutralCTAAlignmentTests`（2）。
 - 首页问候首行游客态保留逗号（web `{salutation}，{displayName}` 逐字，01 §2 同步）；新增 `HomeGreetingAlignmentTests`（1）。
 - 同栈 `push` 页签根屏（`.plaza` / `.aiSessions`）= 回根，不叠第二层同屏；新增 `TabRootPushTests`（1）。
+- iPhone 底栏不再折出系统「更多」：搜索页签只在 iPad regular 宽挂出（`showsSearchTab`），iPhone = 首页/曲库/歌单/创作/我的 五格；新增 `testSearchTabOnlyOnPadRegular`。
+- 歌单广场网格：封面改「16:10 透明底板 + overlay + 裁切」，修首行卡片互相压住（t84 走查 r1）。
 
 ---
 

@@ -8,6 +8,13 @@ import SwiftUI
 /// 登录态门控：游客照常进壳（首页/曲库可浏览），创作/我的页签根走 17-S6 引导形态。
 public struct CovaRootView: View {
     @State private var session = AppSession(previewTab: previewTab())
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var showsSearchTab: Bool {
+        CovaAdaptiveLayout.showsSearchTab(
+            isPad: UIDevice.current.userInterfaceIdiom == .pad,
+            isRegularWidth: horizontalSizeClass == .regular)
+    }
     private let themeMode: CovaThemeMode
 
     public init(themeMode: CovaThemeMode = .system) {
@@ -197,6 +204,8 @@ public struct CovaRootView: View {
             // 04 §1/§2：`Tab(role:.search)` 由系统钉在栏右端分隔位，标题/图标系统自给
             // （04 §1 明写"传 nil 让系统给，不自造文案"）——不经过 `shellTab` 的自绘标题通道，
             // 但栈结构一致：25 屏也有自己那棵 NavigationStack（分类卡/历史/结果行在栈内 push）。
+            // t74c：搜索页签只给 iPad regular 宽（见 `CovaAdaptiveLayout.showsSearchTab`）。
+            if showsSearchTab {
             Tab(value: AppSession.Tab.search, role: .search) {
                 NavigationStack(path: session.pathBinding(for: .search)) {
                     SearchTabView(catalog: catalog)
@@ -206,8 +215,13 @@ public struct CovaRootView: View {
                 }
                 .safeAreaInset(edge: .bottom) { toastOverlay }
             }
+            }
         }
         .tint(CovaColor.accent)
+        // 搜索页签消失时（iPad 分屏变窄 / 预览环境变量在 iPhone 上选了 search）回首页。
+        .onChange(of: showsSearchTab, initial: true) { _, shows in
+            if !shows, session.selection == .search { session.selectTab(.home) }
+        }
         // t74 iPad：web 768 宽的导航是可收起侧栏 ⇒ `.sidebarAdaptable`
         // （iPad regular 宽 = 侧栏/顶部页签可切换；iPhone 与 iPad 分屏窄栏 = 原底栏，观感不变）。
         .tabViewStyle(.sidebarAdaptable)
