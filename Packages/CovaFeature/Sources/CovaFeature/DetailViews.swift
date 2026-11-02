@@ -509,8 +509,8 @@ public struct TrackDetailSheet: View {
                 .padding(.horizontal, CovaSpace.pageGutter)
 
                 HStack(spacing: CovaSpace.md) {
-                    // hero CTA 档（gradient.brandButton）；「加入队列」保持描边次级。
-                    CovaButton("播放", style: .brand) {
+                    // 对齐 web 2.77.75 曲目详情：「播放」是中性玻璃胶囊（白底深字），不是品牌渐变（t74 实拍）。
+                    CovaButton("播放", style: .primary) {
                         Task { await session.play(tracks: [track], at: 0); dismiss() }
                     }
                     CovaButton("加入队列", style: .secondary) {

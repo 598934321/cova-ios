@@ -158,7 +158,7 @@ public struct ArtistHomeView: View {
     private var actionBar: some View {
         HStack(spacing: CovaSpace.md) {
             // 16 §3.E：「播放全部」是 hero CTA 档（gradient.brandButton + 橙投影）。
-            CovaButton("播放全部", style: .brand) {
+            CovaButton("播放全部", style: .primary) // 对齐 web：播放类按钮中性，渐变只留给「开始制作」 {
                 Task { await playAll() }
             }
             // 右侧**不放「关注」**：没有关注端点，放一个点了没反应的按钮比不放更糟。
