@@ -16,6 +16,8 @@ import SwiftUI
 public struct SearchTabView: View {
     @Environment(AppSession.self) private var session
     @Environment(\.covaAXLayout) private var axLayout
+    /// t74 iPad：分类卡网格 regular 宽 3 列。
+    @Environment(\.horizontalSizeClass) private var sizeClass
     private let catalog: CatalogService
 
     @State private var query = ""
@@ -236,9 +238,9 @@ public struct SearchTabView: View {
 
     /// §6：AX 档降为单列（卡宽 = 屏宽 − 2×`pageGutter`，高 72 不变）。
     private var gridColumns: [GridItem] {
-        axLayout
-            ? [GridItem(.flexible())]
-            : [GridItem(.flexible(), spacing: CovaSpace.md), GridItem(.flexible())]
+        // t74 iPad：regular 宽 3 列（AX 档 2 列）；compact 维持 2/1 列原口径。
+        CovaAdaptiveLayout.cardColumns(
+            isRegularWidth: sizeClass == .regular, axLayout: axLayout, spacing: CovaSpace.md)
     }
 
     /// 分类卡：`cardSurface` 底 + 左缘 3pt 标识竖条 + 词条名 `headline` 居中，无封面图

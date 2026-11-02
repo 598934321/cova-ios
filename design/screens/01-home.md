@@ -47,7 +47,7 @@
   ——文案逐字对齐 web `HomeHeroComposer`；「Cova」中字母「o」着 `color.accent`，
   其余字符 `color.fg`（web 同款品牌细节）。
 - 时段称呼：`<5 夜深了 / <12 早上好 / <18 下午好 / 其余 晚上好`（本地时间，对齐 web
-  `useSalutation`；未取到昵称时省略昵称与逗号，即 `{时段}` + 换行直接接第二行）。
+  `useSalutation`；未取到昵称时省略昵称段、**逗号保留**（t74c 对齐 web 2.77.75 实际渲染 `{salutation}，{displayName}`：游客为「早上好，」+ 换行接第二行）。
 - 字阶：`type.display`（28/700/tracking −0.01，2026-10-02 新增 token）；
   紧凑字阶（CovaType 其余各档）不变——display 只给本屏问候，不扩散到列表/表单屏。
 - 布局：占导航条下首块，左对齐；系统大标题导航**不用**（问候本身就是标题区，

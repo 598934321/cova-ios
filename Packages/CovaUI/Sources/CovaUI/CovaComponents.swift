@@ -6,19 +6,27 @@ import SwiftUI
 /// 禁用态降透明度且不接收点击；loading 态用进度环替换标题但**保持宽度**（防布局跳）。
 public struct CovaButton: View {
     /// `brand` = hero CTA 档（`gradient.brandButton` + 白字 + `primaryButtonShadow`）：
-    /// web `data-glass-tint='brand'` 同位，只给登录/生成/播放全部这类高可见主行动。
+    /// web `data-glass-tint='brand'` 同位，只给「生成/开始制作」这类创作主行动；
+    /// 登录、播放、播放全部对齐 web 2.77.75 走 `.primary` 中性（t74）。
     public enum Style { case primary, secondary, danger, brand }
     private let title: String
     private let style: Style
     private let isLoading: Bool
+    private let capsule: Bool
     private let action: () -> Void
 
-    public init(_ title: String, style: Style = .primary, isLoading: Bool = false, action: @escaping () -> Void) {
+    /// `capsule`：中性档也走胶囊（t74c）——web 的登录提交钮、曲目详情「播放」、
+    /// 歌手「播放全部」都是 `rounded-full` 中性玻璃；默认 false，其余调用点不变。
+    public init(_ title: String, style: Style = .primary, isLoading: Bool = false, capsule: Bool = false, action: @escaping () -> Void) {
         self.title = title
         self.style = style
         self.isLoading = isLoading
+        self.capsule = capsule
         self.action = action
     }
+
+    /// 形状裁决（纯函数，供测试钉住）：brand 一律胶囊；其余档仅在 `capsule` 时胶囊。
+    public static func usesCapsule(style: Style, capsule: Bool) -> Bool { style == .brand || capsule }
 
     public var body: some View {
         Button(action: { if !isLoading { action() } }) {
@@ -46,7 +54,7 @@ public struct CovaButton: View {
     /// `radius.capsule` 钉法）；其余档 `radius.control`。
     private var backgroundShape: RoundedRectangle {
         RoundedRectangle(
-            cornerRadius: style == .brand ? CovaRadius.capsule : CovaRadius.control,
+            cornerRadius: Self.usesCapsule(style: style, capsule: capsule) ? CovaRadius.capsule : CovaRadius.control,
             style: .continuous
         )
     }

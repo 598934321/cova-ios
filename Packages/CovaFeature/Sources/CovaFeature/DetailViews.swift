@@ -14,6 +14,8 @@ struct TrackSheetID: Identifiable, Equatable { let id: String }
 /// 「中性未选态」而不是「未收藏」。
 public struct PlaylistDetailView: View {
     @Environment(AppSession.self) private var session
+    /// t84 iPad：regular 宽下封面不拉满整屏（1:1 满宽在 iPad 上会是一整屏的图）。
+    @Environment(\.horizontalSizeClass) private var sizeClass
     /// 06 §Dynamic Type：AX 档下简介折叠行数由 3 放宽到 5（放大后 3 行装不下原来 3 行的信息）。
     @Environment(\.covaAXLayout) private var axLayout
     private let playlistID: String
@@ -116,6 +118,8 @@ public struct PlaylistDetailView: View {
         .frame(maxWidth: .infinity)
         .aspectRatio(1, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
+        .frame(maxWidth: CovaAdaptiveLayout.heroArtworkMaxWidth(isRegularWidth: sizeClass == .regular))
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, CovaSpace.pageGutter)
         .padding(.top, CovaSpace.md)
     }
@@ -169,7 +173,7 @@ public struct PlaylistDetailView: View {
             title: "播放全部",
             symbol: "play.fill",
             stretches: stretches,
-            // §4 空态：「播放全部」置灰禁用（`color.muted` 底，components §10）；§9 判据
+            // §4 空态：「播放全部」置灰禁用（opacity 0.45，同 web）；§9 判据
             // 「无 0 首播放队列被建立」由这一条 `disabled` 兜住，队列构建在 `session.play` 那一侧。
             isDisabled: !PlaylistActionRowFacts.playAllEnabled(hasTracks: !tracks.isEmpty)
         ) {
@@ -275,9 +279,9 @@ enum PlaylistActionRowFacts {
     static func acceptsSaveTap(inFlight: Bool) -> Bool { !inFlight }
 }
 
-/// §3.E / components §10 主按钮：高 50（TG-07）、`radius.capsule`、`gradient.brandButton` 底 + 白字 +
-/// `elevation.primaryButtonShadow`、图标 `play.fill`。禁用态换 `color.muted` 底（§4 空态 + §10 禁用态），
-/// 而不是只降透明度 —— 那一条 spec 点名的就是"置灰"。
+/// §3.E 主按钮：高 50（TG-07）、`radius.capsule`、图标 `play.fill`。t74c 起对齐 web 2.77.75：
+/// 中性胶囊（`color.elevated` 底 + `color.fg` 字 + 1pt `color.lineSubtle` 描边），不再是
+/// `gradient.brandButton`；禁用态同 web `disabled:opacity-45`（§4 空态仍「置灰不可点」）。
 ///
 /// 为什么不在这里用 `CovaButton`：那一支是 44 高 / `radius.control` / `color.accent` 实心，
 /// 与本屏这一档三处都不同，而 CovaUI 不在本批可改面内 ⇒ 几何落在屏侧。
@@ -307,19 +311,19 @@ struct PlaylistPrimaryCapsuleButton: View {
                 Image(systemName: symbol)
                 Text(title).font(CovaType.headline)
             }
-            .foregroundStyle(.white)
+            // 对齐 web 2.77.75 歌单详情「播放全部」（`.cova-liquid-glass-btn` 中性玻璃，
+            // `--accent` 修饰 v1.22.11 起已回落中性；t74c 复审）：白底深字 + 细描边 +
+            // 近身浅影（web `0 2px 6px rgba(20,45,80,.07)`，SwiftUI radius 取一半 ⇒ 3）。
+            // 禁用态对齐 web `disabled:opacity-45`。品牌渐变只留给「生成/开始制作」。
+            .foregroundStyle(CovaColor.fg)
             .frame(maxWidth: stretches ? .infinity : nil, minHeight: Self.height)
-            .background(
-                isDisabled ? AnyShapeStyle(CovaColor.muted) : AnyShapeStyle(CovaGradient.brandButton),
-                in: Capsule()
-            )
-            // `elevation.primaryButtonShadow = 0 6pt 18pt rgba(230,96,0,0.22)`：
-            // CSS 的 18pt 是**模糊半径**（=2× 标准差），SwiftUI 的 shadow radius 取一半 ⇒ 9；
-            // 颜色那个 rgba 的三个分量正是 `color.accentHover`（#E66000）。
-            .shadow(color: isDisabled ? .clear : CovaColor.accentHover.opacity(0.22), radius: 9, x: 0, y: 6)
+            .background(CovaColor.elevated, in: Capsule())
+            .overlay(Capsule().strokeBorder(CovaColor.lineSubtle, lineWidth: 1))
+            .shadow(color: isDisabled ? .clear : Color.black.opacity(0.07), radius: 3, x: 0, y: 2)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .opacity(isDisabled ? 0.45 : 1)
         .disabled(isDisabled)
     }
 }
@@ -425,8 +429,16 @@ public struct TrackDetailSheet: View {
     }
 
     private var detents: Set<PresentationDetent> {
-        axLayout ? [.large] : [.fraction(0.6), .fraction(0.92)]
+        TrackDetailSheet.usesSingleLargeDetent(axLayout: axLayout, isPad: isPad)
+            ? [.large] : [.fraction(0.6), .fraction(0.92)]
     }
+
+    /// t84（模拟器实测）：iPad 上本 sheet 是居中表单，60% 档只露出一张封面、曲名与操作行全在折线下
+    /// ⇒ iPad 与 AX 档同走「单一 .large 档 + 60% 宽封面」。sheet 内 sizeClass 恒为 compact，
+    /// 所以这里按设备族判，不按 sizeClass。
+    private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
+    static func usesSingleLargeDetent(axLayout: Bool, isPad: Bool) -> Bool { axLayout || isPad }
 
     /// C 区大封面。**非 AX 档与改造前逐字一致**（同一支 frame/aspectRatio/圆角/内边距）。
     /// AX 档（07 §6）：封面从"满宽"缩到容器宽的 **60%** 并居中 —— 放大档那张 1:1 方块
@@ -436,7 +448,14 @@ public struct TrackDetailSheet: View {
     @ViewBuilder
     private func cover(_ track: TrackDto) -> some View {
         let art = CovaArtwork(resolution: TrackDetailArtwork.cover(track), title: track.title)
-        if axLayout {
+        if isPad && !axLayout {
+            // t84 r3 实测：iPad 表单 sheet 里 containerRelativeFrame + aspectRatio 会把封面拉成竖长方形
+            // ⇒ iPad 用定边长 1:1（表单宽 ~540pt 的 ~55%），居中。
+            art.frame(width: 300, height: 300)
+                .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, CovaSpace.pageGutter)
+        } else if axLayout {
             art.containerRelativeFrame(.horizontal) { length, _ in length * 0.6 }
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
@@ -510,7 +529,7 @@ public struct TrackDetailSheet: View {
 
                 HStack(spacing: CovaSpace.md) {
                     // 对齐 web 2.77.75 曲目详情：「播放」是中性玻璃胶囊（白底深字），不是品牌渐变（t74 实拍）。
-                    CovaButton("播放", style: .primary) {
+                    CovaButton("播放", style: .primary, capsule: true) {
                         Task { await session.play(tracks: [track], at: 0); dismiss() }
                     }
                     CovaButton("加入队列", style: .secondary) {

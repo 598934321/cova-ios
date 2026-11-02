@@ -7,6 +7,7 @@ import SwiftUI
 /// 抽屉与自绘底栏已按 04 §5 对照表移除；各屏顶栏不再有品牌字标钮。
 /// 登录态门控：游客照常进壳（首页/曲库可浏览），创作/我的页签根走 17-S6 引导形态。
 public struct CovaRootView: View {
+    @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var session = AppSession(previewTab: previewTab())
     /// R2 的可见性来源（见下方 `onChange`）。
     @Environment(\.scenePhase) private var scenePhase
@@ -17,12 +18,13 @@ public struct CovaRootView: View {
     }
 
     /// 预览/走查钩子（**仅**模拟器走查用，文档登记于 §14）：
-    /// `COVA_PREVIEW_TAB=home|library|studio|mine|search` 决定首屏页签，便于逐屏截图；生产不设置即默认 home。
+    /// `COVA_PREVIEW_TAB=home|library|playlists|studio|mine|search` 决定首屏页签，便于逐屏截图；生产不设置即默认 home。
     static func previewTab() -> AppSession.Tab {
         let raw = ProcessInfo.processInfo.environment["COVA_PREVIEW_TAB"]
             ?? UserDefaults.standard.string(forKey: "COVA_PREVIEW_TAB")
         switch raw {
         case "library": return .library
+        case "playlists": return .playlists
         case "studio": return .studio
         case "mine": return .mine
         case "search": return .search
@@ -191,6 +193,8 @@ public struct CovaRootView: View {
         )) {
             shellTab(.home) { HomeView(catalog: catalog) }
             shellTab(.library) { LibraryView(catalog: catalog) }
+            // t74：顶层「歌单」= 05 歌单广场（web `/playlists`）。游客可浏览，与 web 一致。
+            shellTab(.playlists) { PlaylistsPlazaView() }
             shellTab(.studio) {
                 // 04 §6：创作/我的页签的游客态 = 17-S6 引导形态（页签内容区，不遮标签栏）。
                 if case .signedIn = session.authPhase { AISessionsView() }
@@ -203,6 +207,10 @@ public struct CovaRootView: View {
             // 04 §1/§2：`Tab(role:.search)` 由系统钉在栏右端分隔位，标题/图标系统自给
             // （04 §1 明写"传 nil 让系统给，不自造文案"）——不经过 `shellTab` 的自绘标题通道，
             // 但栈结构一致：25 屏也有自己那棵 NavigationStack（分类卡/历史/结果行在栈内 push）。
+            //
+            // t84（模拟器实测）：iPhone 底栏连系统搜索格最多 5 格，6 格时系统会折出「更多」页签，
+            // 把「我的」和搜索都藏进去 ⇒ compact 宽度隐藏搜索格（入口改为曲库/歌单根屏右上角放大镜，
+            // 栈内 push `.search`）；iPad regular 宽仍显示这一格（侧栏/顶部页签放得下）。
             Tab(value: AppSession.Tab.search, role: .search) {
                 NavigationStack(path: session.pathBinding(for: .search)) {
                     SearchTabView(catalog: catalog)
@@ -212,8 +220,22 @@ public struct CovaRootView: View {
                 }
                 .safeAreaInset(edge: .bottom) { toastOverlay }
             }
+            .hidden(!CovaAdaptiveLayout.showsSearchTab(
+                isRegularWidth: hSizeClass == .regular,
+                isPad: UIDevice.current.userInterfaceIdiom == .pad))
         }
         .tint(CovaColor.accent)
+        // t74 iPad：web 768 宽的导航是可收起侧栏 ⇒ `.sidebarAdaptable`
+        // （iPad regular 宽 = 侧栏/顶部页签可切换；iPhone 与 iPad 分屏窄栏 = 原底栏，观感不变）。
+        .tabViewStyle(.sidebarAdaptable)
+        // iPad 分屏从 regular 收窄到 compact 时搜索格会被隐藏：正停在搜索页签就落回曲库栈内的搜索屏，
+        // 不让 selection 指向一个看不见的页签。
+        .onChange(of: hSizeClass) { _, newValue in
+            if newValue == .compact, session.selection == .search {
+                session.selectTab(.library)
+                session.push(.search)
+            }
+        }
         .tabBarMinimizeBehavior(.onScrollDown)
 
         // 空 accessory 的隐藏分两个运行时代码档（2026-10-01 截图实测钉死）：
@@ -298,6 +320,7 @@ public struct CovaRootView: View {
         case .membership: MembershipView()
         case .enterprise: EnterpriseView()
         case .artist(let id): ArtistHomeView(artistID: id)
+        case .search: SearchTabView(catalog: session.catalog)
         }
     }
 
@@ -337,23 +360,28 @@ struct GuestGuideView: View {
             Text("登录解锁创作与收藏")
                 .font(CovaType.headline).foregroundStyle(CovaColor.fg)
                 .multilineTextAlignment(.center)
-            // 「登录」按原 §4 的原文用 `gradient.brandButton` + 白字 + 50pt 高，
-            // 而不是 `CovaButton`（accent 实心 / 44 高）：引导主钮的观感钉在渐变上。
+            // 「登录」对齐 web 2.77.75（t74c 实拍 /login 提交钮与游客引导）：中性胶囊——
+            // 白底（elevated）+ 深字（fg）+ 细描边（lineSubtle，同 weapp --color-line-subtle），50pt 高；品牌渐变只留给
+            // 「生成/开始制作」，与 `LoginView` 的 `CovaButton(.primary)` 同族（覆盖原 §4 渐变口径）。
             Button { session.loginPresented = true } label: {
                 Text("登录")
                     .font(CovaType.headline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(CovaColor.fg)
                     .frame(maxWidth: .infinity, minHeight: ShellMetrics.primaryControlHeight)
-                    .background(CovaGradient.brandButton, in: Capsule())
+                    .background(CovaColor.elevated, in: Capsule())
+                    .overlay(Capsule().strokeBorder(CovaColor.lineSubtle, lineWidth: 1))
                     .contentShape(Capsule())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("guest-guide-login")
             // 「先逛逛」= 回落到游客可浏览的首页页签（创作/我的栈留在引导态）。
             Button("先逛逛") { session.selectTab(.home) }
                 .font(CovaType.subhead).foregroundStyle(CovaColor.accentText)
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, minHeight: ShellMetrics.touchMin)
         }
+        // t84 iPad 实测：regular 宽下主钮会横贯整屏（834pt）⇒ 引导块限宽 400pt 居中；iPhone 不受影响。
+        .frame(maxWidth: 400)
         .padding(CovaSpace.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(tab.title)

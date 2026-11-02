@@ -82,7 +82,7 @@ public struct HomeView: View {
 
     private var greetingSection: some View {
         VStack(alignment: .leading, spacing: CovaSpace.xs) {
-            // §2：未取到昵称时省略昵称与逗号（guest 或 me 未回的 signedIn 早期帧）。
+            // §2：未取到昵称时省略昵称段、逗号保留（web `{salutation}，{displayName}` 逐字；t74c）。
             Text(greetingLine)
                 .font(CovaType.display)
                 .foregroundStyle(CovaColor.fg)
@@ -99,7 +99,7 @@ public struct HomeView: View {
         .padding(.horizontal, CovaSpace.pageGutter)
     }
 
-    /// `{时段称呼}，{昵称}` 或纯时段称呼（§2 两档）。
+    /// `{时段称呼}，{昵称}`；昵称缺省时 `{时段称呼}，`（§2，web 逐字）。
     private var greetingLine: String {
         let salutation = HomeComposerCopy.salutation(
             hour: Calendar.current.component(.hour, from: Date())
@@ -107,8 +107,8 @@ public struct HomeView: View {
         guard let name = session.meUser?.name,
               let trimmed = Optional(name.trimmingCharacters(in: .whitespacesAndNewlines)),
               !trimmed.isEmpty
-        else { return salutation }
-        return "\(salutation)，\(trimmed)"
+        else { return HomeComposerCopy.greetingLine(salutation: salutation, name: nil) }
+        return HomeComposerCopy.greetingLine(salutation: salutation, name: trimmed)
     }
 
     // MARK: - §3 模式切换 + §5 引导标签
@@ -458,6 +458,8 @@ public struct HomeView: View {
         )
         // §4 选项行展开 = duration.fast；聚焦本身没有 spec 动画要求。
         .animation(CovaMotion.fast, value: composerFocused)
+        // t74 iPad：web 输入卡居中限宽，不拉满整屏。
+        .covaReadableWidth()
     }
 
     /// §4 发送行为：按当前档位分两条腿。

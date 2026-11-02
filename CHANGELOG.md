@@ -12,6 +12,19 @@
 - 对齐 web v2.77.75 `7003ed8a` 实拍（`qa-evidence/t74-clients/web/`）：「登录」「播放」「播放全部」由 `.brand` 渐变改为 `.primary` 中性玻璃胶囊；
   品牌渐变只保留在创作页「开始制作」（与 web 生成按钮一致）。
 - 版本号不在此 PR 递增：与 PR #1（0.3.8）合并顺序由 Xcode 验证后决定。
+- **原生 iPad**（用户裁决）：`TARGETED_DEVICE_FAMILY "1,2"`、iPad 四方向；`TabView` `.sidebarAdaptable`
+  （对齐 web 768 宽侧栏）；歌单广场 / 搜索分类卡 regular 宽 3 列；首页输入条 regular 宽居中限宽 720pt。
+- **顶层「歌单」页签**（用户裁决）：首页 / 曲库 / **歌单** / 创作 / 我的 / 搜索（对齐 web nav）。
+  `plaza` 成为歌单页签根（`isTabRoot`），`plazaSearch` / `sharedPlaylist` 归歌单栈；
+  `playlist(id)` 改当前栈 push（我的歌单点卡不再被拽去首页）。04 §1/§2/§3 与新增 §9 同步修订。
+- 新增用例：`AdaptiveLayoutTests`（3）+ `ShellNavigationTests` t74 段（6）。
+- **t74c 复审补齐**：创作/我的页签游客引导「登录」改中性胶囊（白底 `elevated` + 深字 `fg` + 1pt `lineSubtle`，50pt）；
+  歌单详情「播放全部」（`PlaylistPrimaryCapsuleButton`）同改中性（web `.cova-liquid-glass-btn--accent` 早已回落中性），禁用 opacity 0.45；
+  `CovaButton` 新增 `capsule:`（默认 false），登录 / 曲目详情「播放」/ 歌手「播放全部」恢复 web `rounded-full` 胶囊
+  （#3 从 `.brand` 换 `.primary` 时丢了胶囊）。spec 04/06/07/10/inventory 同步；新增 `NeutralCTAAlignmentTests`（2）。
+- 首页问候首行游客态保留逗号（web `{salutation}，{displayName}` 逐字，01 §2 同步）；新增 `HomeGreetingAlignmentTests`（1）。
+- 同栈 `push` 页签根屏（`.plaza` / `.aiSessions`）= 回根，不叠第二层同屏；新增 `TabRootPushTests`（1）。
+- 搜索页签判据补 `isPad`：iPhone Plus / Pro Max 横屏（regular 宽）不再 6 格折「更多」；04 §1 / §5 文案同步歌单与窄栏搜索入口。
 
 ---
 

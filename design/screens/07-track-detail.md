@@ -63,7 +63,7 @@
 
 ### F 主操作行
 
-- 「播放」：`gradient.brandButton` 主钮，高 50（TG-07）、`radius.capsule`，图标 `play.fill`；
+- 「播放」：中性主钮（t74 对齐 web 2.77.75：`CovaButton(.primary)` 白底深字，原 `gradient.brandButton` 作废），高 50（TG-07）、`radius.capsule`，图标 `play.fill`；
   语义 = **替换队列并从本曲开始播**（components §1 一致）
 - 「加入队列」：次按钮（`color.surface` 底 + `color.fg` 字 + 1pt `color.line` 描边，TG-04），同高
 - 「收藏 ♡」：**从 ⋯ 菜单升到操作行之外**——本屏收藏钮放在 D 区右侧（与 02 播放器一致），

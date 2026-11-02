@@ -12,6 +12,8 @@ import UserNotifications
 public struct PlaylistsPlazaView: View {
     /// 05 §Dynamic Type：AX 档下网格由 2 列降为 1 列（卡宽 = 屏宽 − 2×页边距）。
     @Environment(\.covaAXLayout) private var axLayout
+    /// t74 iPad：regular 宽 3 列（web 768 宽歌单网格 3 列）。
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(AppSession.self) private var session
     @State private var phase: Phase = .loading
     @State private var playlists: [PlaylistDto] = []
@@ -49,6 +51,7 @@ public struct PlaylistsPlazaView: View {
         .covaPage()
         .navigationTitle("歌单")
         .navigationBarTitleDisplayMode(.inline)
+        .covaCompactSearchEntry()
         // 键是**用户选的源**，不是 load 自己会写的 phase/picks ⇒ 不会重演 §7 #50 那种自我取消。
         .task(id: source) { await loadBoard() }
         .refreshable { await load(silent: true) }
@@ -173,9 +176,8 @@ public struct PlaylistsPlazaView: View {
     private func pickGridList(_ shown: [PlaylistPickDto]) -> some View {
         ScrollView {
             LazyVGrid(
-                columns: axLayout
-                    ? [GridItem(.flexible())]
-                    : [GridItem(.flexible(), spacing: CovaSpace.md), GridItem(.flexible())],
+                columns: CovaAdaptiveLayout.cardColumns(
+                    isRegularWidth: sizeClass == .regular, axLayout: axLayout, spacing: CovaSpace.md),
                 spacing: CovaSpace.lg
             ) {
                 ForEach(Array(shown.enumerated()), id: \.element.playlist.id) { _, pick in
@@ -223,9 +225,8 @@ public struct PlaylistsPlazaView: View {
         } else {
             ScrollView {
                 LazyVGrid(
-                    columns: axLayout
-                        ? [GridItem(.flexible())]
-                        : [GridItem(.flexible(), spacing: CovaSpace.md), GridItem(.flexible())],
+                    columns: CovaAdaptiveLayout.cardColumns(
+                        isRegularWidth: sizeClass == .regular, axLayout: axLayout, spacing: CovaSpace.md),
                     spacing: CovaSpace.lg
                 ) {
                     ForEach(shown, id: \.id) { playlist in
@@ -287,15 +288,20 @@ public struct PlaylistsPlazaView: View {
     private func cardBody(_ playlist: PlaylistDto) -> some View {
         VStack(alignment: .leading, spacing: CovaSpace.xs) {
                 ZStack(alignment: .topTrailing) {
-                    CovaArtwork(
-                        resolution: CovaArtworkResolution(serverValues: [
-                            playlist.cover, playlist.coverUrl, playlist.coverMedia?.imageUrl,
-                        ]),
-                        title: playlist.title
-                    )
-                    .frame(maxWidth: .infinity)
-                    .aspectRatio(16.0 / 10.0, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
+                    // t84（模拟器实测）：封面是 scaledToFill，直接挂 aspectRatio 时图片按自身尺寸撑大，
+                    // 卡片越出网格列、互相压住 ⇒ 先用透明占位钉死 16:10 的格子，封面只做 overlay 再裁切。
+                    Color.clear
+                        .aspectRatio(16.0 / 10.0, contentMode: .fit)
+                        .frame(maxWidth: .infinity)
+                        .overlay {
+                            CovaArtwork(
+                                resolution: CovaArtworkResolution(serverValues: [
+                                    playlist.cover, playlist.coverUrl, playlist.coverMedia?.imageUrl,
+                                ]),
+                                title: playlist.title
+                            )
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
                     // 角标只读；收藏动作在 06。游客恒无角标，且这**不是缺陷**（NEEDS-1/3 未闭合）。
                     if playlist.isSaved == true {
                         Image(systemName: "bookmark.fill")
