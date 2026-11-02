@@ -33,6 +33,11 @@ enum CovaAdaptiveLayout {
     /// 「我的」会被藏进去 ⇒ compact 宽度不显示搜索格（入口改为根屏放大镜）。
     static func showsSearchTab(isRegularWidth: Bool) -> Bool { isRegularWidth }
 
+    /// 歌单详情大封面的上限（t84）：regular 宽 360pt 居中；compact 满宽（iPhone 不变）。
+    static func heroArtworkMaxWidth(isRegularWidth: Bool) -> CGFloat {
+        isRegularWidth ? 360 : .infinity
+    }
+
     /// 居中限宽的上限：compact（iPhone / iPad 分屏窄栏）不限宽。
     static func contentMaxWidth(isRegularWidth: Bool) -> CGFloat {
         isRegularWidth ? readableMaxWidth : .infinity

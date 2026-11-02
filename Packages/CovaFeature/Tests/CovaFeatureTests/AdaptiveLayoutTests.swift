@@ -35,4 +35,13 @@ final class AdaptiveLayoutTests: XCTestCase {
         XCTAssertNil(AppSession.Route.search.owningTab)
         XCTAssertFalse(AppSession.Route.search.isTabRoot)
     }
+
+    /// t84：iPad 上曲目详情 sheet 走单一 .large 档（60% 档只露封面）；iPhone 非 AX 档保持两档吸附。
+    func testTrackDetailDetentsOnPad() {
+        XCTAssertTrue(TrackDetailSheet.usesSingleLargeDetent(axLayout: false, isPad: true))
+        XCTAssertTrue(TrackDetailSheet.usesSingleLargeDetent(axLayout: true, isPad: false))
+        XCTAssertFalse(TrackDetailSheet.usesSingleLargeDetent(axLayout: false, isPad: false))
+        XCTAssertEqual(CovaAdaptiveLayout.heroArtworkMaxWidth(isRegularWidth: true), 360)
+        XCTAssertEqual(CovaAdaptiveLayout.heroArtworkMaxWidth(isRegularWidth: false), .infinity)
+    }
 }
