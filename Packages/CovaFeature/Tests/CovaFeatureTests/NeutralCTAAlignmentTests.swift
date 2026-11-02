@@ -28,3 +28,15 @@ final class HomeGreetingAlignmentTests: XCTestCase {
         XCTAssertEqual(HomeComposerCopy.greetingLine(salutation: "晚上好", name: "小洪"), "晚上好，小洪")
     }
 }
+
+/// t74c：同栈 push 页签根屏 = 回根（不叠第二个广场 / 会话列表）。
+final class TabRootPushTests: XCTestCase {
+    func testPushingTabRootOnItsOwnStackPopsToRoot() {
+        let session = AppSession()
+        session.selectTab(.playlists)
+        session.push(.playlist("p1"))
+        session.push(.plaza)
+        XCTAssertEqual(session.selection, .playlists)
+        XCTAssertEqual(session.paths[.playlists] ?? [], [])
+    }
+}

@@ -383,7 +383,9 @@ public final class AppSession {
     /// 写错归属的调用点在这里自动改走 `navigate` —— 一条路由的归属只有一个答案，
     /// 不该让"写错栈"成为可能（原共享栈时代 `path.append(.aiSessions)` 就把 08 叠到过首页上）。
     public func push(_ route: Route) {
-        if let owner = route.owningTab, owner != selection {
+        // t74c：页签根屏（`.aiSessions` / `.plaza`）即使同栈 push 也走 navigate = 回根，
+        // 不在栈里再叠一层同屏（歌单页签内若有入口 push(.plaza) 不会出现第二个广场）。
+        if let owner = route.owningTab, owner != selection || route.isTabRoot {
             navigate(to: route)
             return
         }
