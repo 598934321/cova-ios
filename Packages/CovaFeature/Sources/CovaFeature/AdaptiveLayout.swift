@@ -29,6 +29,10 @@ enum CovaAdaptiveLayout {
         return Array(repeating: GridItem(.flexible(), spacing: spacing), count: count)
     }
 
+    /// 顶层搜索格是否进页签栏（t84）：iPhone 底栏连搜索格最多 5 格，超出系统折出「更多」，
+    /// 「我的」会被藏进去 ⇒ compact 宽度不显示搜索格（入口改为根屏放大镜）。
+    static func showsSearchTab(isRegularWidth: Bool) -> Bool { isRegularWidth }
+
     /// 居中限宽的上限：compact（iPhone / iPad 分屏窄栏）不限宽。
     static func contentMaxWidth(isRegularWidth: Bool) -> CGFloat {
         isRegularWidth ? readableMaxWidth : .infinity
@@ -48,4 +52,29 @@ struct CovaReadableWidthModifier: ViewModifier {
 
 extension View {
     func covaReadableWidth() -> some View { modifier(CovaReadableWidthModifier()) }
+}
+
+/// t84：compact 宽度（iPhone / iPad 分屏窄栏）搜索格不进底栏 ⇒ 曲库、歌单根屏右上角补一个放大镜，
+/// 栈内 push 25 搜索屏。regular 宽有顶层搜索页签，不重复放。
+struct CovaCompactSearchEntryModifier: ViewModifier {
+    @Environment(AppSession.self) private var session
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    func body(content: Content) -> some View {
+        content.toolbar {
+            if !CovaAdaptiveLayout.showsSearchTab(isRegularWidth: sizeClass == .regular) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { session.push(.search) } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .accessibilityLabel("搜索")
+                    .accessibilityIdentifier("cova.search.open")
+                }
+            }
+        }
+    }
+}
+
+extension View {
+    func covaCompactSearchEntry() -> some View { modifier(CovaCompactSearchEntryModifier()) }
 }

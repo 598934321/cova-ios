@@ -19,4 +19,20 @@ final class AdaptiveLayoutTests: XCTestCase {
         XCTAssertEqual(CovaAdaptiveLayout.contentMaxWidth(isRegularWidth: true), CovaAdaptiveLayout.readableMaxWidth)
         XCTAssertEqual(CovaAdaptiveLayout.contentMaxWidth(isRegularWidth: false), .infinity, "compact 不限宽，iPhone 观感不变")
     }
+
+    /// t84：iPhone 底栏连搜索格最多 5 格 ⇒ compact 不显示顶层搜索格（否则系统折出「更多」把「我的」藏起来）。
+    func testSearchTabOnlyInRegularWidth() {
+        XCTAssertTrue(CovaAdaptiveLayout.showsSearchTab(isRegularWidth: true))
+        XCTAssertFalse(CovaAdaptiveLayout.showsSearchTab(isRegularWidth: false))
+        let visibleCompact = AppSession.Tab.allCases.filter {
+            $0 != .search || CovaAdaptiveLayout.showsSearchTab(isRegularWidth: false)
+        }
+        XCTAssertLessThanOrEqual(visibleCompact.count, 5, "iPhone 底栏超过 5 格会出现系统「更多」页签")
+    }
+
+    /// t84：栈内搜索屏不切页签（曲库/歌单哪里打开就在哪棵栈里）。
+    func testSearchRouteStaysInCurrentStack() {
+        XCTAssertNil(AppSession.Route.search.owningTab)
+        XCTAssertFalse(AppSession.Route.search.isTabRoot)
+    }
 }

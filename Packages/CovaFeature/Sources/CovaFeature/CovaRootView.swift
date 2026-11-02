@@ -7,6 +7,7 @@ import SwiftUI
 /// 抽屉与自绘底栏已按 04 §5 对照表移除；各屏顶栏不再有品牌字标钮。
 /// 登录态门控：游客照常进壳（首页/曲库可浏览），创作/我的页签根走 17-S6 引导形态。
 public struct CovaRootView: View {
+    @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var session = AppSession(previewTab: previewTab())
     private let themeMode: CovaThemeMode
 
@@ -197,6 +198,10 @@ public struct CovaRootView: View {
             // 04 §1/§2：`Tab(role:.search)` 由系统钉在栏右端分隔位，标题/图标系统自给
             // （04 §1 明写"传 nil 让系统给，不自造文案"）——不经过 `shellTab` 的自绘标题通道，
             // 但栈结构一致：25 屏也有自己那棵 NavigationStack（分类卡/历史/结果行在栈内 push）。
+            //
+            // t84（模拟器实测）：iPhone 底栏连系统搜索格最多 5 格，6 格时系统会折出「更多」页签，
+            // 把「我的」和搜索都藏进去 ⇒ compact 宽度隐藏搜索格（入口改为曲库/歌单根屏右上角放大镜，
+            // 栈内 push `.search`）；iPad regular 宽仍显示这一格（侧栏/顶部页签放得下）。
             Tab(value: AppSession.Tab.search, role: .search) {
                 NavigationStack(path: session.pathBinding(for: .search)) {
                     SearchTabView(catalog: catalog)
@@ -206,11 +211,20 @@ public struct CovaRootView: View {
                 }
                 .safeAreaInset(edge: .bottom) { toastOverlay }
             }
+            .hidden(!CovaAdaptiveLayout.showsSearchTab(isRegularWidth: hSizeClass == .regular))
         }
         .tint(CovaColor.accent)
         // t74 iPad：web 768 宽的导航是可收起侧栏 ⇒ `.sidebarAdaptable`
         // （iPad regular 宽 = 侧栏/顶部页签可切换；iPhone 与 iPad 分屏窄栏 = 原底栏，观感不变）。
         .tabViewStyle(.sidebarAdaptable)
+        // iPad 分屏从 regular 收窄到 compact 时搜索格会被隐藏：正停在搜索页签就落回曲库栈内的搜索屏，
+        // 不让 selection 指向一个看不见的页签。
+        .onChange(of: hSizeClass) { _, newValue in
+            if newValue == .compact, session.selection == .search {
+                session.selectTab(.library)
+                session.push(.search)
+            }
+        }
         .tabBarMinimizeBehavior(.onScrollDown)
 
         // 空 accessory 的隐藏分两个运行时代码档（2026-10-01 截图实测钉死）：
@@ -295,6 +309,7 @@ public struct CovaRootView: View {
         case .membership: MembershipView()
         case .enterprise: EnterpriseView()
         case .artist(let id): ArtistHomeView(artistID: id)
+        case .search: SearchTabView(catalog: session.catalog)
         }
     }
 
