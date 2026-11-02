@@ -448,7 +448,14 @@ public struct TrackDetailSheet: View {
     @ViewBuilder
     private func cover(_ track: TrackDto) -> some View {
         let art = CovaArtwork(resolution: TrackDetailArtwork.cover(track), title: track.title)
-        if axLayout || isPad {
+        if isPad && !axLayout {
+            // t84 r3 实测：iPad 表单 sheet 里 containerRelativeFrame + aspectRatio 会把封面拉成竖长方形
+            // ⇒ iPad 用定边长 1:1（表单宽 ~540pt 的 ~55%），居中。
+            art.frame(width: 300, height: 300)
+                .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, CovaSpace.pageGutter)
+        } else if axLayout {
             art.containerRelativeFrame(.horizontal) { length, _ in length * 0.6 }
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
