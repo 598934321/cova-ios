@@ -134,6 +134,7 @@ public struct LibraryView: View {
         // （艺人名/分类词条名），返回根屏恢复 —— 页签根屏没有返回钮、没有品牌位。
         .navigationTitle(navigationTitle)
         .toolbarTitleDisplayMode(.large)
+        .covaCompactSearchEntry()
         .task {
             apply(routePreset)
             consumeLibraryPreset()

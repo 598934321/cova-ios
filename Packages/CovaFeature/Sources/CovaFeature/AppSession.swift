@@ -330,6 +330,10 @@ public final class AppSession {
         case membership
         case enterprise
         case artist(String)
+        /// 25 搜索屏的**栈内 push 形态**（t84）：iPhone 底栏最多 5 格（含系统搜索格），
+        /// 顶层「歌单」加入后搜索格在 compact 宽度隐藏，改由曲库/歌单根屏右上角放大镜 push 进当前栈；
+        /// iPad regular 宽仍是 `Tab(role:.search)` 顶层页签。
+        case search
         /// 分享出去的用户歌单（§5 P3）：目的地由卡片的 `href` 里的 token 决定，
         /// **不是** `playlist(id)` 的变体 —— 那一支的 id 是用户歌单 id，打官方详情只会 404。
         case sharedPlaylist(String)
@@ -356,7 +360,7 @@ public final class AppSession {
                 return .studio
             // `playlist(id)` 改为**当前栈 push**：首页/我的/歌单各处点歌单卡都在发起栈内
             // 打开详情，不再被拽去别的页签（原归首页，会把「我的歌单」点击跳到首页栈）。
-            case .artist, .library, .playlist:
+            case .artist, .library, .playlist, .search:
                 return nil
             }
         }
