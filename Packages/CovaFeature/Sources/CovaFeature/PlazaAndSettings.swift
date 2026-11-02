@@ -287,22 +287,15 @@ public struct PlaylistsPlazaView: View {
     private func cardBody(_ playlist: PlaylistDto) -> some View {
         VStack(alignment: .leading, spacing: CovaSpace.xs) {
                 ZStack(alignment: .topTrailing) {
-                    // t74c（t84 走查 r1「歌单网格首行卡片互相压住」）：fill 封面的固有尺寸会撑破
-                    // 列宽（frame+aspectRatio 只约束外框，图本身照样外溢）。改成「透明 16:10 底板
-                    // 定尺寸 → 封面 overlay 填满 → 裁切」，封面永远不越过本列。
-                    Color.clear
-                        .aspectRatio(16.0 / 10.0, contentMode: .fit)
-                        .frame(maxWidth: .infinity)
-                        .overlay {
-                            CovaArtwork(
-                                resolution: CovaArtworkResolution(serverValues: [
-                                    playlist.cover, playlist.coverUrl, playlist.coverMedia?.imageUrl,
-                                ]),
-                                title: playlist.title
-                            )
-                        }
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
+                    CovaArtwork(
+                        resolution: CovaArtworkResolution(serverValues: [
+                            playlist.cover, playlist.coverUrl, playlist.coverMedia?.imageUrl,
+                        ]),
+                        title: playlist.title
+                    )
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(16.0 / 10.0, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
                     // 角标只读；收藏动作在 06。游客恒无角标，且这**不是缺陷**（NEEDS-1/3 未闭合）。
                     if playlist.isSaved == true {
                         Image(systemName: "bookmark.fill")

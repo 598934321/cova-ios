@@ -29,15 +29,6 @@ enum CovaAdaptiveLayout {
         return Array(repeating: GridItem(.flexible(), spacing: spacing), count: count)
     }
 
-    /// 系统「搜索」页签（`Tab(role:.search)`）只在 iPad regular 宽的侧栏里出现。
-    /// t74c（t84 走查 r1）：iPhone 底栏 = 5 个常规页签 + 搜索 ⇒ 系统折叠出「更多」，
-    /// 我的 / 搜索被藏起来。web 手机端没有搜索页签（搜索在首页输入卡「搜索」档），
-    /// 所以 iPhone 与 iPad 分屏窄栏不挂搜索页签：底栏恰好 首页/曲库/歌单/创作/我的 五格。
-    /// iPhone Pro Max 横屏也是 regular 宽，所以必须同时判设备是 iPad。
-    static func showsSearchTab(isPad: Bool, isRegularWidth: Bool) -> Bool {
-        isPad && isRegularWidth
-    }
-
     /// 居中限宽的上限：compact（iPhone / iPad 分屏窄栏）不限宽。
     static func contentMaxWidth(isRegularWidth: Bool) -> CGFloat {
         isRegularWidth ? readableMaxWidth : .infinity
