@@ -40,6 +40,7 @@ struct StudioCreateView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: CovaSpace.xl) {
                 operationCard
+                engineCard
                 promptCard
                 if state.phase != .idle { taskSection }
                 if !state.works.isEmpty { worksSection }
@@ -62,6 +63,12 @@ struct StudioCreateView: View {
                     .accessibilityIdentifier("cova.works.open")
             }
         }
+        // COVA-20261024-003 R1：Lyria 清单的**首拉**必须挂在无条件层级上。
+        // ⚠️ 不能挂进 `engineCard` 内部——那张卡的渲染条件是 `catalog != nil`，
+        // 而 `catalog` 正是这次加载的结果 ⇒ 自己等自己的首次赋值，永远不渲染、也永远不加载。
+        // （本仓 2026-09-27 踩过同族一次：`.task(id:)` 读任务自己写的状态被 SwiftUI 取消，
+        //   见 DEVELOPMENT.md §7 #50。）
+        .task { await session.loadLyriaModels() }
         .confirmationDialog(
             "删除本机文件？", isPresented: Binding(
                 get: { pendingDelete != nil },
@@ -77,6 +84,79 @@ struct StudioCreateView: View {
             Button("取消", role: .cancel) { pendingDelete = nil }
         }
         .sheet(isPresented: $sourcePickerShown) { sourcePickerSheet }
+    }
+
+    // MARK: - COVA-20261024-003 R1：生成引擎（Lyria 分组）
+
+    /// 引擎分组。**服务端说未开放就整组不出现**（`enabled=false`），
+    /// 空清单给「可重试」而不是空白，清单来自「上次成功结果」时标「可能过期」。
+    ///
+    /// 三条都直接对应 R1 的明文要求，所以这一张卡在本文件里是**唯一**的判据位：
+    /// 不在这里另写第二个「有没有模型」的判断。
+    @ViewBuilder
+    private var engineCard: some View {
+        if let catalog = session.lyriaCatalog, catalog.enabled {
+            VStack(alignment: .leading, spacing: CovaSpace.sm) {
+                HStack {
+                    CovaSectionHeader("生成引擎")
+                    Spacer()
+                    if catalog.isStale {
+                        // R1：失败回退上次成功结果时必须标出来，别让用户以为这是最新清单。
+                        Text("可能过期")
+                            .font(CovaType.caption)
+                            .foregroundStyle(CovaColor.muted)
+                            .accessibilityIdentifier("cova.engine.stale")
+                    }
+                }
+                if catalog.models.isEmpty {
+                    // R1：空列表要显示**可操作提示**（可重试），不是一片空白。
+                    HStack(spacing: CovaSpace.sm) {
+                        Text(session.studioCreateLyriaLoadFailed
+                             ? "引擎清单没读到" : "暂时没有可用引擎")
+                            .font(CovaType.caption)
+                            .foregroundStyle(CovaColor.muted)
+                        Button("重试") {
+                            Task { await session.loadLyriaModels(force: true) }
+                        }
+                        .font(CovaType.caption)
+                        .foregroundStyle(CovaColor.accentText)
+                        .accessibilityIdentifier("cova.engine.retry")
+                    }
+                    .accessibilityIdentifier("cova.engine.empty")
+                } else {
+                    // 不重排：`catalog.models` 就是服务端给的顺序，这里只线性铺开。
+                    // 「默认」= 不选任何引擎（请求里省略 modelVersion，交服务端默认）。
+                    FlowChips(items: catalog.models, selected: session.studioCreateModelVersion) { id in
+                        session.studioCreateModelVersion = id
+                    }
+                }
+            }
+                .accessibilityIdentifier("cova.engine.card")
+        }
+    }
+
+    /// 引擎 chips 的线性铺排（不加排序、不加去重之外的处理）。
+    private struct FlowChips: View {
+        let items: [LyriaModelOptionDTO]
+        let selected: String?
+        let onPick: (String?) -> Void
+
+        var body: some View {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: CovaSpace.sm) {
+                    // 「默认」chip 代表"不指定引擎"：选中它 ⇒ 请求里省略 modelVersion。
+                    CovaChip("默认", isSelected: selected == nil) { onPick(nil) }
+                        .accessibilityIdentifier("cova.engine.default")
+                    ForEach(items) { item in
+                        CovaChip(item.label, isSelected: selected == item.id) {
+                            // 再点一次当前项 ⇒ 回到默认（chip 的两态语义）。
+                            onPick(selected == item.id ? nil : item.id)
+                        }
+                        .accessibilityIdentifier("cova.engine.\(item.id)")
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - P1-2：操作档位 + 源选择 + 续写起点

@@ -53,10 +53,13 @@ extension AppSession {
         let operation = studioCreateOperation
         let sourceClipId = studioCreateSource?.providerClipID
         let continueAt = operation == .extend ? studioCreateContinueAt : nil
+        // 引擎同样按值取走：在途换引擎不能改到这一次提交的形状上（幂等键↔请求体必须同形）。
+        let modelVersion = studioCreateSelectedModelID
         studioCreateTask = Task { @MainActor [weak self] in
             await self?.runStudioCreateSubmission(
                 prompt: prompt, token: token, submitID: submitID,
-                operation: operation, sourceClipId: sourceClipId, continueAt: continueAt
+                operation: operation, sourceClipId: sourceClipId, continueAt: continueAt,
+                modelVersion: modelVersion
             )
         }
     }
@@ -77,12 +80,14 @@ extension AppSession {
     private func runStudioCreateSubmission(
         prompt: String, token: IdempotentRequestToken, submitID: Int,
         operation: StudioCreateOperation = .create,
-        sourceClipId: String? = nil, continueAt: Double? = nil
+        sourceClipId: String? = nil, continueAt: Double? = nil,
+        modelVersion: String? = nil
     ) async {
         do {
             let response = try await studioCreateService.generate(
                 prompt: prompt, operation: operation,
-                sourceClipId: sourceClipId, continueAt: continueAt, token: token
+                sourceClipId: sourceClipId, continueAt: continueAt,
+                modelVersion: modelVersion, token: token
             )
             guard studioCreateSubmitID == submitID else { return }
             guard let jobId = response.jobId else {
@@ -114,10 +119,12 @@ extension AppSession {
         }
     }
 
-    // MARK: - 轮询（前 6 次 5s、之后 10s、上限约 30min）
+    // MARK: - 轮询（COVA-20261024-003 R2：退避 1/2/4/5s、不可见暂停、恢复可见立即拉、上限 30min）
 
     private func pollStudioCreate(jobId: String, submitID: Int) async {
-        let schedule = StudioCreatePollSchedule()
+        // 节拍取契约值 `GenerationPollBackoff`（1/2/4/5s），不再是旧的「前 6 次 5s、之后 10s」：
+        // R2 是**生成状态轮询**的明文口径，旧节拍服务的是提交后的一次性任务跟踪，两者不能混用。
+        let schedule = GenerationPollBackoff()
         let startedAt = Date()
         startStudioCreateTicker(startedAt: startedAt, submitID: submitID)
         defer { stopStudioCreateTicker() }
@@ -127,6 +134,15 @@ extension AppSession {
         var lastObserved: GenerationJobStatus?
         while schedule.shouldPoll(attempt: attempt) {
             if studioCreateSubmitID != submitID || Task.isCancelled { return }
+            // R2「页面不可见暂停」：不可见时**不发、也不推进尝试号**——
+            // 推进会让用户切回来时发现配额已经白白烧掉几次。
+            if !isAppVisible {
+                studioCreate.phase = .polling(lastObserved ?? .queued)
+                // 睡眠期间也要能被取消（退屏/重新提交时立即醒来）。
+                try? await Task.sleep(nanoseconds: UInt64(0.5 * 1_000_000_000))
+                if Task.isCancelled, studioCreateSubmitID == submitID { return }
+                continue
+            }
             do {
                 let response = try await studioCreateService.generationJob(id: jobId)
                 guard studioCreateSubmitID == submitID else { return }
@@ -138,6 +154,13 @@ extension AppSession {
                         return
                     case .failed, .cancelled:
                         studioCreate.phase = .failed
+                        // ⚠ R2 要求 failed 带 `error_code` + `retryable`，但服务端**不返回**
+                        // 这两个字段：`generation_jobs` 表（web schema.ts:1295-1327）无此二列，
+                        // 只有 `worker_jobs`（:91,93）有且不投影到响应。
+                        // ⇒ **契约已裁定改成「不提供」（Chief 2026-10-30），不加 schema**。
+                        // 所以这里只显示 `errorMessage`，**不提供"可不可重试"的区分、也不猜**——
+                        // 后端既然不给这个事实，客户端自造一档就是捏造服务端语义。
+                        // 登记见 DEVELOPMENT.md §7 #57。
                         studioCreate.message = response.job?.errorMessage
                         return
                     case .queued, .submitted, .processing:
@@ -153,9 +176,15 @@ extension AppSession {
                         .unreachable(CatalogService.classify(error)).userMessage
                 }
             }
-            try? await Task.sleep(nanoseconds: UInt64(schedule.interval(forAttempt: attempt) * 1_000_000_000))
+            // R2「恢复可见立即拉取」：刚回前台那一拍**不吃退避**，立刻再投一次。
+            let justResumed = appVisibility.consumeResume()
+            let delay = justResumed ? 0 : schedule.interval(forAttempt: attempt)
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
             if Task.isCancelled, studioCreateSubmitID == submitID { return }
-            attempt += 1
+            // 刚恢复可见的那一拍是"额外的补拍"，不消耗尝试号（否则退避序列会被它打乱）。
+            if GenerationPollVisibility.advancesAttempt(resumeConsumed: justResumed) { attempt += 1 }
         }
         guard studioCreateSubmitID == submitID else { return }
         // 到上限：**不说失败**（服务端可能仍在跑），也不说完成。
@@ -234,6 +263,74 @@ extension AppSession {
         }
         if studioCreateOperation != .create, studioCreateSource == nil { return false }
         return !studioCreate.isBusy
+    }
+
+    // MARK: - Lyria 模型清单（COVA-20261024-003 R1）
+
+    /// 屏上要渲染的 Lyria 清单。`nil` = 还没有任何结论（首帧）。
+    ///
+    /// 三种状态在本属性上一眼可分：
+    /// · `enabled == false` ⇒ 整组隐藏（服务端说未开放）；
+    /// · `models.isEmpty` 且 `enabled` ⇒ 显示「加载失败 / 暂无模型，点此重试」；
+    /// · `isStale` ⇒ 清单来自上次成功结果，标题旁标「可能过期」。
+    public var lyriaCatalog: LyriaModelCatalog? { studioCreateLyriaCatalog }
+
+    /// 拉一次 Lyria 清单（R1 的四条纪律都在这里收口）。
+    ///
+    /// · **唯一来源**：只认 `GET /api/lyria/models`，本端不硬编码任何模型名；
+    /// · **缓存 ≤60s**：命中缓存直接返回，不打网络；
+    /// · **失败回退上次成功**：回上次那份并标 `isStale`；从未成功过给「空 + 可重试」；
+    /// · **不重排**：`LyriaModelCatalog.sanitize` 只丢非法行，保序。
+    ///
+    /// `force == true` 用于用户点「重试」：**绕过缓存**，但不绕过契约 —— 拉失败时
+    /// 仍然回退上次成功结果（标过期），而不是把屏清空。
+    public func loadLyriaModels(force: Bool = false) async {
+        let now = Date()
+        if !force, let hit = lyriaModelCache.cached(now: now) {
+            studioCreateLyriaCatalog = hit
+            studioCreateLyriaLoadFailed = false
+            return
+        }
+        do {
+            let dto = try await studioCreateService.lyriaModels()
+            let catalog = LyriaModelCatalog(
+                models: LyriaModelCatalog.sanitize(dto.models),
+                enabled: dto.enabled,
+                isStale: false,
+                source: dto.source
+            )
+            // 只有 `enabled` 为真才记缓存：未开放时的空清单不该在 60s 内挡住下一次
+            // 「运营刚打开开关」的实时探测。
+            if catalog.enabled {
+                lyriaModelCache.record(catalog, now: now)
+            }
+            studioCreateLyriaCatalog = catalog
+            studioCreateLyriaLoadFailed = false
+        } catch {
+            // 失败回退上次成功结果并标「可能过期」；从未成功过 ⇒ 空 + 可重试。
+            studioCreateLyriaCatalog = lyriaModelCache.fallback()
+                ?? LyriaModelCatalog(models: [], enabled: true, isStale: false, source: nil)
+            studioCreateLyriaLoadFailed = true
+            // 静默降级：不在屏上弹错误条（Lyria 只是可选的引擎分组，
+            // 拉不到不该挡住整张创作表单），由分组内的「重试」承接。
+            // 具体错误只落在状态里供诊断，不写日志（本仓无日志通道，且错误可能含 URL）。
+            _ = error
+        }
+    }
+
+    /// 当前用户选中的引擎（`nil` = 没选，交给服务端默认）。
+    public var studioCreateModelVersion: String? {
+        get { studioCreateSelectedModelID }
+        set { studioCreateSelectedModelID = newValue }
+    }
+
+    /// 应用可见性变化（R2「页面不可见暂停、恢复可见立即拉取」）。
+    ///
+    /// 由根视图的 `scenePhase` 驱动。恢复可见时置一个一次性标记，
+    /// 让正在跑的那条轮询腿**下一拍立刻发**（而不是继续吃退避）。
+    public func updateAppVisibility(_ visible: Bool) {
+        // 状态机自己判「是否真的从不可见转可见」；重复喂同一个值不会重复置补拍。
+        _ = appVisibility.update(isVisible: visible)
     }
 
     /// 读一次可作源的作品（`succeeded` + 带 `providerClipId` 的正身候选行）。

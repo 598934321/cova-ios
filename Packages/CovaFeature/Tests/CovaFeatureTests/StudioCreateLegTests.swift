@@ -301,4 +301,53 @@ final class StudioCreateLegTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - R1 首拉不能挂在条件渲染里（2026-10-30 实拍发现的死锁回归）
+
+    /// **这条守的是一个已经真实发生过的 BUG**：`engineCard` 的渲染条件是
+    /// `session.lyriaCatalog != nil`，而 `.task { await loadLyriaModels() }` 一度挂在那张卡
+    /// **内部** ⇒ 清单为 nil 时卡不渲染、task 不执行、清单永远填不上。
+    /// 表现：登录态下创作台**完全没有「生成引擎」区块**（门禁全绿也照不出来，
+    /// 因为没有任何用例覆盖"视图首次出现时会不会去拉"）。
+    ///
+    /// 修法是把 `.task` 移到无条件的 body 层级（`StudioCreateView` 的 `.task { await session.loadLyriaModels() }`）。
+    /// 本用例钉的是**视图不变量**：源码里 `loadLyriaModels()` 的调用点不得出现在
+    /// `engineCard` 的 `if let catalog` 块内 —— 用源码扫描做判据，因为这一格的
+    /// 错误形状（"卡自己等自己的初始值"）在纯逻辑层不可表达。
+    func testLyriaFirstLoadIsNotNestedInsideTheConditionalCard() throws {
+        let viewPath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // CovaFeatureTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // CovaFeature
+            .deletingLastPathComponent()   // Packages
+            .deletingLastPathComponent()   // 仓根
+            .appendingPathComponent("Packages/CovaFeature/Sources/CovaFeature/StudioCreateView.swift")
+        let source = try String(contentsOf: viewPath, encoding: .utf8)
+
+        // 切出 engineCard 那一段（到下一个 `// MARK:` 或下一个 private var 为止）。
+        guard let start = source.range(of: "private var engineCard") else {
+            return XCTFail("找不到 engineCard —— 视图结构变了，请同步更新本判据")
+        }
+        let rest = source[start.lowerBound...]
+        let end = rest.range(of: "// MARK: - P1-2")?.lowerBound
+            ?? rest.index(rest.startIndex, offsetBy: min(4000, rest.count))
+        let cardBody = String(rest[rest.startIndex..<end])
+
+        // ⚠️ 判据只禁**首拉**（无参 `loadLyriaModels()`）。
+        // 卡内的重试按钮 `loadLyriaModels(force: true)` 是**合法且必要**的——用户点它就是要绕过缓存。
+        // 第一版判据写成 `contains("loadLyriaModels")` 会把那枚重试按钮一起判红，
+        // 是假阳性；这里收窄到"无参调用"。
+        XCTAssertFalse(
+            cardBody.contains("loadLyriaModels()"),
+            """
+            engineCard 内部出现了无参 loadLyriaModels()（首拉）—— 这就是 2026-10-30 那个死锁：
+            卡的渲染条件是 catalog != nil，而 catalog 正由这次加载赋值 ⇒ 自己等自己。
+            请把首拉移到无条件的 body 层级；卡内的 `loadLyriaModels(force: true)`（重试按钮）不受此限。
+            """
+        )
+        XCTAssertTrue(
+            source.contains(".task { await session.loadLyriaModels() }"),
+            "首拉必须挂在无条件层级上，否则未登录/失败态下这张卡永远不会出现"
+        )
+    }
 }
