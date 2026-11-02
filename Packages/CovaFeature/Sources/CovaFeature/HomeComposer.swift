@@ -36,6 +36,11 @@ enum HomeComposerCopy {
     ]
     static let searchTags = ["轻音乐", "Lo-fi", "中国风", "商务科技"]
 
+    /// §2 问候首行：web `{salutation}，{displayName}` 逐字——逗号恒在，昵称缺省时省略昵称段（t74c）。
+    static func greetingLine(salutation: String, name: String?) -> String {
+        "\(salutation)，\(name ?? "")"
+    }
+
     /// §2 时段称呼（`<5 夜深了 / <12 早上好 / <18 下午好 / 其余 晚上好`，本地时间）。
     static func salutation(hour: Int) -> String {
         switch hour {

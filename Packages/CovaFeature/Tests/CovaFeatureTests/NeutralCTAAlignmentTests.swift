@@ -20,3 +20,11 @@ final class NeutralCTAAlignmentTests: XCTestCase {
         XCTAssertEqual(PlaylistPrimaryCapsuleButton.height, 50)
     }
 }
+
+/// t74c：首页问候首行与 web `{salutation}，{displayName}` 逐字（游客也保留逗号）。
+final class HomeGreetingAlignmentTests: XCTestCase {
+    func testGreetingKeepsCommaWithoutName() {
+        XCTAssertEqual(HomeComposerCopy.greetingLine(salutation: "早上好", name: nil), "早上好，")
+        XCTAssertEqual(HomeComposerCopy.greetingLine(salutation: "晚上好", name: "小洪"), "晚上好，小洪")
+    }
+}

@@ -22,6 +22,7 @@
   歌单详情「播放全部」（`PlaylistPrimaryCapsuleButton`）同改中性（web `.cova-liquid-glass-btn--accent` 早已回落中性），禁用 opacity 0.45；
   `CovaButton` 新增 `capsule:`（默认 false），登录 / 曲目详情「播放」/ 歌手「播放全部」恢复 web `rounded-full` 胶囊
   （#3 从 `.brand` 换 `.primary` 时丢了胶囊）。spec 04/06/07/10/inventory 同步；新增 `NeutralCTAAlignmentTests`（2）。
+- 首页问候首行游客态保留逗号（web `{salutation}，{displayName}` 逐字，01 §2 同步）；新增 `HomeGreetingAlignmentTests`（1）。
 
 ---
 
