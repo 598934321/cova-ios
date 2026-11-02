@@ -30,6 +30,7 @@ final class HomeGreetingAlignmentTests: XCTestCase {
 }
 
 /// t74c：同栈 push 页签根屏 = 回根（不叠第二个广场 / 会话列表）。
+@MainActor
 final class TabRootPushTests: XCTestCase {
     func testPushingTabRootOnItsOwnStackPopsToRoot() {
         let session = AppSession()
