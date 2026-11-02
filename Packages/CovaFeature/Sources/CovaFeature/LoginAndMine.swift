@@ -29,8 +29,8 @@ public struct LoginView: View {
                     .autocapitalization(.none)
                 field("密码", text: $password, secure: true)
                     .textContentType(.password)
-                // 10 §3.H：登录是 hero CTA 档（gradient.brandButton），不走中性玻璃。
-                CovaButton("登录", style: .primary, isLoading: busy) // 对齐 web /login：中性胶囊 { Task { await signIn() } }
+                // 对齐 web /login：登录是中性胶囊主钮，渐变只留给「开始制作」。
+                CovaButton("登录", style: .primary, isLoading: busy) { Task { await signIn() } }
                 // 10 §4「先随便看看」：游客入口也在这张 sheet 里 ⇒ 点了同样要收 sheet，
                 // 不然用户「进去了」却还被登录页盖着。
                 CovaButton("先随便看看", style: .secondary) {
