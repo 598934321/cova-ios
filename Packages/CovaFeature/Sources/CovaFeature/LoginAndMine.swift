@@ -30,7 +30,7 @@ public struct LoginView: View {
                 field("密码", text: $password, secure: true)
                     .textContentType(.password)
                 // 对齐 web /login：登录是中性胶囊主钮，渐变只留给「开始制作」。
-                CovaButton("登录", style: .primary, isLoading: busy) { Task { await signIn() } }
+                CovaButton("登录", style: .primary, isLoading: busy, capsule: true) { Task { await signIn() } }
                 // 10 §4「先随便看看」：游客入口也在这张 sheet 里 ⇒ 点了同样要收 sheet，
                 // 不然用户「进去了」却还被登录页盖着。
                 CovaButton("先随便看看", style: .secondary) {

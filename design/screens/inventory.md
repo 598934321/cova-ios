@@ -145,7 +145,7 @@
 **不波及**（语义橙/装饰橙，非选中填充）：09 用户气泡与警示衬底（`accentSoft` 语义档）、
 06 已收藏态胶囊与播放中高亮行、22/21 的 `accentSoft` 过渡衬底（TG-21）、25 风格组
 `accentSoft` 竖条（装饰标识）、02 收藏心/循环模式/进度条、页签 tint、链接/文字钮
-`accentText`、登录与 hero CTA 的 `gradient.brandButton`。
+`accentText`、生成/开始制作等创作 hero CTA 的 `gradient.brandButton`（登录/播放/播放全部 t74 起中性）。
 | `19-studio-create.md` §3.E 明令结果行**不渲染** ♡ / ⋯ / 分享 / 重命名 / 歌词 | 那不是终态设计而是 P0 范围（19 §1 原文）。P1 动作全部落在 20，19 只需补一颗「全部作品」钮（待回写）；两屏动作集合不再互相复制 | `20-works-list.md` §1 / 本表行 19 |
 | §5 P1-2 要求「**作品详情**提供翻唱/续写/重制入口」，但站内无作品详情屏、`DEVELOPMENT.md` 也无单行详情端点（§4.4 只有 `works?id=`） | 20/21 都**不**渲染该组入口，共同提出「作品工作面板」候选（20 待裁决 2 ↔ 21 待裁决 3），**必须一次裁决**，免得长出两个互不相认的面板 | `20-works-list.md` 待裁决 2 |
 | 20 的 `POST works/:id/favorite`（物化 note）与 09 的 `PATCH /api/media/references/:id/retention` 是**同一对象的两条写通道** | 20 统一走 `works/:id/favorite` 并要求两侧状态互相回填；「谁是事实源」待后端答（17 §10 并发通则：同一资源两处写入口径只能有一条） | `20-works-list.md` §7 待答（7） |

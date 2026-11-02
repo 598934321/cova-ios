@@ -334,17 +334,20 @@ struct GuestGuideView: View {
             Text("登录解锁创作与收藏")
                 .font(CovaType.headline).foregroundStyle(CovaColor.fg)
                 .multilineTextAlignment(.center)
-            // 「登录」按原 §4 的原文用 `gradient.brandButton` + 白字 + 50pt 高，
-            // 而不是 `CovaButton`（accent 实心 / 44 高）：引导主钮的观感钉在渐变上。
+            // 「登录」对齐 web 2.77.75（t74c 实拍 /login 提交钮与游客引导）：中性胶囊——
+            // 白底（elevated）+ 深字（fg）+ 细描边（lineSubtle，同 weapp --color-line-subtle），50pt 高；品牌渐变只留给
+            // 「生成/开始制作」，与 `LoginView` 的 `CovaButton(.primary)` 同族（覆盖原 §4 渐变口径）。
             Button { session.loginPresented = true } label: {
                 Text("登录")
                     .font(CovaType.headline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(CovaColor.fg)
                     .frame(maxWidth: .infinity, minHeight: ShellMetrics.primaryControlHeight)
-                    .background(CovaGradient.brandButton, in: Capsule())
+                    .background(CovaColor.elevated, in: Capsule())
+                    .overlay(Capsule().strokeBorder(CovaColor.lineSubtle, lineWidth: 1))
                     .contentShape(Capsule())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("guest-guide-login")
             // 「先逛逛」= 回落到游客可浏览的首页页签（创作/我的栈留在引导态）。
             Button("先逛逛") { session.selectTab(.home) }
                 .font(CovaType.subhead).foregroundStyle(CovaColor.accentText)

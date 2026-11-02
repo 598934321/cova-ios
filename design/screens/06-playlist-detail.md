@@ -62,8 +62,9 @@
 
 ### E 操作行
 
-- 「播放全部」：主按钮规格——高 50（TG-07）、`radius.capsule`、`gradient.brandButton` 底 + 白字 +
-  `elevation.primaryButtonShadow`，图标 `play.fill`；宽度 = 屏宽 − 2×`spacing.pageGutter` 减去收藏钮占位
+- 「播放全部」：主按钮规格——高 50（TG-07）、`radius.capsule`、**中性胶囊**（t74c 对齐 web 2.77.75：
+  `color.elevated` 底 + `color.fg` 字 + 1pt `color.lineSubtle` 描边 + 近身浅影；禁用 opacity 0.45；
+  原 `gradient.brandButton` + 白字口径作废），图标 `play.fill`；宽度 = 屏宽 − 2×`spacing.pageGutter` 减去收藏钮占位
 - 「收藏」次按钮：同高 50、`color.surface` 底 + `color.fg` 字 + 1pt `color.line` 描边（TG-04）；
   已收藏态：`color.accentSoft` 底 + `color.accentText` 字 + 1pt `color.accent` 描边
 - 吸顶：滚动后 E 行吸附在导航条下方（玻璃底 `material.navGlass`），保持两钮可点

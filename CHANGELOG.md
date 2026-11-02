@@ -18,6 +18,10 @@
   `plaza` 成为歌单页签根（`isTabRoot`），`plazaSearch` / `sharedPlaylist` 归歌单栈；
   `playlist(id)` 改当前栈 push（我的歌单点卡不再被拽去首页）。04 §1/§2/§3 与新增 §9 同步修订。
 - 新增用例：`AdaptiveLayoutTests`（3）+ `ShellNavigationTests` t74 段（6）。
+- **t74c 复审补齐**：创作/我的页签游客引导「登录」改中性胶囊（白底 `elevated` + 深字 `fg` + 1pt `lineSubtle`，50pt）；
+  歌单详情「播放全部」（`PlaylistPrimaryCapsuleButton`）同改中性（web `.cova-liquid-glass-btn--accent` 早已回落中性），禁用 opacity 0.45；
+  `CovaButton` 新增 `capsule:`（默认 false），登录 / 曲目详情「播放」/ 歌手「播放全部」恢复 web `rounded-full` 胶囊
+  （#3 从 `.brand` 换 `.primary` 时丢了胶囊）。spec 04/06/07/10/inventory 同步；新增 `NeutralCTAAlignmentTests`（2）。
 
 ---
 

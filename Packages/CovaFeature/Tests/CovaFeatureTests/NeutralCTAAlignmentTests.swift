@@ -1,0 +1,22 @@
+import CovaUI
+import XCTest
+
+@testable import CovaFeature
+
+/// t74c：登录/播放/播放全部对齐 web 2.77.75 的中性胶囊（白底深字细描边、`rounded-full`）。
+/// 只钉可静态化的判据：形状裁决与 50pt 主钮高度；配色是否摆对由 Xcode 预览/截图验收。
+final class NeutralCTAAlignmentTests: XCTestCase {
+    /// brand 档一律胶囊；中性档默认仍 `radius.control`，显式 `capsule: true` 才胶囊。
+    func testCapsuleDecision() {
+        XCTAssertTrue(CovaButton.usesCapsule(style: .brand, capsule: false))
+        XCTAssertTrue(CovaButton.usesCapsule(style: .primary, capsule: true))
+        XCTAssertFalse(CovaButton.usesCapsule(style: .primary, capsule: false))
+        XCTAssertFalse(CovaButton.usesCapsule(style: .secondary, capsule: false))
+    }
+
+    /// 游客引导「登录」与歌单「播放全部」保持 50pt 主钮高（TG-07），只换配色不换几何。
+    func testGuestGuideAndPlayAllKeepPrimaryHeight() {
+        XCTAssertEqual(ShellMetrics.primaryControlHeight, 50)
+        XCTAssertEqual(PlaylistPrimaryCapsuleButton.height, 50)
+    }
+}

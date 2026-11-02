@@ -62,10 +62,10 @@
   - 密码字段为安全输入（不透出明文），右侧可见切换 👁 图标按钮 ≥44pt 热区（TG-03）
 - **G 行内错误位**：`type.subhead` / `color.error`，左侧 `exclamationmark.triangle` 符号（TG-18），
   与输入框间距 `spacing.sm`；**不**用 Toast、**不**用 Dialog（字段级可归因错误必须贴着字段）
-- **H 主按钮**：高 50（TG-07）、`radius.capsule`、`gradient.brandButton` 底 + 白字 +
-  `elevation.primaryButtonShadow`；宽 100%（内容列）；与 G/E 块间距 `spacing.xl`
-  - 登录中：文字替换为菊花（白），按钮保持宽度不跳（inventory：登录中按钮转菊花），不可重复点
-  - 不可用（邮箱/密码未填齐）：`color.muted` 底（components §10 禁用态），文字仍白
+- **H 主按钮**：高 50（TG-07）、`radius.capsule`、**中性胶囊**（t74 对齐 web 2.77.75 /login 提交钮：
+  `CovaButton(.primary)` 白底深字细描边；原 `gradient.brandButton` + 白字 + 橙投影口径作废）；宽 100%（内容列）；与 G/E 块间距 `spacing.xl`
+  - 登录中：文字替换为菊花（随前景色），按钮保持宽度不跳（inventory：登录中按钮转菊花），不可重复点
+  - 不可用（邮箱/密码未填齐）：`CovaButton` 禁用态（降透明度、不接收点击）
 - **I 「游客浏览」**：文字按钮 `type.callout` / `color.accentText`，上下内边距扩至 ≥44pt 热区
 - **J 分隔**：`color.lineSubtle` 1pt（TG-04），上下 `spacing.xl`
 - **K 合规行**：`type.caption` / `color.muted`，居中，最多 2 行；《隐私政策》《服务条款》
@@ -103,7 +103,7 @@
 
 - 底 `color.canvas`、输入底 `color.surface`、focus 抬升为 `color.elevated` + `color.focusRing`
   描边：全部双 mode token
-- 深色下主按钮渐变与白字同值（`gradient.brandButton` 定义即保证对比度达标）
+- 深色下主按钮走中性 token 双值（`color.fg` / 玻璃底随主题），对比度由 token 保证
 - 错误色 `color.error` 双主题同值；`color.accentText` 在 Dark 下为亮橙（tokens 双值），
   K 行链接无需另选色
 - 图标（logo 资产）为官方不透明浅底资产 → **Dark 下不加底衬、不做反色**（红线）；

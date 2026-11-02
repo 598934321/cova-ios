@@ -158,7 +158,7 @@ public struct ArtistHomeView: View {
     private var actionBar: some View {
         HStack(spacing: CovaSpace.md) {
             // 对齐 web：播放类按钮中性，渐变只留给「开始制作」。
-            CovaButton("播放全部", style: .primary) {
+            CovaButton("播放全部", style: .primary, capsule: true) {
                 Task { await playAll() }
             }
             // 右侧**不放「关注」**：没有关注端点，放一个点了没反应的按钮比不放更糟。
