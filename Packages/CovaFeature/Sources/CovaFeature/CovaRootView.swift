@@ -366,6 +366,8 @@ struct GuestGuideView: View {
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, minHeight: ShellMetrics.touchMin)
         }
+        // t84 iPad 实测：regular 宽下主钮会横贯整屏（834pt）⇒ 引导块限宽 400pt 居中；iPhone 不受影响。
+        .frame(maxWidth: 400)
         .padding(CovaSpace.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(tab.title)
