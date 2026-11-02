@@ -14,6 +14,8 @@ struct TrackSheetID: Identifiable, Equatable { let id: String }
 /// 「中性未选态」而不是「未收藏」。
 public struct PlaylistDetailView: View {
     @Environment(AppSession.self) private var session
+    /// t84 iPad：regular 宽下封面不拉满整屏（1:1 满宽在 iPad 上会是一整屏的图）。
+    @Environment(\.horizontalSizeClass) private var sizeClass
     /// 06 §Dynamic Type：AX 档下简介折叠行数由 3 放宽到 5（放大后 3 行装不下原来 3 行的信息）。
     @Environment(\.covaAXLayout) private var axLayout
     private let playlistID: String
@@ -116,6 +118,8 @@ public struct PlaylistDetailView: View {
         .frame(maxWidth: .infinity)
         .aspectRatio(1, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
+        .frame(maxWidth: CovaAdaptiveLayout.heroArtworkMaxWidth(isRegularWidth: sizeClass == .regular))
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, CovaSpace.pageGutter)
         .padding(.top, CovaSpace.md)
     }
@@ -425,8 +429,16 @@ public struct TrackDetailSheet: View {
     }
 
     private var detents: Set<PresentationDetent> {
-        axLayout ? [.large] : [.fraction(0.6), .fraction(0.92)]
+        TrackDetailSheet.usesSingleLargeDetent(axLayout: axLayout, isPad: isPad)
+            ? [.large] : [.fraction(0.6), .fraction(0.92)]
     }
+
+    /// t84（模拟器实测）：iPad 上本 sheet 是居中表单，60% 档只露出一张封面、曲名与操作行全在折线下
+    /// ⇒ iPad 与 AX 档同走「单一 .large 档 + 60% 宽封面」。sheet 内 sizeClass 恒为 compact，
+    /// 所以这里按设备族判，不按 sizeClass。
+    private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
+    static func usesSingleLargeDetent(axLayout: Bool, isPad: Bool) -> Bool { axLayout || isPad }
 
     /// C 区大封面。**非 AX 档与改造前逐字一致**（同一支 frame/aspectRatio/圆角/内边距）。
     /// AX 档（07 §6）：封面从"满宽"缩到容器宽的 **60%** 并居中 —— 放大档那张 1:1 方块
@@ -436,7 +448,7 @@ public struct TrackDetailSheet: View {
     @ViewBuilder
     private func cover(_ track: TrackDto) -> some View {
         let art = CovaArtwork(resolution: TrackDetailArtwork.cover(track), title: track.title)
-        if axLayout {
+        if axLayout || isPad {
             art.containerRelativeFrame(.horizontal) { length, _ in length * 0.6 }
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: CovaRadius.hero, style: .continuous))
