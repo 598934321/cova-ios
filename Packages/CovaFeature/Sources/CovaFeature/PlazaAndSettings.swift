@@ -12,6 +12,8 @@ import UserNotifications
 public struct PlaylistsPlazaView: View {
     /// 05 §Dynamic Type：AX 档下网格由 2 列降为 1 列（卡宽 = 屏宽 − 2×页边距）。
     @Environment(\.covaAXLayout) private var axLayout
+    /// t74 iPad：regular 宽 3 列（web 768 宽歌单网格 3 列）。
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(AppSession.self) private var session
     @State private var phase: Phase = .loading
     @State private var playlists: [PlaylistDto] = []
@@ -173,9 +175,8 @@ public struct PlaylistsPlazaView: View {
     private func pickGridList(_ shown: [PlaylistPickDto]) -> some View {
         ScrollView {
             LazyVGrid(
-                columns: axLayout
-                    ? [GridItem(.flexible())]
-                    : [GridItem(.flexible(), spacing: CovaSpace.md), GridItem(.flexible())],
+                columns: CovaAdaptiveLayout.cardColumns(
+                    isRegularWidth: sizeClass == .regular, axLayout: axLayout, spacing: CovaSpace.md),
                 spacing: CovaSpace.lg
             ) {
                 ForEach(Array(shown.enumerated()), id: \.element.playlist.id) { _, pick in
@@ -223,9 +224,8 @@ public struct PlaylistsPlazaView: View {
         } else {
             ScrollView {
                 LazyVGrid(
-                    columns: axLayout
-                        ? [GridItem(.flexible())]
-                        : [GridItem(.flexible(), spacing: CovaSpace.md), GridItem(.flexible())],
+                    columns: CovaAdaptiveLayout.cardColumns(
+                        isRegularWidth: sizeClass == .regular, axLayout: axLayout, spacing: CovaSpace.md),
                     spacing: CovaSpace.lg
                 ) {
                     ForEach(shown, id: \.id) { playlist in

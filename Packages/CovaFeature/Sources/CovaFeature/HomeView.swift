@@ -458,6 +458,8 @@ public struct HomeView: View {
         )
         // §4 选项行展开 = duration.fast；聚焦本身没有 spec 动画要求。
         .animation(CovaMotion.fast, value: composerFocused)
+        // t74 iPad：web 输入卡居中限宽，不拉满整屏。
+        .covaReadableWidth()
     }
 
     /// §4 发送行为：按当前档位分两条腿。

@@ -232,7 +232,8 @@ targets:
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        TARGETED_DEVICE_FAMILY: "1"
+        # t74（2026-11-02 用户裁决）：原生 iPad（1=iPhone, 2=iPad）。iPad 图标集已在 AppIcon 内。
+        TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         DEVELOPMENT_TEAM: ""

@@ -1,4 +1,4 @@
-# 04 · App 外壳（原生 TabView · 五页签含搜索位 · 每页签独立导航栈）
+# 04 · App 外壳（原生 TabView · 六页签含搜索位 · 每页签独立导航栈 · iPad 侧栏自适应）
 
 > G2 规格。基准 393×852pt。**2026-10-02 第二次重写**：在第一版外壳（四页签）之上
 > 追加**第五页签「搜索」**（`Tab(role: .search)`，系统分隔位）——对齐 Apple Music iOS 26
@@ -6,11 +6,15 @@
 > 原「左侧抽屉」方案仍废除（2026-10-01 裁决不变：抽屉不符合 iOS HIG）。
 > 色值/字号/间距/时长一律以 `../tokens.json` 的 token 路径引用；本文件不得出现裸字面量。
 > 缺失 token 不自行新增，统一登记在文末「Token 缺口」。
+> **2026-11-02 第三次修订（t74，用户裁决）**：① 新增顶层页签「歌单」（根屏 05），位置对齐
+> web `nav-data.ts`（首页 / 曲库 / 歌单 / 创作）；原「页签顺序不可重排」条款按新顺序重新锁定。
+> ② 原生 iPad：`TabView` 用 `.sidebarAdaptable`（对齐 web 768 宽可收起侧栏），卡片网格 regular 宽 3 列，
+> 首页输入条 regular 宽居中限宽 720pt（见 §9）。
 > **闸门状态**：本文件是设计事实源，实现须等规格确认（AGENTS.md 硬边界 8）。
 
 ## 1. 外壳结构
 
-- 外壳 = **原生 `TabView`**（iOS 26 `Tab` API），五个页签：首页 / 曲库 / 创作 / 我的 / 搜索。
+- 外壳 = **原生 `TabView`**（iOS 26 `Tab` API），六个页签：首页 / 曲库 / 歌单 / 创作 / 我的 / 搜索。
   页签栏是**系统原生标签栏**（Liquid Glass、系统手势语义），不再自绘。
 - **搜索页签用 `Tab(role: .search)`**：系统把它钉在标签栏右端、与其余四格分隔（Apple Music
   同款形态）；系统自带图标与「搜索」标题（传 nil 让系统给，不自造文案——「搜索」是系统词）。
@@ -27,6 +31,7 @@
 |---|---|---|---|
 | 首页 | `01-home` | `house` | 对话型首页：问候 + 生成/搜索切换 + 底置输入条 + 内容 feed（01 重写） |
 | 曲库 | `03-library` | `music.note.list` | 级联筛选 + 曲目列表（搜索迁出至 25，03 §3 重写） |
+| 歌单 | `05-playlists-plaza` | `rectangle.stack` | 官方 / 每日推荐 / 歌单广场三源 + 场景 chip（t74 新增，对齐 web `/playlists`；游客可浏览） |
 | 创作 | `08-ai-sessions` | `sparkles` | 会话列表为根；19 创作台、09 会话详情、20 作品列表 push 其上 |
 | 我的 | `11-mine` | `person` | 用户卡 + 余额/套餐 + 资产入口 + 商业入口 + 设置入口（insetGrouped） |
 | 搜索 | `25-search` | 系统 `role:.search` 自带 | 搜索落地页（历史 + 分类浏览）+ 结果态（25 §2/§3） |
@@ -42,7 +47,7 @@
   已在根时再点 ⇒ 滚动到顶部（系统既有行为，不自造）。搜索页签同规则。
 - **`tabBarMinimizeBehavior`**：`.onScrollDown` —— 向下滚动时标签栏自动收起为最小形态；
   回顶/上滑恢复。MiniPlayer（bottomAccessory）随栏一起最小化，不单独做收起逻辑。
-- **页签顺序不可重排**、不开放 `TabView` 自定义页签集（无「更多」页签、无 Edit 页）。
+- **页签顺序不可重排**（t74 起锁定为 首页 / 曲库 / 歌单 / 创作 / 我的 / 搜索）、不开放 `TabView` 自定义页签集（无「更多」页签、无 Edit 页）。
 
 ## 3. 路由归属（每页签一棵栈）
 
@@ -53,9 +58,9 @@
 
 | 路由 | 归属页签 | 触发点 |
 |---|---|---|
-| `playlist(id)` | 首页 | 01 推荐歌单大卡 / 场景精选卡 / 05 网格卡 |
-| `sharedPlaylist(token)` | 首页 | 01/05 分享歌单卡 |
-| `plaza` / `plazaSearch(q)` | 首页 | 01「更多 ›」；01 搜索档目标=歌单的发送（05 §1） |
+| `playlist(id)` | 当前栈（t74 改：01/05/12b 各处点卡都在发起栈内打开，不跨页签） | 01 推荐歌单大卡 / 场景精选卡 / 05 网格卡 / 12b 行 |
+| `sharedPlaylist(token)` | 歌单 | 01/05 分享歌单卡、分享链接深链 |
+| `plaza`（= 歌单页签根屏，`isTabRoot`）/ `plazaSearch(q)` | 歌单 | 01「更多 ›」= 切到歌单页签根；01 搜索档目标=歌单的发送（05 §1，歌单栈内 push 检索态） |
 | `artist(id)` | 当前栈（01↔03↔25 各有入口，页签不切换） | 03 行 ⋯「查看艺人」/ 01 AI 音乐人头像 / 07 相似位 |
 | `favorites` / `myPlaylists` / `myCreations` / `creditsLedger` / `membership` / `enterprise` / `settings` | 我的 | 11 各行（15 仅由 11 栈推入） |
 | `aiSessions` / `aiSession(id)` / `studioCreate` / `worksList` | 创作 | 08 行 / 19「全部作品」/ 22「任务」链 / 01 生成档提交 |
@@ -66,8 +71,8 @@
   在发起栈内推「预填筛选的曲库列表」（03 §7 的 `LibraryPreset` 复用形态）——
   Apple Music 同理（搜索页签内点分类进的是该栈内的浏览页，不切到资料库页签）。
 - 需要登录的目的地在游客态仍走 17-S6 登录引导 sheet，**不因页签化改变门槛**。
-- 「歌单广场（05）」不是页签：它从 01「推荐歌单 › 更多」进入（首页栈内 push）。
-  曲库屏**不**承担歌单入口（曲库 = 曲目语义）。
+- ~~「歌单广场（05）」不是页签~~（t74 废止）：05 是「歌单」页签根屏；01「推荐歌单 › 更多」切到该页签根。
+  曲库屏仍**不**承担歌单入口（曲库 = 曲目语义）。
 - **01 生成档提交** = 切到创作页签 + 回根 + push 09（对齐原「01 会话卡提交」归属，
   行为不变、发起控件换成 01 §4 的 `CovaComposer`）。
 
@@ -176,3 +181,20 @@
    前者保留搜索上下文（返回即回搜索落地页）；后者复用曲库栈。**已按方案确认采纳前者**，
    验收时复核体感。
 3. **（已裁决）页签数 = 5**（含搜索位）：2026-10-02 方案确认。
+
+## 9. iPad 自适应（t74 · 2026-11-02）
+
+对照 web v2.77.75 `7003ed8a` 在 768×1024 的实拍（`qa-evidence/t74-clients/web/ipad-*.png`）：
+
+| web 768 宽 | iOS iPad（regular 宽） | iPhone / iPad 分屏窄栏（compact） |
+|---|---|---|
+| 左上 sidebar 钮 + 可收起侧栏导航 | `TabView.tabViewStyle(.sidebarAdaptable)`：侧栏 ↔ 顶部页签栏可切换，同一份页签声明 | 系统底栏（不变） |
+| 歌单 / 榜单卡片 3 列 | `CovaAdaptiveLayout.cardColumns`：3 列（AX 档 2 列） | 2 列（AX 档 1 列，不变） |
+| 首页输入卡居中限宽 | `covaReadableWidth()`：maxWidth 720pt 居中 | 不限宽（不变） |
+| 弹层（登录、曲目详情） | 系统 sheet（iPad 自带 form sheet 尺寸） | 底部 sheet（不变） |
+
+- 设备族：`TARGETED_DEVICE_FAMILY = "1,2"`；iPad 支持四个方向（`UISupportedInterfaceOrientations~ipad`），
+  满足 iPad 多任务（Split View / Slide Over）要求，**不**设 `UIRequiresFullScreen`。
+- 判据只看 `horizontalSizeClass`，不读屏幕尺寸：iPad 分屏进入 compact 时自动回到 iPhone 形态。
+- 纯函数用例：`AdaptiveLayoutTests`；页签与归属：`ShellNavigationTests`（t74 段）。
+

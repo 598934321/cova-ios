@@ -12,6 +12,12 @@
 - 对齐 web v2.77.75 `7003ed8a` 实拍（`qa-evidence/t74-clients/web/`）：「登录」「播放」「播放全部」由 `.brand` 渐变改为 `.primary` 中性玻璃胶囊；
   品牌渐变只保留在创作页「开始制作」（与 web 生成按钮一致）。
 - 版本号不在此 PR 递增：与 PR #1（0.3.8）合并顺序由 Xcode 验证后决定。
+- **原生 iPad**（用户裁决）：`TARGETED_DEVICE_FAMILY "1,2"`、iPad 四方向；`TabView` `.sidebarAdaptable`
+  （对齐 web 768 宽侧栏）；歌单广场 / 搜索分类卡 regular 宽 3 列；首页输入条 regular 宽居中限宽 720pt。
+- **顶层「歌单」页签**（用户裁决）：首页 / 曲库 / **歌单** / 创作 / 我的 / 搜索（对齐 web nav）。
+  `plaza` 成为歌单页签根（`isTabRoot`），`plazaSearch` / `sharedPlaylist` 归歌单栈；
+  `playlist(id)` 改当前栈 push（我的歌单点卡不再被拽去首页）。04 §1/§2/§3 与新增 §9 同步修订。
+- 新增用例：`AdaptiveLayoutTests`（3）+ `ShellNavigationTests` t74 段（6）。
 
 ---
 

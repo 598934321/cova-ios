@@ -12,10 +12,11 @@ final class ShellNavigationTests: XCTestCase {
     // MARK: 04 §3 归属表（这张表的唯一来源是 `Route.owningTab`）
 
     func testOwningTabMatchesTheSpecTable() {
-        // 首页栈
-        XCTAssertEqual(AppSession.Route.playlist("p").owningTab, .home)
-        XCTAssertEqual(AppSession.Route.sharedPlaylist("t").owningTab, .home)
-        XCTAssertEqual(AppSession.Route.plaza.owningTab, .home)
+        // 歌单栈（t74：顶层「歌单」页签）
+        XCTAssertEqual(AppSession.Route.sharedPlaylist("t").owningTab, .playlists)
+        XCTAssertEqual(AppSession.Route.plaza.owningTab, .playlists)
+        // 歌单详情 = 当前栈 push（首页/我的/歌单各处的卡都不跨页签）
+        XCTAssertNil(AppSession.Route.playlist("p").owningTab)
         // 我的栈
         for route: AppSession.Route in [
             .favorites, .myPlaylists, .myCreations, .creditsLedger,
@@ -33,10 +34,12 @@ final class ShellNavigationTests: XCTestCase {
         // （25 分类卡 / 01 搜索档目标=曲库都从发起栈内 push，不切页签）。
         XCTAssertNil(AppSession.Route.library(nil).owningTab)
         XCTAssertNil(AppSession.Route.library(.init(search: "钢琴")).owningTab)
-        // 01 搜索档目标=歌单：`plazaSearch` 归属与 `.plaza` 同栈（首页栈内 push 05）。
-        XCTAssertEqual(AppSession.Route.plazaSearch("咖啡馆").owningTab, .home)
-        // 根屏标记：今天只有 08 会话列表是页签根屏本身
+        // 01 搜索档目标=歌单：`plazaSearch` 归属与 `.plaza` 同栈（歌单栈内 push 05 检索态）。
+        XCTAssertEqual(AppSession.Route.plazaSearch("咖啡馆").owningTab, .playlists)
+        // 根屏标记：08 会话列表 + 05 歌单广场（t74 起是歌单页签根屏）
         XCTAssertTrue(AppSession.Route.aiSessions.isTabRoot)
+        XCTAssertTrue(AppSession.Route.plaza.isTabRoot)
+        XCTAssertFalse(AppSession.Route.plazaSearch("q").isTabRoot)
         XCTAssertFalse(AppSession.Route.aiSession("s").isTabRoot)
     }
 
@@ -228,5 +231,62 @@ final class ShellNavigationTests: XCTestCase {
             CovaRootView.playerSheetPresentable(wantsOpen: false, hasPlaybackItem: true))
         XCTAssertTrue(
             CovaRootView.playerSheetPresentable(wantsOpen: true, hasPlaybackItem: true))
+    }
+
+    // MARK: t74 顶层「歌单」页签（2026-11-02 用户裁决，对齐 web nav-data 顺序）
+
+    func testTabOrderMatchesWebNavWithPlaylistsAfterLibrary() {
+        XCTAssertEqual(
+            AppSession.Tab.allCases, [.home, .library, .playlists, .studio, .mine, .search],
+            "首页 / 曲库 / 歌单 / 创作 / 我的 / 搜索（web：首页 / 曲库 / 歌单 / 创作）")
+        XCTAssertEqual(AppSession.Tab.playlists.title, "歌单")
+        XCTAssertEqual(AppSession.Tab.playlists.symbol, "rectangle.stack")
+        XCTAssertNotEqual(AppSession.Tab.playlists.symbol, AppSession.Tab.library.symbol)
+    }
+
+    func testHomeMoreOpensPlaylistsTabRootInsteadOfStackingOnHome() {
+        // 01「推荐歌单 › 更多」：push(.plaza) ⇒ 切到歌单页签并停在根，首页栈不叠 05。
+        let session = AppSession()
+        session.push(.plaza)
+        XCTAssertEqual(session.selection, .playlists)
+        XCTAssertEqual(session.paths[.playlists] ?? [], [])
+        XCTAssertEqual(session.paths[.home] ?? [], [])
+    }
+
+    func testNavigateToPlazaWhilePlaylistsStackIsDeepPopsToRoot() {
+        let session = AppSession()
+        session.selectTab(.playlists)
+        session.push(.playlist("p1"))
+        session.navigate(to: .plaza)
+        XCTAssertEqual(session.paths[.playlists] ?? [], [], "navigate 到根屏 = 回根，不叠第二个广场")
+        XCTAssertEqual(session.selection, .playlists)
+    }
+
+    func testPlazaSearchFromHomeLandsOnPlaylistsStack() {
+        let session = AppSession()
+        session.push(.plazaSearch("咖啡馆"))
+        XCTAssertEqual(session.selection, .playlists)
+        XCTAssertEqual(session.paths[.playlists] ?? [], [.plazaSearch("咖啡馆")])
+    }
+
+    func testPlaylistDetailStaysInOriginatingStack() {
+        // 「我的歌单」点一张卡：留在我的栈（原归首页，会被拽去首页栈）。
+        let session = AppSession()
+        session.selectTab(.mine)
+        session.push(.myPlaylists)
+        session.navigate(to: .playlist("p9"))
+        XCTAssertEqual(session.selection, .mine)
+        XCTAssertEqual(session.paths[.mine] ?? [], [.myPlaylists, .playlist("p9")])
+        // 歌单页签内点卡同理
+        session.selectTab(.playlists)
+        session.push(.playlist("p1"))
+        XCTAssertEqual(session.paths[.playlists] ?? [], [.playlist("p1")])
+    }
+
+    func testPreviewTabHookKnowsPlaylists() {
+        let defaults = UserDefaults.standard
+        defer { defaults.removeObject(forKey: "COVA_PREVIEW_TAB") }
+        defaults.set("playlists", forKey: "COVA_PREVIEW_TAB")
+        XCTAssertEqual(CovaRootView.previewTab(), .playlists)
     }
 }

@@ -15,12 +15,13 @@ public struct CovaRootView: View {
     }
 
     /// 预览/走查钩子（**仅**模拟器走查用，文档登记于 §14）：
-    /// `COVA_PREVIEW_TAB=home|library|studio|mine|search` 决定首屏页签，便于逐屏截图；生产不设置即默认 home。
+    /// `COVA_PREVIEW_TAB=home|library|playlists|studio|mine|search` 决定首屏页签，便于逐屏截图；生产不设置即默认 home。
     static func previewTab() -> AppSession.Tab {
         let raw = ProcessInfo.processInfo.environment["COVA_PREVIEW_TAB"]
             ?? UserDefaults.standard.string(forKey: "COVA_PREVIEW_TAB")
         switch raw {
         case "library": return .library
+        case "playlists": return .playlists
         case "studio": return .studio
         case "mine": return .mine
         case "search": return .search
@@ -182,6 +183,8 @@ public struct CovaRootView: View {
         )) {
             shellTab(.home) { HomeView(catalog: catalog) }
             shellTab(.library) { LibraryView(catalog: catalog) }
+            // t74：顶层「歌单」= 05 歌单广场（web `/playlists`）。游客可浏览，与 web 一致。
+            shellTab(.playlists) { PlaylistsPlazaView() }
             shellTab(.studio) {
                 // 04 §6：创作/我的页签的游客态 = 17-S6 引导形态（页签内容区，不遮标签栏）。
                 if case .signedIn = session.authPhase { AISessionsView() }
@@ -205,6 +208,9 @@ public struct CovaRootView: View {
             }
         }
         .tint(CovaColor.accent)
+        // t74 iPad：web 768 宽的导航是可收起侧栏 ⇒ `.sidebarAdaptable`
+        // （iPad regular 宽 = 侧栏/顶部页签可切换；iPhone 与 iPad 分屏窄栏 = 原底栏，观感不变）。
+        .tabViewStyle(.sidebarAdaptable)
         .tabBarMinimizeBehavior(.onScrollDown)
 
         // 空 accessory 的隐藏分两个运行时代码档（2026-10-01 截图实测钉死）：

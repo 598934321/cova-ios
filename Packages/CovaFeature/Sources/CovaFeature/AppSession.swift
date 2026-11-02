@@ -25,15 +25,17 @@ public struct RecentTrack: Codable, Identifiable, Equatable, Sendable {
 @Observable
 public final class AppSession {
     public enum AuthPhase: Equatable { case restoring, guest, signedIn(AuthUser), failed(String) }
-    /// 04 §2 的五个页签（**固定顺序**，不可重排）。`title`/`symbol` 只被 `CovaRootView`
+    /// 04 §2 的六个页签（**固定顺序**，不可重排）。2026-11-02 t74 用户裁决：新增顶层「歌单」，
+    /// 位置对齐 web `nav-data.ts` 的 首页 / 曲库 / **歌单** / 创作 顺序（我的/搜索随后）。`title`/`symbol` 只被 `CovaRootView`
     /// 的 `Tab` 声明消费，页签栏本身是系统件，不再有自绘 caption。
     /// `.search` 是系统的 `Tab(role:.search)`：标题/图标由系统提供，这两个映射对它只是兜底。
-    public enum Tab: String, CaseIterable, Identifiable { case home, library, studio, mine, search
+    public enum Tab: String, CaseIterable, Identifiable { case home, library, playlists, studio, mine, search
         public var id: String { rawValue }
         public var title: String {
             switch self {
             case .home: return "首页"
             case .library: return "曲库"
+            case .playlists: return "歌单"
             case .studio: return "创作"
             case .mine: return "我的"
             case .search: return "搜索"
@@ -45,6 +47,8 @@ public final class AppSession {
             switch self {
             case .home: return "house"
             case .library: return "music.note.list"
+            // 与曲库的 `music.note.list` 区分开：歌单 = 一叠合集。
+            case .playlists: return "rectangle.stack"
             case .studio: return "sparkles"
             case .mine: return "person"
             case .search: return "magnifyingglass"
@@ -342,21 +346,24 @@ public final class AppSession {
         /// 门槛语义不因页签化改变（04 §3 末行）。
         public var owningTab: Tab? {
             switch self {
-            case .playlist, .sharedPlaylist, .plaza, .plazaSearch:
-                return .home
+            // t74（2026-11-02）：歌单广场成为顶层页签根 ⇒ 广场 / 广场检索 / 分享歌单深链归「歌单」栈。
+            case .sharedPlaylist, .plaza, .plazaSearch:
+                return .playlists
             case .favorites, .myPlaylists, .myCreations, .creditsLedger,
                  .membership, .enterprise, .settings:
                 return .mine
             case .aiSessions, .aiSession, .studioCreate, .worksList:
                 return .studio
-            case .artist, .library:
+            // `playlist(id)` 改为**当前栈 push**：首页/我的/歌单各处点歌单卡都在发起栈内
+            // 打开详情，不再被拽去别的页签（原归首页，会把「我的歌单」点击跳到首页栈）。
+            case .artist, .library, .playlist:
                 return nil
             }
         }
 
-        /// 这条路由是不是某个页签的**根屏本身**（今天只有 `.aiSessions` = 创作页签根屏，
-        /// 04 §3）：是 ⇒ `navigate` 到它只回根，不在栈里再叠一层同屏。
-        public var isTabRoot: Bool { self == .aiSessions }
+        /// 这条路由是不是某个页签的**根屏本身**（`.aiSessions` = 创作页签根屏；
+        /// t74 起 `.plaza` = 歌单页签根屏，04 §3）：是 ⇒ `navigate` 到它只回根，不在栈里再叠一层同屏。
+        public var isTabRoot: Bool { self == .aiSessions || self == .plaza }
     }
 
     /// 每页签一棵独立的 `NavigationStack` 路径（04 §1）：缺键 = 该页签在根。
