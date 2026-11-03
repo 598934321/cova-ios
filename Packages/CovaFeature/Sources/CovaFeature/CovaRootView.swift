@@ -2,7 +2,7 @@ import CovaCore
 import CovaUI
 import SwiftUI
 
-/// 根视图（04 §1：**原生 `TabView` 外壳** · 四页签 · 每页签一棵 `NavigationStack`
+/// 根视图（04 §1：**原生 `TabView` 外壳** · 六页签（iPhone 可见五格 + 条件挂出的搜索位）· 每页签一棵 `NavigationStack`
 /// · `tabViewBottomAccessory` 迷你播放条 · 全屏播放器/登录/曲目详情 = 外壳级 sheet）。
 /// 抽屉与自绘底栏已按 04 §5 对照表移除；各屏顶栏不再有品牌字标钮。
 /// 登录态门控：游客照常进壳（首页/曲库可浏览），创作/我的页签根走 17-S6 引导形态。

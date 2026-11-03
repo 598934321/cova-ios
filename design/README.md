@@ -11,7 +11,7 @@
 | `screens/01-home.md` | G2 详稿：首页（2026-10-02 重写为对话型首页：问候 + 生成/搜索切换 + 底置输入条 + feed） |
 | `screens/02-player.md` | G1 详稿：全屏播放器 + MiniPlayer |
 | `screens/03-library.md` | G1 详稿：曲库（级联筛选；搜索已迁出至 25） |
-| `screens/04-shell.md` | G2 详稿：App 外壳（五页签 TabView + `role:.search` 位 + 迷你条 accessory；原 `04-drawer.md` 抽屉方案已废） |
+| `screens/04-shell.md` | G2 详稿：App 外壳（**六页签** TabView + `role:.search` 位（iPad 且 regular 宽才挂出）+ iPad 侧栏自适应 + 迷你条 accessory；原 `04-drawer.md` 抽屉方案已废） |
 | `screens/25-search.md` | G2 详稿：搜索页签根屏（历史 + 分类浏览网格 + 结果态） |
 | `screens/inventory.md` | G2 全屏清单（编号法与偏差登记表）与各屏要点 |
 | `assets/CovaAssets.xcassets/` | 官方 AppIcon（源：`cova ip/03_logo/platforms/canonical-v1/`，勿改） |

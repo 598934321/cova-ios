@@ -18,7 +18,7 @@
 | 01 | 首页 | **2026-10-02 重写为对话型首页**：display 问候（web 序章同款文案+「o」accent 橙）→ `CovaModeTabs` 生成/搜索切换 → `CovaTagChip` 引导标签（web `MODE_TAGS` 逐字）→ feed 六分区（推荐歌单/最近播放/新歌上架/你的创作/场景精选/AI 音乐人）→ **底置 `CovaComposer`**（ChatGPT iOS 式 `safeAreaInset`：生成档→创作栈 09、搜索档→曲库/歌单两目标）。**↔ 23**：输入条「+」面板规则沿用 23 §3（producers 空 ⇒ 钮与面板不渲染）；附件/音色/`workflowMode` 不做（契约未文档化） | `01-home.md` |
 | 02 | 全屏播放器 | 见 `02-player.md` | `02-player.md`（G1，已产出待验收） |
 | 03 | 曲库 | **2026-10-02 修订**：`.searchable` 迁出至 25 页签，本屏回归「级联筛选 + 列表」；`library(preset)` 变**可复用件**（25 分类卡/01 搜索档在发起栈内 push 本件、页签不切换）；带入 `search` 时以「搜索：{query} ✕」回显行呈现 | `03-library.md` |
-| 04 | **App 外壳（原生 TabView）** | **2026-10-02 二次重写**：五页签 = 首页/曲库/创作/我的 + **`Tab(role: .search)` 搜索位**（系统右端分隔，对齐 Apple Music）；每页签独立 `NavigationStack`、点当前页签回根、`tabBarMinimizeBehavior` 滚动收起；MiniPlayer = `tabViewBottomAccessory`（26.0/26.1 `isEnabled:` 分流已钉）；原抽屉去处对照表沿用 | `04-shell.md`（原 `04-drawer.md` 改名重写） |
+| 04 | **App 外壳（原生 TabView）** | **2026-10-02 二次重写**：五页签 = 首页/曲库/创作/我的 + **`Tab(role: .search)` 搜索位**（**2026-11-02 三修：新增顶层「歌单」= 六页签，搜索位改为 iPad 且 regular 宽才挂出，见 `04-shell.md` §1**）（系统右端分隔，对齐 Apple Music）；每页签独立 `NavigationStack`、点当前页签回根、`tabBarMinimizeBehavior` 滚动收起；MiniPlayer = `tabViewBottomAccessory`（26.0/26.1 `isEnabled:` 分流已钉）；原抽屉去处对照表沿用 | `04-shell.md`（原 `04-drawer.md` 改名重写） |
 | 05 | **歌单广场** | 官方歌单网格双列（封面 16:10 + 标题 + 曲数），顶部分类 chips（按 scene）；下拉刷新；**2026-10-02 新增 `searchQuery` 入屏参数**（01 搜索档歌单目标的落点，纯客户端过滤 + 回显行） | `05-playlists-plaza.md` |
 | 06 | **歌单详情** | 大封面头图（fit/focal 焦点）+ 标题/策展人/简介 + 「播放全部」渐变胶囊 + 收藏 ♡ + TrackRow 列表；头图上滑折叠进导航条 | `06-playlist-detail.md` |
 | 07 | **曲目详情** | modal 半屏：大封面、标签流、歌词摘要、相似曲目横滑、操作行（收藏/下载/分享） | `07-track-detail.md` |

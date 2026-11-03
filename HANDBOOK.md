@@ -42,7 +42,7 @@ Cova（CovaLink）AI 音乐商用授权平台的 iPhone 原生 App——「会�
 
 **iOS v1.0 范围**（现状）：
 
-- 原生五页签外壳（TabView + 每页签独立 `NavigationStack`，2026-10-01 由
+- 原生六页签外壳（TabView + 每页签独立 `NavigationStack`，2026-10-01 由
   抽屉壳改造，10-02 再加 `Tab(role:.search)` 系统搜索位）：首页 / 曲库 /
   创作 / 我的 + 搜索。
 - 首页对话型（底置 `CovaComposer` 输入条，生成/搜索两档）。

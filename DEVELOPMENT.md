@@ -17,7 +17,7 @@ Cova = 「会创作、可授权的音乐流媒体」：网易云式发现播放 
 
 iOS 端 v1.0 范围（已实现 → 本手册扩展的次序）：
 
-- **已实现（存量）**：原生四页签外壳（TabView + 每页签独立 NavigationStack，
+- **已实现（存量）**：原生六页签外壳（TabView + 每页签独立 NavigationStack，
   2026-10-01 由抽屉结构改造，见 `design/screens/04-drawer.md`）+ 首页 feed；
   曲库多维筛选/`.searchable` 搜索/分页；官方歌单与收藏；
   曲目收藏（含生成 note 双账分流）；邮箱密码登录（两步：建凭证 → `/me` 取权威身份）；
