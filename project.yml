@@ -227,12 +227,8 @@ targets:
         # → 0.3.7/109「可延后」前四项落地（2026-10-26）：413 输入超限专线话术；
         #     credits.turnId 容忍 + 「按 token 实扣」口径写进注释；/api/me/credits/ledger 的
         #     wallet 段（余额/购币/到期）；works 筛选补 generated（服务端 10 值里 iOS 原缺这一档）。
-        # → 0.3.8/110 契约追平 COVA-20261024-003 R1/R2（2026-11-04）：`GET /api/lyria/models` 成为模型名
-        #     唯一来源（本端不硬编码清单，成功缓存 ≤60s、失败回退上次成功并标「可能过期」）；生成轮询
-        #     退避 1/2/4/5s + 页面不可见暂停 + 恢复可见立即补拍且不消耗尝试号；修掉引擎清单首拉的死锁
-        #     （模拟器实拍发现的真 BUG）；端点漂移基线补 `/api/lyria/models`。
-        CFBundleShortVersionString: "0.3.8"
-        CFBundleVersion: "110"
+        CFBundleShortVersionString: "0.3.7"
+        CFBundleVersion: "109"
         INFOPLIST_FILE: Config/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
