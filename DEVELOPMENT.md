@@ -40,7 +40,7 @@ iOS 端 v1.0 范围（已实现 → 本手册扩展的次序）：
 - SwiftUI + Swift Concurrency（Swift 6 严格并发），部署目标 **iOS 26**（原生 Liquid Glass）。
 - XcodeGen：`project.yml` 是唯一工程事实源，`*.xcodeproj` 不入 git；`Config/Info.plist`
   持 bundle id 与 `UIBackgroundModes: audio`。
-- 版本：`CFBundleShortVersionString 0.2.70` / `CFBundleVersion 87`（project.yml:117-118）。
+- 版本：`CFBundleShortVersionString 0.3.8` / `CFBundleVersion 110`（`project.yml:230-231`）。
 - **零第三方依赖白名单**（当前为空；新增依赖须批准并登记到 §7 决策账）。
 - 门禁：`Scripts/check.sh` 一条命令 = xcodegen 重生成 → Debug 构建 → 全量 XCTest
   （CovaTests / CovaCoreTests / CovaPlayerTests）+ 覆盖率阈值（核心层与播放层各 ≥94%

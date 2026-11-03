@@ -7,6 +7,29 @@
 
 ---
 
+## 0.3.8 (110) — 2026-11-04
+
+**契约追平 COVA-20261024-003 R1/R2 + 修掉引擎清单首拉死锁**。
+
+- **R1 Lyria 引擎清单**：`GET /api/lyria/models` 成为模型名的**唯一来源**，本端不硬编码任何模型名。
+  成功结果缓存 ≤60s；请求失败回退**上次成功结果**并标「可能过期」；从未成功过给空列表 + 「重试」。
+  ⚠️ 刻意**不抄** web 的静态常量 `LYRIA_MODELS_FALLBACK`（契约 R1 明文「不硬编码模型清单」，
+  且它回的是常量而不是「上次成功结果」）——服务端下发什么就显示什么。
+- **R2 生成轮询退避**：`intervalFor(attempt)` = 1/2/4/5s（第 4 次起封顶 5s）；页面不可见时不发，
+  恢复可见立即补一拍且**不消耗尝试号**；到上限停止但**不判失败**（任务可能仍在跑）。
+  只按服务端终态 `succeeded/failed/cancelled` 收敛 + 显示 `errorMessage`；
+  `error_code` / `retryable` 服务端不提供（契约已裁定「不提供」）⇒ **不按它分档、也不猜**。
+- **修掉真 BUG：引擎清单首拉死锁**。`engineCard` 渲染条件是 `session.lyriaCatalog != nil`，
+  而 `.task { await loadLyriaModels() }` 挂在那张卡内部 ⇒ 卡不渲染 ⇒ task 不执行 ⇒ catalog 永远 nil
+  （自己等自己）。表现：创作台**完全没有「生成引擎」区块，连「重试」都不给**。
+  新增源码级不变量用例 `testLyriaFirstLoadIsNotNestedInsideTheConditionalCard`，禁止卡内出现无参
+  `loadLyriaModels()`。
+- 端点漂移基线补 `/api/lyria/models`（`swift Scripts/check-endpoint-drift.swift` 现 39 条 / 零漂移）。
+- 测试：Core **1003**、Feature **329**、Player **483**、App 2；`bash Scripts/check.sh` EXIT=0 十步全过
+  （覆盖率 CovaCore 94.28% / CovaPlayer 95.15%）。基线同步抬到实测值。
+- **本版未覆盖**：19 屏视图渲染仍只有截图证据（TD-48 未清偿）；CovaFeature 有 329 条条数地板但
+  **无覆盖率地板**（2 万行）；`CovaUI` 5 文件 / 1105 行无测试目标、无地板。
+
 ## 0.3.7 (109) — 2026-10-26
 
 **「可延后」清单前四项落地**（盘点 §4；后两项按下不做的判据见
