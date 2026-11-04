@@ -7,6 +7,37 @@
 
 ---
 
+## 0.3.8 (110) — 2026-11-04
+
+本轮把 2026-10-30 起累积的三批（契约追平 / 死锁修复 / t74 设计对齐）收进同一版本锚点。
+`CFBundleShortVersionString` 0.3.7→0.3.8、`CFBundleVersion` 109→110。
+
+- **R1 Lyria 引擎清单**（COVA-20261024-003）：新增 `LyriaModelDTOs` / `GenerationPollBackoff`、
+  `StudioCreateService.lyriaModels()`、`StudioCreateFlow.loadLyriaModels(force:)`；
+  以 `GET /api/lyria/models` 为唯一来源，不硬编码清单、不重排；可内存缓存 ≤60s；
+  失败回退上次成功结果并标「可能过期」；空列表给可重试提示。
+- **引擎清单首拉死锁修复（模拟器实拍发现的真 BUG）**：`.task { await loadLyriaModels() }`
+  原先挂在 `engineCard` 内部，而该卡渲染条件是 `lyriaCatalog != nil`（正是这次加载的赋值）
+  ⇒ **卡等自己**：不渲染 ⇒ task 不执行 ⇒ 永远 nil，创作台「生成引擎」区块整块不出现。
+  修法：`.task` 移到无条件 body 层级（`StudioCreateView.swift:71`）。
+  **1817 条既有用例一条都没覆盖「视图首次出现时会不会去拉」**，纯逻辑层也表达不了这种错误形状
+  ⇒ 补回归用例 `testLyriaFirstLoadIsNotNestedInsideTheConditionalCard`，变异自证：塞回卡内 1 failure，移出即绿。
+- **R2 生成轮询**：终态只认 `succeeded/failed/cancelled`；退避 1/2/4/5s；页面不可见暂停、恢复可见立即补拍。
+  `failed` 只按 `status` 收敛并显示 `errorMessage`，**不按 `retryable` 分档**（契约裁定 `generation_jobs`
+  不提供 `error_code`/`retryable`）。
+- **端点漂移基线**补 `/api/lyria/models`（单独成提交；生成动作来源待考，内容已验证
+  「含该行 EXIT=0 零漂移 / 去掉 EXIT=1 报新增路径」）。
+- t74 多端设计对齐（登录/播放/播放全部改中性胶囊、原生 iPad、顶层歌单页签）随本版一并计入，
+  细节见下方「未发版 — 2026-11-02」条目。
+
+**门禁**（2026-11-04 干净克隆 `bash Scripts/check.sh` 实测，EXIT=0）：`CovaTests` 2 / `CovaCoreTests` 1003 /
+`CovaFeatureTests` **345**（基线 329，t74 新增 13 条 + 本批回归用例）/ `CovaPlayerTests` 483，
+覆盖率 `5920/6279 = 94.28%` 与 `3806/4000 = 95.15%`；产物保真 `cn.covalink.ios 0.3.8(110)`。
+**未覆盖**：真机扣费验收链（`CovaAcceptance` 不在门禁内）、
+维护窗口「正在更新」文案（`.isRetryable` 判 `>=500` 行为已正确，仅缺文案，裁定不做）。
+
+---
+
 ## 未发版 — 2026-11-02（t74 多端设计对齐，待 Xcode 验证）
 
 - 对齐 web v2.77.75 `7003ed8a` 实拍（`qa-evidence/t74-clients/web/`）：「登录」「播放」「播放全部」由 `.brand` 渐变改为 `.primary` 中性玻璃胶囊；
