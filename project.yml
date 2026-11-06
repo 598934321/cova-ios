@@ -28,6 +28,13 @@ settings:
 configs:
   Debug: debug
   Release: release
+  # 真机本地签名（2026-11-06 新增）。**不改 Debug/Release 一个字节**：
+  # 那两个仍是 adhoc + Manual + CODE_SIGN_IDENTITY="-"，门禁与 CI 全跑在它们上面。
+  # 本配置只用于「把包装到自己的 iPhone/iPad」——免费 Apple ID 即可（7 天有效期），
+  # 不需要付费开发者资格。用法见 docs/DEVICE-INSTALL.md。
+  # 类型取 debug ⇒ 自动带 DEBUG 编译条件，与 Debug 一致的构建行为可省去一批
+  # “只在该配置下暴露”的差异。
+  DeviceLocal: debug
 
 fileGroups:
   - README.md
@@ -241,6 +248,17 @@ targets:
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
           - "@executable_path/Frameworks"
+      # 只有「真机本地安装」这一配置走自动签名（免费 Apple ID 的个人团队）。
+      # 值全部 `$(inherited)` ⇒ 实际取值来自 Config/DeviceLocal.xcconfig，
+      # 这样 Team ID 之类的本机私有值不进版本控制，也**不会覆盖 Debug/Release**。
+      configs:
+        DeviceLocal:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "$(inherited)"
+          DEVELOPMENT_TEAM: "$(inherited)"
+          AD_HOC_CODE_SIGNING_ALLOWED: NO
+    configFiles:
+      DeviceLocal: Config/DeviceLocal.xcconfig
 
   CovaTests:
     type: bundle.unit-test

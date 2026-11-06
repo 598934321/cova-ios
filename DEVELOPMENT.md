@@ -40,7 +40,15 @@ iOS 端 v1.0 范围（已实现 → 本手册扩展的次序）：
 - SwiftUI + Swift Concurrency（Swift 6 严格并发），部署目标 **iOS 26**（原生 Liquid Glass）。
 - XcodeGen：`project.yml` 是唯一工程事实源，`*.xcodeproj` 不入 git；`Config/Info.plist`
   持 bundle id 与 `UIBackgroundModes: audio`。
-- 版本：`CFBundleShortVersionString 0.2.70` / `CFBundleVersion 87`（project.yml:117-118）。
+- 版本：`CFBundleShortVersionString 0.3.8` / `CFBundleVersion 110`（`project.yml` 的 `Cova.settings.base`）。
+- **构建配置三档 + 一档真机专用**：`Debug` / `Release` 是 **adhoc 签名**
+  （`CODE_SIGN_STYLE=Manual` + `CODE_SIGN_IDENTITY="-"` + `DEVELOPMENT_TEAM` 空），
+  **门禁与 CI 只跑这两档**（`Scripts/check.sh:106` 的 `CONFIGURATIONS="Debug Release"`）。
+  **`DeviceLocal`** 是 2026-11-06 新增的第四个配置，只用于把包装到自己的 iPhone/iPad：
+  `Automatic` + `Apple Development` + Team 取自 `Config/DeviceLocal.xcconfig`
+  （Team ID 是本机私有值；想完全不进 git 就写进 `Config/Local.xcconfig`，该文件走 `#include?` 且已在 `.gitignore`）。
+  ⇒ **改签名不要去动 Debug/Release**，那等于换门禁的尺子。真机安装全流程见 `docs/DEVICE-INSTALL.md`
+  （免费 Apple ID 即可，7 天有效期；**装上 ≠ 能上架**，内购与推送在个人团队下都不可用）。
 - **零第三方依赖白名单**（当前为空；新增依赖须批准并登记到 §7 决策账）。
 - 门禁：`Scripts/check.sh` 一条命令 = xcodegen 重生成 → Debug 构建 → 全量 XCTest
   （CovaTests / CovaCoreTests / CovaPlayerTests）+ 覆盖率阈值（核心层与播放层各 ≥94%

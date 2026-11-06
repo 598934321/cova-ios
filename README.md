@@ -22,6 +22,7 @@ D1/D12 已获用户批准。G1 起的设计/UI 代码须待 Figma 方向稿验�
 | `docs/api-contracts.md` | 后端 HTTP API 契约参考（端点 + 数据模型字段） |
 | `docs/design-language.md` | iOS 27 Liquid Glass × Cova 品牌设计语言映射 |
 | `docs/release-runbook.md` | 发布门：构建门禁 → TestFlight → App Store |
+| `docs/DEVICE-INSTALL.md` | **装到自己手机上**（真机测试）：`DeviceLocal` 配置、免费 Apple ID（不需付费资格）、7 天续期、常见错误 |
 | `design/README.md` | 设计工作流（Figma 闸门 G1/G2 操作方式） |
 | `design/tokens.json` | 设计 token 单一事实源（Figma Variables / Swift 双端消费，深浅双主题） |
 | `design/screens/` | 屏幕规格：`01-home` / `02-player` / `03-library` 为 G1 详稿，`inventory.md` 为全屏清单 |

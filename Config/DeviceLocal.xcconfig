@@ -1,0 +1,28 @@
+// 真机本地签名配置（DeviceLocal）—— 见 docs/DEVICE-INSTALL.md
+//
+// 用途：把 Cova 装到**你自己名下的 iPhone / iPad**上做真机测试。
+// 免费 Apple ID 就够（7 天有效），不需要付费开发者资格。
+//
+// ⚠️ 这个文件不参与门禁与 CI。`Scripts/check.sh` 的 CONFIGURATIONS 只有
+//    `Debug Release`（两个都是 adhoc、Manual、CODE_SIGN_IDENTITY="-"），
+//    DeviceLocal 是**第四个独立配置**，只给本机真机安装用。
+//
+// 用法：把下面 DEVELOPMENT_TEAM 填成你的 Team ID（10 位，Xcode 里能看到），
+// 或更省事 —— 在 Xcode 里选中 Cova target → Signing & Capabilities →
+// 勾 Automatically manage signing → 选你的 Personal Team，Xcode 会把 Team
+// 写进 xcuserdata；但用命令行装的时候，用下面这种方式最稳（可复现）。
+
+// 你的 Apple 开发者 Team ID（免费账号也有，形如 AB12CD34EF）。
+// 想知道自己的：Xcode → Settings → Accounts → 选中你的 Apple ID →
+// 右侧「Team ID」列；或 `security find-identity -v -p codesigning` 看证书名括号里的那串。
+DEVELOPMENT_TEAM =
+
+// 免费 Apple ID 会被 Apple 分配一个「个人团队」前缀，Bundle ID 撞上别人的付费
+// 注册名时会签名失败。若遇到 “Failed to register bundle identifier”，把下面
+// 这行取消注释并改成独有值（例如 cn.covalink.ios.yourname）。
+// 注意：改这里只影响 DeviceLocal，不影响 Debug/Release 的 cn.covalink.ios。
+// PRODUCT_BUNDLE_IDENTIFIER = cn.covalink.ios.devicelocal
+
+// 可选：本机私有覆盖（gitignore，不随仓库分发）。
+// 放你的 Team ID、别人的设备 UDID 等只属于这台机器的值。
+#include? "Local.xcconfig"

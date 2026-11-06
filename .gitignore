@@ -17,3 +17,7 @@ Package.resolved
 
 # CocoaPods（本项目不使用，预留）
 Pods/
+
+# 真机本地签名（2026-11-06）：本机私有的 Team ID / 设备 UDID，不随仓库分发。
+# 模板见 Config/DeviceLocal.xcconfig（入库，只含说明与空值）。
+Local.xcconfig
