@@ -7,6 +7,39 @@
 
 ---
 
+## 0.3.9 (111) — 2026-11-06
+
+两处 UI 修复（用户实机看过 iPad 版后提的两个问题）。**不动结构，只改位置与节奏。**
+
+- **iPad 侧栏默认回到左侧**：用户原话「边栏为什么默认在顶上……边栏一般还是放在左侧」。
+  根因是 `.tabViewStyle(.sidebarAdaptable)` 只声明「可侧栏/可顶栏」，**默认落哪边由系统按宽度自己决定** ——
+  iPad 竖屏时系统收成了顶栏（6 格横排）。修法：显式加 `.defaultAdaptableTabBarPlacement(.sidebar)`
+  钉死默认 = 左侧栏（iOS 18+ API，部署目标 26.0，无需 `#available`；全仓此前 0 命中）。
+  竖屏是**浮层**形态（默认收起、点开覆盖），与 Apple Music 一致——**用户已确认接受浮层**，
+  不改成 `NavigationSplitView`。
+- **歌单页信息密度**：用户原话「歌单页看起来信息太密集了」，要求对齐新版 Apple Music。
+  原值是组内 `CovaSpace.xs`=4 / 组间 `CovaSpace.lg`=16，卡片内部的留白节奏与卡片之间几乎一样
+  ⇒ 眼睛看到的是一片连续文字块。改三处数值（**不动全局 token**，理由见下）：
+  - 卡片内 `VStack` spacing 4 → **6**
+  - 网格 `LazyVGrid` spacing 16 → **24**
+  - 标题 `lineLimit` 2 → **1**（Apple Music 就是单行，超出省略）
+
+  **为什么不改 `CovaSpace.xs/lg`**：这两个 token 被全站大量引用，改 token 值会波及每一个用它的页面，
+  那是「顺手优化全站」而不是修这一屏。节奏值就近定义在 `PlaylistsPlazaView` 内的
+  `private enum CardRhythm { intraCard = 6, interCard = 24 }`——私有、不可实例化，
+  只有这一屏能用，别人捡不走也波及不到别处。
+
+  像素量测（iPad 竖屏 @2x，改前 → 改后）：文字块高 64.5 → 50.5pt（标题少一行）、
+  末行文字→下一封面间距 18.5 → 26.5pt（组间 16→24）、卡片节距 232.0 → 226.0pt。
+
+**门禁**：`CovaTests` 2 / `CovaCoreTests` 1003 / `CovaFeatureTests` 345 / `CovaPlayerTests` 483，
+覆盖率 5920/6279 = 94.28% 与 3806/4000 = 95.15%，`EXIT=0`。
+
+**未覆盖**：iPad 分屏（Split View / Slide Over）未实测——`defaultAdaptableTabBarPlacement` 在 compact 宽下
+会不会影响底栏，**没跑过就不能说成立**；深色模式与 AX 动态字号档同样未验；全部为模拟器，无真机。
+
+---
+
 ## 0.3.8 (110) — 2026-11-04
 
 本轮把 2026-10-30 起累积的三批（契约追平 / 死锁修复 / t74 设计对齐）收进同一版本锚点。

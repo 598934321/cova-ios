@@ -10,6 +10,23 @@ import UserNotifications
 /// 契约事实：`GET /api/playlists` **一次给全量、没有分页字段** ⇒ 本屏不发明 `?scene=`/`?page=`，
 /// 分类切换是**本地过滤**（不重骨架，快交叉淡入）。
 public struct PlaylistsPlazaView: View {
+    /// 歌单卡的「组内 / 组间」节奏（2026-11-06 用户反馈「歌单页看起来信息太密集」）。
+    ///
+    /// **为什么不用全局 token**：`CovaSpace.xs/lg` 被全站大量引用，直接改 token 值会波及
+    /// 每一个用它的页面——那是「顺手优化全站」而不是修这一屏。所以节奏值就近定义在本视图内：
+    /// 命名清楚、只有这一屏能用，别人捡不走也波及不到别处。
+    ///
+    /// **为什么是 6 / 24**：原值是组内 `xs=4` + 组间 `lg=16`，**只差 4 倍**（4 : 16），
+    /// 眼睛看到的是「一片连续文字块」——因为卡片内部的留白节奏和卡片之间几乎一样。
+    /// Apple Music 是组内 6–8、组间 24–32（**3–4 倍**）。这里取 6 / 24 = **4 倍**，
+    /// 落在 Apple Music 的比例区间内。
+    private enum CardRhythm {
+        /// 卡内：封面 → 标题 → 元信息。原 `CovaSpace.xs`(4)。
+        static let intraCard: CGFloat = 6
+        /// 卡间（LazyVGrid 行距/列距）。原 `CovaSpace.lg`(16)。
+        static let interCard: CGFloat = 24
+    }
+
     /// 05 §Dynamic Type：AX 档下网格由 2 列降为 1 列（卡宽 = 屏宽 − 2×页边距）。
     @Environment(\.covaAXLayout) private var axLayout
     /// t74 iPad：regular 宽 3 列（web 768 宽歌单网格 3 列）。
@@ -178,7 +195,7 @@ public struct PlaylistsPlazaView: View {
             LazyVGrid(
                 columns: CovaAdaptiveLayout.cardColumns(
                     isRegularWidth: sizeClass == .regular, axLayout: axLayout, spacing: CovaSpace.md),
-                spacing: CovaSpace.lg
+                spacing: CardRhythm.interCard
             ) {
                 ForEach(Array(shown.enumerated()), id: \.element.playlist.id) { _, pick in
                     pickCard(pick)
@@ -227,7 +244,7 @@ public struct PlaylistsPlazaView: View {
                 LazyVGrid(
                     columns: CovaAdaptiveLayout.cardColumns(
                         isRegularWidth: sizeClass == .regular, axLayout: axLayout, spacing: CovaSpace.md),
-                    spacing: CovaSpace.lg
+                    spacing: CardRhythm.interCard
                 ) {
                     ForEach(shown, id: \.id) { playlist in
                         card(playlist)
@@ -286,7 +303,7 @@ public struct PlaylistsPlazaView: View {
 
     @ViewBuilder
     private func cardBody(_ playlist: PlaylistDto) -> some View {
-        VStack(alignment: .leading, spacing: CovaSpace.xs) {
+        VStack(alignment: .leading, spacing: CardRhythm.intraCard) {
                 ZStack(alignment: .topTrailing) {
                     // t84（模拟器实测）：封面是 scaledToFill，直接挂 aspectRatio 时图片按自身尺寸撑大，
                     // 卡片越出网格列、互相压住 ⇒ 先用透明占位钉死 16:10 的格子，封面只做 overlay 再裁切。
@@ -313,7 +330,9 @@ public struct PlaylistsPlazaView: View {
                 }
                 Text(playlist.titleCn ?? playlist.title)
                     .font(CovaType.callout).foregroundStyle(CovaColor.fg)
-                    .lineLimit(2)
+                    // 2026-11-06：2 → 1 行（Apple Music 就是单行，超出省略）。
+                    // 两行标题在 iPad 3 列下会把卡高撑得参差不齐，「密」的感觉一半来自这里。
+                    .lineLimit(1)
                     .multilineTextAlignment(.leading)
                 Text(meta(playlist))
                     .font(CovaType.caption).foregroundStyle(CovaColor.secondary)

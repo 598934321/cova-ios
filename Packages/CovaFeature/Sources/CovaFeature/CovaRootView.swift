@@ -228,6 +228,12 @@ public struct CovaRootView: View {
         // t74 iPad：web 768 宽的导航是可收起侧栏 ⇒ `.sidebarAdaptable`
         // （iPad regular 宽 = 侧栏/顶部页签可切换；iPhone 与 iPad 分屏窄栏 = 原底栏，观感不变）。
         .tabViewStyle(.sidebarAdaptable)
+        // 2026-11-06 用户反馈「边栏为什么默认在顶上，边栏一般还是放在左侧」：
+        // `.sidebarAdaptable` 只说明「可侧栏/可顶栏」，**默认落哪边由系统按宽度自己决定** ——
+        // iPad 竖屏时系统收成了顶栏（6 格横排）。这里显式钉死默认 = 左侧栏。
+        // iOS 18+ API（部署目标 26.0，无需 #available）；iPhone 上系统没有侧栏形态，
+        // 实测仍走底栏（见本批 §固定证据）。
+        .defaultAdaptableTabBarPlacement(.sidebar)
         // iPad 分屏从 regular 收窄到 compact 时搜索格会被隐藏：正停在搜索页签就落回曲库栈内的搜索屏，
         // 不让 selection 指向一个看不见的页签。
         .onChange(of: hSizeClass) { _, newValue in
