@@ -297,6 +297,20 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: cn.covalink.ios.acceptance-tests
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Cova
+      # 真机跑 XCUITest（093 AC-2 分屏验收）也必须自动签名，否则
+      # `build-for-testing` 报 "Signing for CovaAcceptanceTests requires a development team"。
+      # 与 Cova 的 DeviceLocal 同源：Team 取自 Config/DeviceLocal.xcconfig（本机私有，gitignore）。
+      # **Debug/Release 不受影响**（门禁与 CI 只跑那两档，仍是 adhoc）。
+      configs:
+        DeviceLocal:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "$(inherited)"
+          DEVELOPMENT_TEAM: "$(inherited)"
+          AD_HOC_CODE_SIGNING_ALLOWED: NO
+    # Team 值在 DeviceLocal.xcconfig 里（本机私有）。不挂这一行，上面的
+    # `$(inherited)` 取不到 TEAM ⇒ 报 "requires a development team"。
+    configFiles:
+      DeviceLocal: Config/DeviceLocal.xcconfig
 
 schemes:
   Cova:

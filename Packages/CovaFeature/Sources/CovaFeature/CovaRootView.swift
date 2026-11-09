@@ -261,6 +261,9 @@ public struct CovaRootView: View {
                 }
             }
         }
+        // 093 AC-2 的 sizeClass 探针**不在这里**：CovaFeature 是 SPM 包，
+        // `-DDEBUG` 只传给 App target（`-module-name Cova`），包内 `#if DEBUG` 恒为假。
+        // 探针改挂在 App 壳 `Cova/CovaApp.swift`（那里 DEBUG 生效）。
         .sheet(isPresented: Binding(
             get: { Self.playerSheetPresentable(
                 wantsOpen: session.playerSheetOpen,

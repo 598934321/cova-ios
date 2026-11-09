@@ -35,6 +35,9 @@ struct CovaApp: App {
                     CovaRootView()
                 }
             }
+            #if DEBUG
+            .modifier(TraitProbe())
+            #endif
         }
     }
 }
@@ -52,3 +55,37 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 }
+
+
+/// 093 AC-2 验收钩子（**仅 DEBUG**）：
+/// 把真实的 `horizontalSizeClass` 以 1×1 隐形元素的 accessibilityValue 暴露给 XCUITest。
+///
+/// **为什么挂在 App 壳而不是 CovaFeature**：CovaFeature 是本地 SPM 包，
+/// `-DDEBUG` 只传给 App target（`-module-name Cova`），包内 `#if DEBUG` 恒为假
+/// ⇒ 探针会被静默丢弃（实测：`.o` 里无该符号）。App 壳里 DEBUG 生效。
+///
+/// 边界：1×1、`allowsHitTesting(false)`、不参与布局；Release 构建不含此 modifier。
+#if DEBUG
+private struct TraitProbe: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .topLeading) {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityIdentifier("cova-trait-probe")
+                .accessibilityValue(Self.value(hSizeClass))
+                .allowsHitTesting(false)
+        }
+    }
+
+    private static func value(_ sizeClass: UserInterfaceSizeClass?) -> String {
+        switch sizeClass {
+        case .regular: return "hRegular"
+        case .compact: return "hCompact"
+        default: return "hUnspecified"
+        }
+    }
+}
+#endif
