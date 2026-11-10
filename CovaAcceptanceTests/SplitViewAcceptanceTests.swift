@@ -46,6 +46,36 @@ import XCTest
 ///     }
 /// }
 /// ```
+/// `CovaAdaptiveLayout.resolvedCardColumnCount(isRegularWidth:axLayout:containerWidth:spacing:)`
+/// 的**逐字复刻**（COVA-20261111-111 引入）。同样因为 UITest 不能 `@testable import CovaFeature`。
+///
+/// 源实现原文（`AdaptiveLayout.swift`，0540b49 起）：
+/// ```
+/// let limit = cardColumnLimit(isRegularWidth:axLayout:)        // 旧四象限
+/// guard isRegularWidth else { return limit }                   // compact 不反推
+/// return cardColumnCount(containerWidth:minCardWidth:spacing:maxColumns: limit)
+/// ```
+/// `minCardWidth = 280`，`spacing = CovaSpace.md = 12`。
+///
+/// **这才是 111 之后应当期望的值**；`expectedCardColumnCount` 是改前的旧口径，
+/// 只能用于「compact 不反推」这条护栏的对照。
+private let minCardWidth: CGFloat = 280
+private let cardSpacing: CGFloat = 12
+
+private func expectedResolvedColumnCount(
+    isRegularWidth: Bool, axLayout: Bool, windowWidth: CGFloat
+) -> Int {
+    let limit = expectedCardColumnCount(isRegularWidth: isRegularWidth, axLayout: axLayout)
+    guard isRegularWidth else { return limit }          // compact 直接返回上限
+    let container = windowWidth - 2 * 20                // 扣 pageGutter
+    guard container.isFinite, container > 0 else { return 1 }
+    for n in stride(from: limit, through: 1, by: -1) {
+        let needed = CGFloat(n) * minCardWidth + CGFloat(n - 1) * cardSpacing
+        if needed <= container { return n }
+    }
+    return 1
+}
+
 private func expectedCardColumnCount(isRegularWidth: Bool, axLayout: Bool) -> Int {
     switch (isRegularWidth, axLayout) {
     case (false, false): return 2
@@ -111,11 +141,13 @@ final class SplitViewAcceptanceTests: XCTestCase {
         // 基线必须是 full screen：宽度应接近整屏（正屏 iPad 13" 竖屏 1024pt / 横屏 1366pt）
         XCTAssertGreaterThan(window.width, 700, "基线不是全屏宽度，设备可能已在分屏态")
 
-        // 列数硬断言：期望值由纯函数算出，与实测比
-        let expected = expectedCardColumnCount(
-            isRegularWidth: trait.isRegular, axLayout: currentAXLayout())
+        // 列数硬断言：期望值由**宽度反推**算出（111 之后的口径），与实测比
+        let expected = expectedResolvedColumnCount(
+            isRegularWidth: trait.isRegular, axLayout: currentAXLayout(),
+            windowWidth: window.width)
+        print("[split] baseline 期望列数(按宽度反推)=\(expected)")
         XCTAssertEqual(columns, expected,
-                       "基线列数与 cardColumnCount 期望不符（期望 \(expected) 实测 \(columns)）")
+                       "基线列数与宽度反推期望不符（期望 \(expected) 实测 \(columns)）")
     }
 
     // MARK: - 只读模式（人手动分屏，Bot 只读数）
@@ -138,8 +170,9 @@ final class SplitViewAcceptanceTests: XCTestCase {
         let window = app.windows.firstMatch.frame
         let trait = readSizeClass()
         let columns = countGridColumns()
-        let expected = expectedCardColumnCount(
-            isRegularWidth: trait.isRegular, axLayout: currentAXLayout())
+        let expected = expectedResolvedColumnCount(
+            isRegularWidth: trait.isRegular, axLayout: currentAXLayout(),
+            windowWidth: window.width)
 
         print("[split] READONLY window=\(Int(window.width))x\(Int(window.height))pt")
         print("[split] READONLY sizeClass(实测)=\(trait.raw)")
@@ -336,8 +369,9 @@ final class SplitViewAcceptanceTests: XCTestCase {
               + "sizeClass \(beforeTrait.raw)→\(afterTrait.raw))")
 
         // ⑥ 期望值来自纯函数，与实测硬比
-        let expectedColumns = expectedCardColumnCount(
-            isRegularWidth: afterTrait.isRegular, axLayout: currentAXLayout())
+        let expectedColumns = expectedResolvedColumnCount(
+            isRegularWidth: afterTrait.isRegular, axLayout: currentAXLayout(),
+            windowWidth: afterWindow.width)
         print("[split] \(fraction) cardColumnCount 期望=\(expectedColumns) 实测=\(afterColumns)")
 
         switch form {
@@ -451,6 +485,28 @@ final class SplitViewAcceptanceTests: XCTestCase {
                 "复刻表 (reg=\(row.reg), ax=\(row.ax)) 与源实现不符")
         }
         print("[split] 守卫：复刻表四象限与 AdaptiveLayout.swift:18-25 一致 ✅")
+
+        // 111 的宽度反推复刻：用源实现的已知输出做对照
+        //   795pt 分屏 → 容器 755 → 2 列
+        //   1600pt 全屏 → 容器 1560 → 3 列
+        //   834pt 竖屏 → 容器 794 → 2 列
+        //   402pt iPhone（compact）→ 不反推 → 2 列
+        let cases: [(w: CGFloat, reg: Bool, ax: Bool, expect: Int, why: String)] = [
+            (795,  true,  false, 2, "1/2 分屏 3 列需 864 > 755"),
+            (1600, true,  false, 3, "全屏 3 列需 864 ≤ 1560"),
+            (834,  true,  false, 2, "竖屏 3 列需 864 > 794"),
+            (402,  false, false, 2, "compact 不反推，保持 2 列"),
+            (402,  false, true,  1, "compact + AX 保持 1 列"),
+            (1600, true,  true,  2, "AX 上限 2，容器再宽不超"),
+        ]
+        for c in cases {
+            XCTAssertEqual(
+                expectedResolvedColumnCount(
+                    isRegularWidth: c.reg, axLayout: c.ax, windowWidth: c.w),
+                c.expect,
+                "宽度反推复刻在 (\(c.w)pt, reg=\(c.reg), ax=\(c.ax)) 不符：\(c.why)")
+        }
+        print("[split] 守卫：宽度反推复刻 6 条场景与源实现一致 ✅")
     }
 
     // MARK: - 实测取值
