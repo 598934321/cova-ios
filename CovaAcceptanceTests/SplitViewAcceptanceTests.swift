@@ -107,6 +107,72 @@ final class SplitViewAcceptanceTests: XCTestCase {
                        "基线列数与 cardColumnCount 期望不符（期望 \(expected) 实测 \(columns)）")
     }
 
+    // MARK: - 只读模式（人手动分屏，Bot 只读数）
+
+    /// **只读版**：不拖拽，只读当前已处于分屏态的实测值。
+    ///
+    /// 背景（面面 2026-11-10 裁决）：
+    /// - XCUITest 的 `press(forDuration:thenDragTo:)` 一次性拖拽**无法触发 iPadOS 分屏**
+    ///   （真机两次实测均 NotSplit，窗口 1600→1600pt 不变；判断是缺「拖出 Dock → 悬停边缘 →
+    ///     边缘高亮 → 松手」的时序）
+    /// - 093 单 AC-2 原文禁的是「模拟器 / 推断 / 代码里写着应该有 N 列」，
+    ///   **没有禁「人手动分屏 + Bot 读数」**
+    /// - ⇒ 分屏动作由人完成，App 侧读数（sizeClass / 列数 / 截图）由本测试自动采集。
+    ///   **必须在报告里写明「分屏动作由人完成」，不能写成「全自动验收」。**
+    ///
+    /// 前置：用户已在真机上把 Cova 置于 Split View 且保持该状态。
+    func test10_ReadOnlySplitState() throws {
+        attachScreen(name: "10-readonly-split")
+
+        let window = app.windows.firstMatch.frame
+        let trait = readSizeClass()
+        let columns = countGridColumns()
+        let expected = expectedCardColumnCount(
+            isRegularWidth: trait.isRegular, axLayout: currentAXLayout())
+
+        print("[split] READONLY window=\(Int(window.width))x\(Int(window.height))pt")
+        print("[split] READONLY sizeClass(实测)=\(trait.raw)")
+        print("[split] READONLY cardColumnCount(实测)=\(columns) 期望=\(expected)")
+
+        // ── 分屏形态判据（2026-11-10 修正）──
+        //
+        // **只看「宽度 < 全屏」是错的**：iPadOS 的「浮动窗口 / 缩放窗口」也是变窄，
+        // 但它是**等比缩放**（1600x1200 → 1390x1045，宽高比 0.869/0.871 几乎相同）。
+        // 真 Split View 是「**只缩宽、高度不变**」（1600x1200 → 约 800x1200）。
+        //
+        // 判据：宽高比下降幅度之差 > 0.10 ⇒ 只有宽度变 ⇒ Split View
+        //       两者接近（差 < 0.05）⇒ 等比缩放 ⇒ 浮动/缩放窗口，不是 Split View
+        let fullW: CGFloat = 1600, fullH: CGFloat = 1200   // 真机全屏基线（本批实测）
+        let wRatio = window.width / fullW
+        let hRatio = window.height / fullH
+        let diverge = hRatio - wRatio
+        print("[split] READONLY 宽度比=\(String(format: "%.3f", wRatio)) "
+              + "高度比=\(String(format: "%.3f", hRatio)) 差=\(String(format: "%.3f", diverge))")
+
+        let isSplitView = wRatio < 0.95 && diverge > 0.10
+        let isFloating = wRatio < 0.95 && abs(diverge) <= 0.05
+        print("[split] READONLY 形态判定: isSplitView=\(isSplitView) isFloating=\(isFloating)")
+
+        if !isSplitView {
+            recordCoverage("readonly", isFloating ? .notApplicable : .notCovered)
+            let why = isFloating
+                ? "等比例缩放 ⇒ 浮动/缩放窗口，不是 Split View（该形态不能证明分屏改变 sizeClass）"
+                : "既不是 Split View 也不是浮动窗口（宽度未变）"
+            XCTFail("READONLY：\(why)。实测 \(Int(window.width))x\(Int(window.height))pt，"
+                    + "宽度比 \(String(format: "%.3f", wRatio)) 高度比 \(String(format: "%.3f", hRatio))")
+            return
+        }
+
+        // 分屏态下：列数必须等于按**实测** sizeClass 算出的期望
+        XCTAssertEqual(columns, expected,
+                       "READONLY cardColumnCount 实测 \(columns) ≠ 期望 \(expected)"
+                       + "（sizeClass=\(trait.raw)）")
+        XCTAssertNotEqual(trait.raw, "hUnspecified", "READONLY：sizeClass 读不到真实值")
+
+        recordCoverage("readonly", .covered)
+        print("[split] READONLY ⇒ AC-2 实质判据已验（分屏动作由人完成，读数由测试自动采集）")
+    }
+
     // MARK: - 1/2 分屏
 
     func test01_HalfSplit() throws {
