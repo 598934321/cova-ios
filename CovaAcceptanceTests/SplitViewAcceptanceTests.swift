@@ -97,6 +97,17 @@ final class SplitViewAcceptanceTests: XCTestCase {
         print("[split] baseline sizeClass(实测)=\(trait.raw)")
         print("[split] baseline cardColumnCount(实测)=\(columns)")
 
+        // 【P1 复现】窄栏里卡片实际宽度（证明是否被挤扁）
+        let widths = measureCardWidths()
+        if let mn = widths.min(), let mx = widths.max() {
+            print("[split] baseline 卡片宽度 min=\(String(format: "%.1f", mn))pt "
+                  + "max=\(String(format: "%.1f", mx))pt 共 \(widths.count) 张")
+            let per3 = (window.width - 2 * 20 - 2 * 12) / 3
+            let per2 = (window.width - 2 * 20 - 1 * 12) / 2
+            print("[split] baseline 若 3 列 ≈\(String(format: "%.1f", per3))pt/卡；"
+                  + "若 2 列 ≈\(String(format: "%.1f", per2))pt/卡")
+        }
+
         // 基线必须是 full screen：宽度应接近整屏（正屏 iPad 13" 竖屏 1024pt / 横屏 1366pt）
         XCTAssertGreaterThan(window.width, 700, "基线不是全屏宽度，设备可能已在分屏态")
 
@@ -148,6 +159,18 @@ final class SplitViewAcceptanceTests: XCTestCase {
         let diverge = hRatio - wRatio
         print("[split] READONLY 宽度比=\(String(format: "%.3f", wRatio)) "
               + "高度比=\(String(format: "%.3f", hRatio)) 差=\(String(format: "%.3f", diverge))")
+
+        // 【P1 复现】实测卡片宽度 —— 证明窄栏里 3 列是否过挤
+        let cardWidths = measureCardWidths()
+        if let minW = cardWidths.min(), let maxW = cardWidths.max() {
+            print("[split] READONLY 卡片宽度 实测 min=\(String(format: "%.1f", minW))pt "
+                  + "max=\(String(format: "%.1f", maxW))pt 共 \(cardWidths.count) 张")
+            let expected3col = (window.width - 2 * 20 - 2 * 12) / 3
+            print("[split] READONLY 若按 3 列算，每卡应约 "
+                  + "\(String(format: "%.1f", expected3col))pt")
+        } else {
+            print("[split] READONLY 卡片宽度 实测=无（未找到卡片元素）")
+        }
 
         let isSplitView = wRatio < 0.95 && diverge > 0.10
         let isFloating = wRatio < 0.95 && abs(diverge) <= 0.05
@@ -472,6 +495,22 @@ final class SplitViewAcceptanceTests: XCTestCase {
     /// 4. 返回所有行里最多的列数
     ///
     /// 歌单卡实测尺寸参考：iPad 竖屏 3 列时每张约 256×188pt（见 2026-11-06 量测）。
+    /// 实测可见卡片的宽度（用于证明「窄栏里 N 列是否过挤」）。
+    /// 判据与 `countGridColumns` 一致：只算卡片尺寸的元素，排除整屏横条。
+    @MainActor
+    private func measureCardWidths() -> [CGFloat] {
+        let winW = app.windows.firstMatch.frame.width
+        var out: [CGFloat] = []
+        for b in app.buttons.allElementsBoundByIndex {
+            guard b.exists else { continue }
+            let f = b.frame
+            guard f.width >= 120, f.height >= 120 else { continue }
+            guard f.width < winW * 0.9 else { continue }
+            out.append(f.width)
+        }
+        return out
+    }
+
     @MainActor
     private func countGridColumns() -> Int {
         struct Box { let x: CGFloat; let w: CGFloat; let y: CGFloat }

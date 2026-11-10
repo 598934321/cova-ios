@@ -44,6 +44,10 @@ public struct PlaylistsPlazaView: View {
     @State private var scene: String?
     /// `plazaSearch(q)` 路由带入的检索词（05 §1，2026-10-02）：回显行 + 网格本地过滤。
     @State private var activeQuery: String?
+    /// 网格容器的实测宽度（COVA-20261111-111：卡片列数按宽度反推，不能只看 sizeClass）。
+    /// 初值 0 = 尚未布局，此时回落 `resolvedCardColumnCount(containerWidth: 0)` 会给 1 列，
+    /// 所以下面用 `guard measuredWidth > 0` 兜底，未测到时按 sizeClass 上限排，不闪。
+    @State private var gridWidth: CGFloat = 0
 
     private enum Phase: Equatable { case loading, ready, failed(CatalogFailure) }
 
@@ -190,11 +194,31 @@ public struct PlaylistsPlazaView: View {
         }
     }
 
+    /// 卡片网格列数：既有四象限上限 + **容器实测宽度**反推（取较小值）。
+    ///
+    /// COVA-20261111-111：用户实测 iPad 1/2 分屏后「单纯拉伸」——
+    /// 795pt 栏里仍按 `sizeClass == .regular` 排 3 列，每卡仅约 244pt。
+    /// 修法：`resolvedCardColumnCount` 按宽度收列（795pt ⇒ 2 列）。
+    private var gridColumns: [GridItem] {
+        let count: Int
+        if gridWidth > 0 {
+            count = CovaAdaptiveLayout.resolvedCardColumnCount(
+                isRegularWidth: sizeClass == .regular,
+                axLayout: axLayout,
+                containerWidth: gridWidth - 2 * CovaSpace.pageGutter,
+                spacing: CovaSpace.md)
+        } else {
+            // 尚未测到宽度：按 sizeClass 上限排，避免首帧闪成 1 列
+            count = CovaAdaptiveLayout.cardColumnLimit(
+                isRegularWidth: sizeClass == .regular, axLayout: axLayout)
+        }
+        return Array(repeating: GridItem(.flexible(), spacing: CovaSpace.md), count: count)
+    }
+
     private func pickGridList(_ shown: [PlaylistPickDto]) -> some View {
         ScrollView {
             LazyVGrid(
-                columns: CovaAdaptiveLayout.cardColumns(
-                    isRegularWidth: sizeClass == .regular, axLayout: axLayout, spacing: CovaSpace.md),
+                columns: gridColumns,
                 spacing: CardRhythm.interCard
             ) {
                 ForEach(Array(shown.enumerated()), id: \.element.playlist.id) { _, pick in
@@ -207,6 +231,11 @@ public struct PlaylistsPlazaView: View {
                 .font(CovaType.caption).foregroundStyle(CovaColor.muted)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, CovaSpace.lg)
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            gridWidth = width
         }
     }
 
@@ -242,8 +271,7 @@ public struct PlaylistsPlazaView: View {
         } else {
             ScrollView {
                 LazyVGrid(
-                    columns: CovaAdaptiveLayout.cardColumns(
-                        isRegularWidth: sizeClass == .regular, axLayout: axLayout, spacing: CovaSpace.md),
+                    columns: gridColumns,
                     spacing: CardRhythm.interCard
                 ) {
                     ForEach(shown, id: \.id) { playlist in
@@ -256,6 +284,11 @@ public struct PlaylistsPlazaView: View {
                     .font(CovaType.caption).foregroundStyle(CovaColor.muted)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, CovaSpace.lg)
+            }
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                gridWidth = width
             }
             .animation(.easeOut(duration: 0.18), value: scene)
         }
