@@ -205,12 +205,25 @@ final class SplitViewAcceptanceTests: XCTestCase {
             XCTFail("\(fraction)：SpringBoard 里找不到可拖的 App 图标（Dock 没唤出）")
             return
         }
-        // 拖 Dock 里最靠右的图标（避免拖到 App资源库那种特殊项）。
-        let dragged = dockBand.max(by: { $0.frame.minX < $1.frame.minX }) ?? dockBand[0]
+        // 拖拽目标必须是一个**真 App**：
+        // `AppLibrary`（App资源库）不是 App，拖它只会打开资源库、不会产生 Split View
+        // —— 2026-11-10 首次真机运行就因此把 1/2 拖成了 NotSplit。
+        let candidates = dockBand.filter { ic in
+            let id = ic.identifier
+            return id != "AppLibrary" && !id.isEmpty
+        }
+        guard let dragged = candidates.first else {
+            XCTFail("\(fraction)：Dock 带里没有可拖的真 App（只有 App资源库）")
+            return
+        }
         print("[split] \(fraction) 拖拽目标: \(dragged.identifier) "
               + "frame=\(Int(dragged.frame.minX)),\(Int(dragged.frame.minY))")
         let start = dragged.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        let target = sbWin.coordinate(withNormalizedOffset: CGVector(dx: dockDragToXRatio, dy: 0.5))
+        // Split View 的手势是「拖到屏幕**边缘**」触发吸附，不是拖到比例位置。
+        // iPadOS 支持的比例是 1/2、2/3、3/4（没有 1/3）⇒ 1/3 这条本身可能不存在，
+        // 仍按边缘拖（拖到左侧 2%），跑出来的形态如实记。
+        let edgeX: CGFloat = 0.02
+        let target = sbWin.coordinate(withNormalizedOffset: CGVector(dx: edgeX, dy: 0.5))
         start.press(forDuration: 0.6, thenDragTo: target, withVelocity: .default, thenHoldForDuration: 1.5)
         Thread.sleep(forTimeInterval: 3.0)
 
