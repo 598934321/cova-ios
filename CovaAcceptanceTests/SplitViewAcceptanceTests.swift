@@ -187,15 +187,28 @@ final class SplitViewAcceptanceTests: XCTestCase {
         attachScreen(name: "\(fraction)-01-dock-shown")
 
         // ② Dock 图标拖到目标边缘：SpringBoard 的 Dock 里取第一个 app 图标
-        let dockIcons = springboard.icons.matching(identifier: "AppIcon")
-        let iconCount = dockIcons.count
-        print("[split] \(fraction) Dock/桌面可见图标数=\(iconCount)")
-
+        // Dock 图标的选取：**不能用 `identifier == "AppIcon"`** ——
+        // 实测 iPadOS 26.5 模拟器上 Dock 图标的 identifier 是**应用本地化名**
+        // （`信息` / `Safari浏览器` / `Cova` …），`matching(identifier: "AppIcon")` 恒为 0。
+        // 正确做法：按 y 坐标取「Dock 带」（屏幕底部约 92%–96%）里的图标。
+        let sbH = sbFrame.height
+        let dockBand = springboard.icons.allElementsBoundByIndex.filter { ic in
+            let f = ic.frame
+            guard f.width > 40, f.height > 40 else { return false }
+            let ry = f.midY / sbH
+            return ry > 0.90 && ry < 0.98
+        }
+        print("[split] \(fraction) Dock 带内图标数=\(dockBand.count) "
+              + "(总图标 \(springboard.icons.count)，按 y∈[0.90,0.98] 过滤)")
+        let iconCount = dockBand.count
         guard iconCount > 0 else {
             XCTFail("\(fraction)：SpringBoard 里找不到可拖的 App 图标（Dock 没唤出）")
             return
         }
-        let dragged = dockIcons.element(boundBy: 0)
+        // 拖 Dock 里最靠右的图标（避免拖到 App资源库那种特殊项）。
+        let dragged = dockBand.max(by: { $0.frame.minX < $1.frame.minX }) ?? dockBand[0]
+        print("[split] \(fraction) 拖拽目标: \(dragged.identifier) "
+              + "frame=\(Int(dragged.frame.minX)),\(Int(dragged.frame.minY))")
         let start = dragged.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         let target = sbWin.coordinate(withNormalizedOffset: CGVector(dx: dockDragToXRatio, dy: 0.5))
         start.press(forDuration: 0.6, thenDragTo: target, withVelocity: .default, thenHoldForDuration: 1.5)
