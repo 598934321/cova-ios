@@ -82,7 +82,43 @@ SCHEME="Cova"
 PROJECT="Cova.xcodeproj"
 PBX="$PROJECT/project.pbxproj"
 SIM_NAME="${COVA_SIM_NAME:-iPhone 17 Pro}"
-DESTINATION="platform=iOS Simulator,name=$SIM_NAME"
+# 模拟器定位用 **UDID**，不用 `name=`。
+#
+# 为什么（2026-11-19 实测）：`-destination 'platform=iOS Simulator,name=X'` 不带 OS 时
+# xcodebuild 按 "latest runtime" 解析。本机装了 iOS 26.5 与 27.2 两个 runtime，而
+# `iPhone 17 Pro` 只在 26.5 上创建 ⇒ latest(27.2) 里找不到这个名字，门禁直接红在
+# **环境**而不是代码：
+#   xcodebuild: error: Unable to find a device matching the provided destination specifier:
+#       { platform:iOS Simulator, OS:latest, name:iPhone 17 Pro }
+# 这不是「机器上没这个模拟器」，是「名字只在非 latest 的 runtime 上」。
+# 用 UDID 定位与 runtime 版本无关，两种 runtime 同时在场也不会歧义。
+#
+# 选中的规则：同名设备里取**第一个 available** 的（simctl 的顺序是 runtime 从旧到新，
+# 所以优先落在既有基线那一档）。找不到就回落到老写法，让 xcodebuild 自己报错。
+SIM_UDID="$(python3 - "$SIM_NAME" <<'PYRESOLVE'
+import json, subprocess, sys
+name = sys.argv[1]
+try:
+    raw = subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', '--json'], text=True)
+    data = json.loads(raw)
+except Exception:
+    sys.exit(1)
+for runtime in sorted(data.get('devices', {})):
+    if 'SimRuntime.iOS-' not in runtime:
+        continue
+    for dev in data['devices'][runtime]:
+        if dev.get('name') == name and dev.get('isAvailable'):
+            print(dev['udid'])
+            sys.exit(0)
+sys.exit(1)
+PYRESOLVE
+)" || SIM_UDID=""
+
+if [ -n "$SIM_UDID" ]; then
+  DESTINATION="platform=iOS Simulator,id=$SIM_UDID"
+else
+  DESTINATION="platform=iOS Simulator,name=$SIM_NAME"
+fi
 LOG_DIR="$ROOT/.build/check"
 DERIVED_DATA="$LOG_DIR/DerivedData"
 PACKAGE_DERIVED_DATA="$LOG_DIR/DerivedData-CovaCore"
@@ -417,8 +453,12 @@ assert_tests() { # label "passed failed skipped" baseline
     || fail "${label}：passed=${p} < 基线 ${baseline}（skipped 不计入，不得删除/弱化既有测试）"
 }
 
-echo "==> 0/10 预热模拟器（${SIM_NAME}）"
-xcrun simctl bootstatus "$SIM_NAME" -b >/dev/null
+echo "==> 0/10 预热模拟器（${SIM_NAME}${SIM_UDID:+ / $SIM_UDID}）"
+if [ -n "$SIM_UDID" ]; then
+  xcrun simctl bootstatus "$SIM_UDID" -b >/dev/null
+else
+  xcrun simctl bootstatus "$SIM_NAME" -b >/dev/null
+fi
 
 echo "==> 1/10 生成工程（XcodeGen $(xcodegen --version | awk '{print $NF}')）"
 xcodegen generate --spec project.yml
