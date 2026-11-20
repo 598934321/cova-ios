@@ -23,7 +23,13 @@ public struct MiniPlayerView: View {
                         .frame(width: 40, height: 40)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.title).font(CovaType.callout).foregroundStyle(CovaColor.fg).lineLimit(1)
-                        Text(statusText(snap)).font(CovaType.caption).foregroundStyle(CovaColor.secondary)
+                        // COVA-142：迷你条是常驻面（任何 tab 都可见），L1 与状态文字同行
+                        // ⇒ 条高不变。状态文字可收缩，徽标 fixedSize 不收缩。
+                        HStack(spacing: CovaSpace.xs) {
+                            Text(statusText(snap)).font(CovaType.caption).foregroundStyle(CovaColor.secondary)
+                                .lineLimit(1)
+                            AIOriginBadge(.aiGenerated)
+                        }
                     }
                     Spacer()
                     Button { Task { await session.toggle() } } label: {
@@ -165,6 +171,11 @@ public struct PlayerView: View {
                 }
             }
             Text(snap?.item?.artist ?? "").font(CovaType.callout).foregroundStyle(CovaColor.secondary).lineLimit(1)
+            // COVA-142 L2：全屏播放器是单内容界面，用整句。落点是艺人行**下方**
+            // ⇒ 不占标题行（标题+♡ 那行宽度不受影响），也不碰下方循环/歌词/分享
+            // 那三个 44pt 触控位（`PlayerViews.swift` 次级操作行，独立行）。
+            AIOriginNotice(.aiGenerated, alignment: .center)
+                .padding(.top, 2)
         }
     }
 

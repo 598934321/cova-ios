@@ -127,7 +127,10 @@ public struct FavoritesView: View {
         return CovaListRow(
             title: title(of: item),
             subtitle: subtitle(of: item),
-            artwork: CovaArtwork(url: artworkURL(of: item), title: title(of: item))
+            artwork: CovaArtwork(url: artworkURL(of: item), title: title(of: item)),
+            // COVA-142：收藏是「库曲 + 生成笔记」合并 feed，**两种都是 AI 产物**
+            // （核查报告 §1），所以一处 row() 覆盖两态，不需要按 kind 分支。
+            aiOrigin: .aiGenerated
         ) {
             if editing {
                 Image(systemName: selected.contains(item.id) ? "checkmark.circle.fill" : "circle")

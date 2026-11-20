@@ -89,7 +89,8 @@ public struct PlaylistDetailView: View {
                                 durationSeconds: Int(track.audioDuration ?? track.duration),
                                 bpm: track.bpm
                             ),
-                            artwork: CovaArtwork(resolution: PlaylistDetailArtwork.cover(track), title: track.title)
+                            artwork: CovaArtwork(resolution: PlaylistDetailArtwork.cover(track), title: track.title),
+                            aiOrigin: .aiGenerated
                         ) {
                             heartButton(track.id)
                         } action: {
@@ -510,6 +511,11 @@ public struct TrackDetailSheet: View {
                                 .font(CovaType.callout).foregroundStyle(CovaColor.secondary)
                         }
                         .buttonStyle(.plain)
+                        // COVA-142 L2：详情 sheet 是用户「决定要不要用这首」的单内容界面，
+                        // 用整句而非四字徽标。落在艺人名下方（原 VStack 第三行），
+                        // 不与标题/♡ 抢宽度。
+                        AIOriginNotice(.aiGenerated)
+                            .padding(.top, 2)
                     }
                     Spacer()
                     let on = session.favoriteIDs.contains(track.id)

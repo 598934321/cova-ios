@@ -119,9 +119,15 @@ public struct SharedPlaylistView: View {
             VStack(alignment: .leading, spacing: CovaSpace.sm) {
                 ForEach(tracks, id: \.id) { track in
                     HStack(spacing: CovaSpace.sm) {
-                        Text(track.titleCn ?? track.title)
-                            .font(CovaType.callout).foregroundStyle(CovaColor.fg)
-                            .lineLimit(2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(track.titleCn ?? track.title)
+                                .font(CovaType.callout).foregroundStyle(CovaColor.fg)
+                                .lineLimit(2)
+                            // COVA-142：分享歌单页是 web `/share/playlist/[token]` 的对应面，
+                            // 曲目会被转发到站外 ⇒ 必须标。徽标单独一行（本行只有标题+时长，
+                            // 没有副标题行可挂，塞进标题行会把长标题压得过窄）。
+                            AIOriginBadge(.aiGenerated)
+                        }
                         Spacer(minLength: CovaSpace.sm)
                         Text(clock(track.duration))
                             .font(CovaType.caption).foregroundStyle(CovaColor.secondary)

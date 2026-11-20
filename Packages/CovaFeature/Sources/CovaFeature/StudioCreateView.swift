@@ -280,11 +280,16 @@ struct StudioCreateView: View {
                                 Text(row.displayTitle ?? "未命名作品")
                                     .font(CovaType.subhead)
                                     .foregroundStyle(CovaColor.fg)
-                                Text(
-                                    row.displayDuration.map(Self.time) ?? "时长未知"
-                                )
-                                .font(CovaType.caption)
-                                .foregroundStyle(CovaColor.muted)
+                                // COVA-142：这一行决定「用哪首作品去改」，列出的是作品本体
+                                // ⇒ 属内容呈现。徽标与时长同行，不新增行。
+                                HStack(spacing: CovaSpace.xs) {
+                                    Text(
+                                        row.displayDuration.map(Self.time) ?? "时长未知"
+                                    )
+                                    .font(CovaType.caption)
+                                    .foregroundStyle(CovaColor.muted)
+                                    AIOriginBadge(.aiGenerated)
+                                }
                             }
                         }
                     }
@@ -499,7 +504,8 @@ struct StudioCreateView: View {
             subtitle: workSubtitle(work),
             artwork: CovaArtwork(
                 resolution: CovaArtworkResolution(serverValue: work.coverUrl), title: title
-            )
+            ),
+            aiOrigin: .aiGenerated
         ) {
             HStack(spacing: CovaSpace.md) {
                 Image(systemName: "play.circle")

@@ -200,16 +200,21 @@ public struct CovaListRow<Trailing: View>: View {
     /// 12a/12b/03 §Dynamic Type：AX 档下两行文本**各自**允许 2 行，行高自适应。
     @Environment(\.covaAXLayout) private var axLayout
     private let artwork: CovaArtwork?
+    /// COVA-142：非 nil 时在**副标题行尾**挂 L1 徽标。传 nil（默认）则完全不渲染，
+    /// 歌单卡/会员权益行这些非曲目内容零改动。
+    private let aiOrigin: AIOrigin?
     @ViewBuilder private let trailing: Trailing
     private let action: () -> Void
 
     public init(
         title: String, subtitle: String? = nil, artwork: CovaArtwork? = nil,
+        aiOrigin: AIOrigin? = nil,
         @ViewBuilder trailing: () -> Trailing, action: @escaping () -> Void
     ) {
         self.title = title
         self.subtitle = subtitle
         self.artwork = artwork
+        self.aiOrigin = aiOrigin
         self.trailing = trailing()
         self.action = action
     }
@@ -227,8 +232,18 @@ public struct CovaListRow<Trailing: View>: View {
                     Text(title).font(CovaType.body).foregroundStyle(CovaColor.fg)
                         .lineLimit(axLayout ? 2 : 1)
                     if let subtitle {
-                        Text(subtitle).font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
-                            .lineLimit(axLayout ? 2 : 1)
+                        // COVA-142：徽标与副标题**同一行**（不新开行 ⇒ 行高不变）。
+                        // 拥挤时先省略副标题文字，徽标 fixedSize 不收缩
+                        // （被压成「AI…」即失去标识意义）。
+                        HStack(spacing: CovaSpace.xs) {
+                            Text(subtitle).font(CovaType.subhead).foregroundStyle(CovaColor.secondary)
+                                .lineLimit(axLayout ? 2 : 1)
+                            if aiOrigin != nil { AIOriginBadge(aiOrigin) }
+                        }
+                    } else if aiOrigin != nil {
+                        // 没有副标题的行（目前只有作品行）徽标落在标题行尾，
+                        // 仍不新增行；标题 lineLimit 保持原值。
+                        AIOriginBadge(aiOrigin)
                     }
                 }
                 Spacer(minLength: CovaSpace.sm)

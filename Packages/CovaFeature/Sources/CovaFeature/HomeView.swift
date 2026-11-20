@@ -697,6 +697,16 @@ struct RecentPlayCard: View {
                             .padding(CovaSpace.xs)
                             .accessibilityHidden(true)
                     }
+                    // COVA-142：卡宽仅 140pt，徽标走封面角标（放在左下，与右上 sparkles
+                    // / 状态徽标错开），卡片高度不变。
+                    VStack {
+                        Spacer()
+                        HStack {
+                            AIOriginCoverBadge(.aiGenerated)
+                            Spacer()
+                        }
+                    }
+                    .padding(CovaSpace.xs)
                 }
                 Text(row.title)
                     .font(CovaType.subhead).foregroundStyle(CovaColor.fg)
@@ -736,10 +746,21 @@ struct HomeTrackCard: View {
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: CovaSpace.xs) {
-                CovaArtwork(resolution: HomeArtwork.cover(track), title: track.title)
-                    .frame(width: CGFloat(HomeSceneRail.cardSide), height: CGFloat(HomeSceneRail.cardSide))
-                    .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
-                    .accessibilityHidden(true)
+                ZStack(alignment: .topTrailing) {
+                    CovaArtwork(resolution: HomeArtwork.cover(track), title: track.title)
+                        .frame(width: CGFloat(HomeSceneRail.cardSide), height: CGFloat(HomeSceneRail.cardSide))
+                        .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
+                        .accessibilityHidden(true)
+                    // COVA-142：与 RecentPlayCard 同形态（封面左下角标），卡片高度不变。
+                    VStack {
+                        Spacer()
+                        HStack {
+                            AIOriginCoverBadge(.aiGenerated)
+                            Spacer()
+                        }
+                    }
+                    .padding(CovaSpace.xs)
+                }
                 Text(track.titleCn ?? track.title)
                     .font(CovaType.subhead).foregroundStyle(CovaColor.fg)
                     .lineLimit(2)
@@ -812,6 +833,15 @@ struct HomeWorkCard: View {
                             )
                             .padding(CovaSpace.xs)
                     }
+                    // COVA-142：封面左下角标（与右上状态徽标错开，互不遮挡）。
+                    VStack {
+                        Spacer()
+                        HStack {
+                            AIOriginCoverBadge(.aiGenerated)
+                            Spacer()
+                        }
+                    }
+                    .padding(CovaSpace.xs)
                 }
                 Text(row.displayTitle ?? "未命名作品")
                     .font(CovaType.subhead).foregroundStyle(CovaColor.fg)

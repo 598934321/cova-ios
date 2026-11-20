@@ -634,6 +634,9 @@ extension AISessionDetailView {
                     Text(duration).font(CovaType.mono).foregroundStyle(CovaColor.muted)
                 }
                 candidateStatusCapsule(ready: ready, failed: failed)
+                // COVA-142：复用「时长 · 状态胶囊」这一行（该行右侧原本 `Spacer(minLength:0)`
+                // 留白）⇒ 不新开行，双卡并排也不会更挤。
+                AIOriginBadge(.aiGenerated)
                 Spacer(minLength: 0)
             }
             candidateActionBar(candidate, index: index, ready: ready, terminal: terminal)

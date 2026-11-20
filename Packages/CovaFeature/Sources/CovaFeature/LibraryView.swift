@@ -289,7 +289,8 @@ public struct LibraryView: View {
                                 durationSeconds: Int(track.duration),
                                 bpm: track.bpm
                             ),
-                            artwork: CovaArtwork(resolution: LibraryArtwork.cover(track), title: track.title)
+                            artwork: CovaArtwork(resolution: LibraryArtwork.cover(track), title: track.title),
+                            aiOrigin: .aiGenerated
                         ) {
                             let on = session.favoriteIDs.contains(track.id)
                             Button {

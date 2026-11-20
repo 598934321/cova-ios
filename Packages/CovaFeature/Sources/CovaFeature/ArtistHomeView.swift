@@ -195,7 +195,8 @@ public struct ArtistHomeView: View {
                             durationSeconds: Int(track.audioDuration ?? track.duration),
                             bpm: track.bpm
                         ),
-                        artwork: CovaArtwork(resolution: ArtistHomeArtwork.cover(track), title: track.title)
+                        artwork: CovaArtwork(resolution: ArtistHomeArtwork.cover(track), title: track.title),
+                        aiOrigin: .aiGenerated
                     ) {
                         let on = session.favoriteIDs.contains(track.id)
                         Button {

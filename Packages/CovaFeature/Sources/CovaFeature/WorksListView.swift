@@ -333,7 +333,11 @@ public struct WorksListView: View {
                 subtitle: subtitle(for: row),
                 artwork: CovaArtwork(
                     resolution: CovaArtworkResolution(serverValue: row.coverUrl), title: title
-                )
+                ),
+                // COVA-142：我的作品行都是 Cova AI 生成的（含生成中/失败的占位行——
+                // 占位行呈现的仍是「这一首将被生成的作品」，标识一并给上，避免
+                // 「完成前没标识、完成后才出现」这种前后不一致）。
+                aiOrigin: .aiGenerated
             ) {
                 // 行内只留一枚 ⋯（2026-10-01 C2 修）：四枚 44pt 钮把标题压到约 7 个字，
                 // ♡/↓/播放全部收进 ⋯ 菜单，标题才能稳定读到约 12 个字。
@@ -750,8 +754,12 @@ public struct WorksListView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: CovaSpace.md) {
                 HStack {
-                    Text(state.row(id: rowID)?.displayTitle ?? WorksListCopy.untitled)
-                        .font(CovaType.headline).foregroundStyle(CovaColor.fg)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(state.row(id: rowID)?.displayTitle ?? WorksListCopy.untitled)
+                            .font(CovaType.headline).foregroundStyle(CovaColor.fg)
+                        // COVA-142：歌词面板展示的是作品本体（歌词），与曲目详情 sheet 同级 ⇒ L2。
+                        AIOriginNotice(.aiGenerated)
+                    }
                     Spacer()
                     Button { sheet = nil } label: {
                         Image(systemName: "xmark")

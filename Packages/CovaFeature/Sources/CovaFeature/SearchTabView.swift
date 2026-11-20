@@ -409,7 +409,8 @@ public struct SearchTabView: View {
                         ),
                         artwork: CovaArtwork(
                             resolution: LibraryArtwork.cover(track), title: track.title
-                        )
+                        ),
+                        aiOrigin: .aiGenerated
                     ) {
                         let on = session.favoriteIDs.contains(track.id)
                         Button {
