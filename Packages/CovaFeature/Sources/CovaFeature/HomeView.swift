@@ -697,14 +697,15 @@ struct RecentPlayCard: View {
                             .padding(CovaSpace.xs)
                             .accessibilityHidden(true)
                     }
-                    // COVA-142：卡宽仅 140pt，徽标走封面角标（放在左下，与右上 sparkles
-                    // / 状态徽标错开），卡片高度不变。
+                    // COVA-142：卡宽仅 140pt，徽标走封面**左上**角标（与右上 sparkles
+                    // / 状态徽标错开，互不遮挡），卡片高度不变。
+                    // 不放左下：首页横滑卡的底部会被输入条/底栏压住，标识看不见等于没标。
                     VStack {
-                        Spacer()
                         HStack {
                             AIOriginCoverBadge(.aiGenerated)
                             Spacer()
                         }
+                        Spacer()
                     }
                     .padding(CovaSpace.xs)
                 }
@@ -751,13 +752,13 @@ struct HomeTrackCard: View {
                         .frame(width: CGFloat(HomeSceneRail.cardSide), height: CGFloat(HomeSceneRail.cardSide))
                         .clipShape(RoundedRectangle(cornerRadius: CovaRadius.card, style: .continuous))
                         .accessibilityHidden(true)
-                    // COVA-142：与 RecentPlayCard 同形态（封面左下角标），卡片高度不变。
+                    // COVA-142：与 RecentPlayCard 同形态（封面**左上**角标），卡片高度不变。
                     VStack {
-                        Spacer()
                         HStack {
                             AIOriginCoverBadge(.aiGenerated)
                             Spacer()
                         }
+                        Spacer()
                     }
                     .padding(CovaSpace.xs)
                 }
@@ -833,13 +834,13 @@ struct HomeWorkCard: View {
                             )
                             .padding(CovaSpace.xs)
                     }
-                    // COVA-142：封面左下角标（与右上状态徽标错开，互不遮挡）。
+                    // COVA-142：封面**左上**角标（与右上状态徽标错开，互不遮挡）。
                     VStack {
-                        Spacer()
                         HStack {
                             AIOriginCoverBadge(.aiGenerated)
                             Spacer()
                         }
+                        Spacer()
                     }
                     .padding(CovaSpace.xs)
                 }
