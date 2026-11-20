@@ -48,7 +48,11 @@ final class AIMarkShotsTests: XCTestCase {
         launch(["COVA_PREVIEW_ROUTE": "library"])
         let title = app.staticTexts["曲库"]
         XCTAssertTrue(title.waitForExistence(timeout: 20), "曲库页没起来")
-        sleep(6)                       // 等首屏列表行从骨架换成真数据
+        // 等「真实曲目行」而不是固定 sleep：冷启动时 6s 只拍到骨架屏（深色轮实拍踩过，
+        // 骨架屏里没有标识可量，等于白拍）。曲目行副标题固定含「BPM」。
+        let row = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "BPM")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 30), "曲库行 30s 未加载（仍是骨架屏）")
+        sleep(2)
         shot("list")
     }
 
